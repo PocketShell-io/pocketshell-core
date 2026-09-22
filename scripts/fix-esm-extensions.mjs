@@ -6,8 +6,11 @@
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const dir = new URL('../dist/esm', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a file:// URL decodes to /D:/a/... on
+// Windows, which fs then mangles into a doubled drive letter.
+const dir = fileURLToPath(new URL('../dist/esm', import.meta.url));
 
 for (const file of readdirSync(dir).filter((f) => f.endsWith('.js'))) {
   const path = join(dir, file);
