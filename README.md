@@ -109,6 +109,23 @@ npm run build         # dist/esm + dist/cjs + types
 npm run embed         # esbuild bundle + dual-engine verification
 ```
 
+## Release flow
+
+Publishing is tag-triggered, the same shape as the CLI's PyPI flow: a `vX.Y.Z`
+tag makes CI build the package, verify the tag equals `version` in
+package.json, and publish the tarball to npm with the `NPM_TOKEN` repo secret.
+The tag is the release declaration — there is no separate release step:
+
+```bash
+npm version patch        # bumps package.json, commits, tags vX.Y.Z
+git push --follow-tags
+```
+
+If the publish job fails after the tag is pushed, fix the cause and re-run
+that job from the Actions tab — the re-run keeps the tag ref, so the tag does
+not need to move. Anything else (dispatches, plain pushes) runs the build job
+only and never publishes.
+
 History: every module here was copied verbatim from
 pocketshell-desktop's `src/shared/` when the package was created (they were
 the modules pocketshell-web vendored); `git log` in that repo holds their
