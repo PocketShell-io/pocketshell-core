@@ -53,8 +53,9 @@ published to npm, the `file:` specs become plain versions.
 
 1. Edit here. Keep modules pure; extend `types/globals.d.ts` only for APIs
    every client genuinely provides.
-2. `npm test` (the ported contract suites) and `npm run embed` (dual-engine
-   verification) must pass.
+2. `npm run test:unit` (the ported contract suites), `npm run test:integration`
+   (core's clients against the Docker fleet — see `docs/TESTING.md`), and
+   `npm run embed` (dual-engine verification) must pass.
 3. `npm run build` — the apps resolve into `dist/` through the `file:` link,
    so a rebuild here is propagation; no republish, no reinstall.
 4. Commit here first, then bump/pin the apps as they adopt it.
@@ -101,9 +102,11 @@ deleting its Kotlin twin in the app's `shared/core-*`.
 
 ```bash
 npm install
-npm test        # vitest: the contract suites (ported from desktop + web)
-npm run build   # dist/esm + dist/cjs + types
-npm run embed   # esbuild bundle + dual-engine verification
+npm run build-docker  # once: the test fleet (same images as desktop + Android)
+npm test              # unit contract suites + integration tier (Docker)
+npm run test:unit     # unit tier only — no Docker needed
+npm run build         # dist/esm + dist/cjs + types
+npm run embed         # esbuild bundle + dual-engine verification
 ```
 
 History: every module here was copied verbatim from
