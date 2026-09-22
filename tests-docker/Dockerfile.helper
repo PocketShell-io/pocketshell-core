@@ -1,0 +1,105 @@
+# Helper image: real `pocketshell` CLI + stub agent CLIs + seeded fixtures.
+#
+# This is the PRIMARY end-to-end test target (port 3205). It installs the real
+# server-side `pocketshell` helper (via uv) so the desktop app exercises the
+# actual `pocketshell sessions list` / `usage` code paths, and
+# stubs the provider CLIs (claude/codex/opencode/quse) with deterministic
+# fixtures so no real credentials or network are needed.
+#
+# Extends pocketshell-test:tmux (=> pocketshell-test:ssh + tmux).
+FROM pocketshell-test:tmux
+
+# python3 + pip + uv for installing the real helper. git for `repos` later.
+# gcompat + libgcc run aplexer's glibc-linked release binary under musl (below).
+RUN apk add --no-cache python3 py3-pip git bash gcompat libgcc \
+    && python3 -m pip install --break-system-packages --no-cache-dir uv
+
+# Install the real pocketshell helper + its tmuxctl runtime dependency.
+# `uv tool install` puts each tool in its OWN isolated venv and only symlinks
+# the named package's entrypoints to ~/.local/bin — so pocketshell's
+# `shutil.which("tmuxctl")` finds nothing unless tmuxctl is installed as its
+# own tool too. Install both so their CLIs land on PATH.
+#
+# PIN THE VERSION. This was previously an unpinned `uv tool install
+# pocketshell`, which does not mean "latest" — it means "whatever was latest
+# when this layer was first cached". The image sat at 0.4.8 while real hosts
+# ran 0.4.44, so integration and E2E never exercised what users actually run,
+# and four parser bugs reached the app that way (a `{profiles: [...]}`
+# envelope, a null `percent_remaining`, a removed `--json` flag, and a
+# fixed-width table whose columns overflow). Bump this deliberately
+# and re-capture the fixtures under tests/unit/fixtures/ when you do.
+ARG POCKETSHELL_VERSION=0.4.44
+# tmuxctl carries the same unpinned-install drift, and its drift is BEHAVIOR:
+# 0.3.5 moved `create-detached` onto a per-session server (`tmuxctl-<name>`
+# sockets beside the legacy one), so a session the helper reports as created
+# is invisible to a bare `tmux` probe on the default socket. That is not a
+# regression to hold back from — per-session servers are what real hosts run
+# and what this app is ported to (Stop and rename aim through the locator;
+# reuse detection locates the same way; see src/main/projects/). The pin
+# makes CI and every developer's fresh build exercise THAT world instead of
+# whichever one PyPI served that morning; bump deliberately, together with
+# the socket assumptions named above.
+ARG TMUXCTL_VERSION=0.3.5
+RUN su testuser -c "uv tool install 'pocketshell==${POCKETSHELL_VERSION}' && uv tool install 'tmuxctl==${TMUXCTL_VERSION}'" \
+    && mkdir -p /home/testuser/.local/bin
+
+ENV PATH="/home/testuser/.local/bin:${PATH}"
+
+# aplexer (`a`) — the app's MAIN session manager wherever it is installed
+# (src/main/helper/AplexerClient.ts): listing, creating, joining, stopping and
+# renaming all prefer it, and the helper-driven tmux path is only the fallback
+# for hosts without it. The fixture therefore needs `a`, or every E2E run
+# exercises the fallback world instead of the one users actually see.
+#
+# Installed from the GitHub release rather than `uv tool install aplexer`:
+# the PyPI wheels are manylinux (glibc) and refuse to install under Alpine's
+# musl, while the release binaries run under gcompat + libgcc (installed
+# above). `a` is the user-facing CLI and `aplexer` the per-session worker it
+# spawns — both must land on PATH.
+#
+# UNPINNED BY DEFAULT, unlike pocketshell/tmuxctl above: aplexer is this
+# project's own tool and moves fast, and the fixture should exercise what a
+# freshly-set-up host would get. The build ASKS for the latest release — one
+# unauthenticated GitHub API call, resolved to a tag, echoed into the build
+# log, then fetched by that tag. Set APLEXER_VERSION to pin a known build
+# when determinism matters. The catch either way is Docker's layer cache:
+# the API is only asked when this layer actually rebuilds, so a cached
+# `compose up --build` keeps serving the version it fetched before — force
+# the fetch with `docker compose build --no-cache`.
+# The empty ARG default matters: an ARG with NO default is never exported
+# into RUN, and `set -u` below would abort on the unset name.
+ARG APLEXER_VERSION=
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) asset_arch=amd64 ;; \
+      aarch64) asset_arch=arm64 ;; \
+      *) echo "no aplexer release binary for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    if [ -n "${APLEXER_VERSION}" ]; then \
+      aplexer_version="${APLEXER_VERSION}"; \
+    else \
+      aplexer_version="$(wget -qO- 'https://api.github.com/repos/alexeygrigorev/aplexer/releases/latest' \
+        | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
+    fi; \
+    [ -n "${aplexer_version}" ] || { echo "could not resolve the latest aplexer release from the GitHub API" >&2; exit 1; }; \
+    echo "aplexer version: ${aplexer_version}"; \
+    base="https://github.com/alexeygrigorev/aplexer/releases/download/v${aplexer_version}"; \
+    wget -q -O /usr/local/bin/a "$base/a-linux-$asset_arch"; \
+    wget -q -O /usr/local/bin/aplexer "$base/aplexer-linux-$asset_arch"; \
+    chmod 0755 /usr/local/bin/a /usr/local/bin/aplexer
+
+# Stub provider CLIs + quse with deterministic, credential-free output.
+COPY agent-bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/opencode /usr/local/bin/quse
+
+# The seeded agent-conversation transcripts are gone with the Conversation
+# feature (docs/WORKSPACE.md §9) — nothing reads them any more.
+COPY fixtures/ /opt/pocketshell-fixtures/
+COPY helper-entrypoint.sh /usr/local/bin/pocketshell-helper-entrypoint
+RUN chmod +x /usr/local/bin/pocketshell-helper-entrypoint
+
+EXPOSE 22
+
+# The entrypoint starts sshd in the foreground AND seeds two live tmux sessions
+# (so `pocketshell sessions list` returns a non-empty tree) as the testuser.
+CMD ["/usr/local/bin/pocketshell-helper-entrypoint"]

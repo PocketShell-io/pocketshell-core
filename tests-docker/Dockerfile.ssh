@@ -1,0 +1,57 @@
+# Base deterministic SSH test image for PocketShell Desktop.
+#
+# Byte-for-byte model of the Android project's tests/docker/Dockerfile.ssh:
+# Alpine + openssh, non-root `testuser` (password-locked, pubkey-only), sshd
+# on port 22 in the foreground. The committed ed25519 test_key.pub is the
+# authorized_keys file. See docs/TESTING.md.
+# PINNED so the tmux version is deterministic. `alpine:latest` floats: 3.20
+# ships tmux 3.4, 3.21 ships 3.5a, 3.24 ships 3.6b. 3.20 is chosen because
+# tmux 3.4 is what the real dev host runs, so the fixture exercises the same
+# version users do.
+#
+# Note this does NOT fix `pocketshell sessions list` on the fixture. That
+# fails because tmuxctl 0.3.4 asks tmux for a tab-delimited `list-sessions`
+# format and tmux rewrites those tabs to underscores — on 3.4 and 3.6b alike,
+# so it is not a version regression:
+# https://github.com/alexeygrigorev/tmuxctl/issues/6
+# Until that is fixed upstream the fixture only reaches the raw-tmux fallback
+# path, never the helper path. Bump deliberately, and check `tmux -V`.
+FROM alpine:3.20
+
+# Alpine split `sftp-server` into its own `openssh-sftp-server` package in
+# recent releases; the older Android project image didn't need it. We install
+# it so the `Subsystem sftp /usr/lib/ssh/sftp-server` directive resolves and
+# the Files (SFTP) feature + its tests work against every layer.
+#
+# iproute2 (ss) + net-tools (netstat) so the port-scanner's three strategies
+# all resolve; busybox netstat alone has gaps in process attribution.
+RUN apk add --no-cache openssh-server openssh-client openssh-sftp-server iproute2 net-tools python3 \
+    && ssh-keygen -A \
+    && adduser -D -s /bin/sh testuser \
+    && passwd -u testuser \
+    && mkdir -p /home/testuser/.ssh \
+    && chmod 700 /home/testuser/.ssh
+
+COPY sshd_config /etc/ssh/sshd_config
+COPY test_key.pub /home/testuser/.ssh/authorized_keys
+# Compose healthcheck probes ssh from inside the container; the private key
+# is a committed test fixture used only for that probe.
+COPY test_key /root/test_key
+
+RUN chmod 600 /home/testuser/.ssh/authorized_keys /root/test_key \
+    && chown -R testuser:testuser /home/testuser/.ssh
+
+# A listener that actually MOVES BYTES. Every other port the fixture opens is
+# idle, which is why the port panel's In/Out columns had never been observed
+# as anything but "0 B" — a bug in the byte counters or the rate maths would
+# have been invisible. See tests-docker/traffic-server.py for the protocol.
+COPY traffic-server.py /usr/local/bin/ps-traffic-server
+COPY ssh-entrypoint.sh /usr/local/bin/pocketshell-ssh-entrypoint
+RUN chmod +x /usr/local/bin/ps-traffic-server /usr/local/bin/pocketshell-ssh-entrypoint
+
+EXPOSE 22
+# 8021: the traffic responder. In [1024, 10000], so the auto-forward policy
+# picks it up on its own — the panel gets one row with real throughput.
+EXPOSE 8021
+
+CMD ["/usr/local/bin/pocketshell-ssh-entrypoint"]

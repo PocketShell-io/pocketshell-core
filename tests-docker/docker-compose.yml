@@ -1,0 +1,67 @@
+# Deterministic Docker SSH targets for @pocketshell/core tests.
+#
+# Mirrors pocketshell-desktop's tests-docker fleet (which mirrors the Android
+# project's tests/docker fleet). The Dockerfiles, keys and entrypoints are
+# byte-identical copies — a `pocketshell-test:*` tag must mean the same
+# machine no matter which project built it — so keep the three copies in sync
+# when you change one. Only the desktop-only layers (flaky, instance) are
+# absent here: forced-disconnect reconnect and the manual demo instance are
+# client features, and core's transport is a one-method interface.
+#
+# Layers:
+#   ssh    (3302) — base ssh + sftp; core-ssh / core-sftp integration
+#   tmux   (3304) — + tmux; helper image builds on it
+#   helper (3305) — + real `pocketshell` helper, `a` (aplexer), stub agents
+#                   and fixtures; the AplexerCore integration target
+#
+# Port choice: 3302-3305 is deliberately offset from desktop's 3202-3206 and
+# the Android project's 2222-2235 so the fleets can run side by side on the
+# same dev box without a bind clash. The compose services are a convenience
+# (up --wait for a long-lived fleet); the integration tests use testcontainers
+# and start their own ephemeral containers from the same prebuilt tags —
+# `scripts/build-docker.sh` builds those in layer order.
+#
+# The shared healthcheck runs an in-container ssh probe so `compose up` only
+# reports healthy once sshd is accepting the committed test_key.
+
+x-ssh-healthcheck: &ssh-healthcheck
+  test:
+    - CMD-SHELL
+    - >-
+      ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null -i /root/test_key testuser@localhost true
+  interval: 2s
+  timeout: 5s
+  retries: 10
+  start_period: 5s
+
+services:
+  ssh:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh
+    image: pocketshell-test:ssh
+    ports:
+      - "3302:22"
+    healthcheck:
+      <<: *ssh-healthcheck
+
+  tmux:
+    build:
+      context: .
+      dockerfile: Dockerfile.tmux
+    image: pocketshell-test:tmux
+    ports:
+      - "3304:22"
+    healthcheck:
+      <<: *ssh-healthcheck
+
+  helper:
+    build:
+      context: .
+      dockerfile: Dockerfile.helper
+    image: pocketshell-test:helper
+    ports:
+      - "3305:22"
+    healthcheck:
+      <<: *ssh-healthcheck

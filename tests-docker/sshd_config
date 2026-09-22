@@ -1,0 +1,33 @@
+Port 22
+Protocol 2
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# This checked-in fixture keeps the standalone instance's identity stable
+# across image rebuilds and container recreation.
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+
+# Absolute path avoids any home-dir resolution ambiguity under non-login shells.
+AuthorizedKeysFile /home/testuser/.ssh/authorized_keys
+
+# OpenSSH's non-interactive exec environment otherwise replaces PATH with its
+# system default, hiding the helper tools installed under ~/.local/bin. Keep
+# `ssh alias pocketshell ...` equivalent to PocketShell's path-aware probes.
+SetEnv PATH=/home/testuser/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+Subsystem sftp /usr/lib/ssh/sftp-server
+
+# Verbose by default so container logs show auth decisions during tests.
+LogLevel VERBOSE

@@ -1,7 +1,7 @@
 {
   "name": "@pocketshell/core",
   "version": "0.1.0",
-  "description": "PocketShell's shared contract layer: sync, aplexer, agent launch, SSH config, OSC 52 — one implementation for the desktop, web, and Android clients.",
+  "description": "PocketShell's shared contract layer: sync, aplexer, agent launch, SSH config, OSC 52 \u2014 one implementation for the desktop, web, and Android clients.",
   "license": "MIT",
   "author": "Alexey Grigorev <alexey.s.grigoriev@gmail.com>",
   "type": "module",
@@ -21,13 +21,19 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/fix-esm-extensions.mjs && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "embed": "node scripts/build-embed.mjs && node scripts/verify-embed.mjs"
+    "test": "npm run test:unit && npm run test:integration",
+    "embed": "node scripts/build-embed.mjs && node scripts/verify-embed.mjs",
+    "test:unit": "vitest run --exclude 'tests/integration/**'",
+    "test:integration": "vitest run tests/integration",
+    "build-docker": "bash scripts/build-docker.sh"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
     "quickjs-emscripten": "^0.32.0",
     "typescript": "5.7.2",
-    "vitest": "2.1.8"
+    "vitest": "2.1.8",
+    "ssh2": "1.16.0",
+    "@types/ssh2": "^1.5.8",
+    "testcontainers": "10.17.2"
   }
 }
