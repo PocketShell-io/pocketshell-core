@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    // Sources already use `import type` everywhere (the desktop enforces
+    // verbatimModuleSyntax), so type-only elision stays correct without it,
+    // and CJS emit does not need the restriction on top.
+    "verbatimModuleSyntax": false,
+    "outDir": "dist/cjs"
+  }
+}
