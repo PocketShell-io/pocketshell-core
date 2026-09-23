@@ -27,7 +27,7 @@ shim set in `embed/host-shims.js`.
 | `aplexerClientCore` | the whole aplexer client brain over a one-method `exec` transport |
 | `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
-| `composerSend` | send pipeline: bracketed paste, three-write delivery, submit timing |
+| `composerSend` | UTF-8 framing, serialized insert/submit, submit timing, draft retention and uncertain-send outcomes |
 | `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
 | `shellQuote`, `userBinPath`, `net`, `byteSize` | quoting, `~/.local/bin`, loopback/port constants, byte formatting |
@@ -112,10 +112,13 @@ const controller = new PocketShellCore.ConnectionController({
 await controller.connect(host);
 ```
 
-The same portable connection-policy contract runs from source in Vitest,
-against a browser-targeted bundle in Chromium, and against the embed bundle in
-Node's `vm` and QuickJS. Existing Android SHA-256 host-key records are read as
-fingerprint pins and retained in that format when a user accepts a replacement.
+The same portable connection and composer-policy contracts run from source in
+Vitest, against a browser-targeted bundle in Chromium, and against the embed
+bundle in Node's `vm` and QuickJS. Composer byte vectors live in
+`tests/fixtures/composer-delivery-vectors.json`; an ambiguous write retains the
+draft, and reconnecting does not replay it. Existing Android SHA-256 host-key
+records are read as fingerprint pins and retained in that format when a user
+accepts a replacement.
 Closing a controller cancels a pending dial by request id; closing a live
 generation is the cancellation boundary for its in-flight channel operations.
 The Android repository imports the reviewed source revision directly for its

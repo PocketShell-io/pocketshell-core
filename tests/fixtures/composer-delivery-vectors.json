@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "name": "single-line submit keeps body and carriage return separate",
+      "payload": "echo ok",
+      "intent": "submit",
+      "expectedHex": ["6563686f206f6b", "0d"],
+      "expectedSleepMs": [250],
+      "expectedDraftEffect": "clear"
+    },
+    {
+      "name": "Unicode supplementary code point insert",
+      "payload": "café 🧪",
+      "intent": "insert",
+      "expectedHex": ["636166c3a920f09fa7aa"],
+      "expectedSleepMs": [],
+      "expectedDraftEffect": "clear"
+    },
+    {
+      "name": "multiline insert preserves CRLF and UTF-8 body bytes",
+      "payload": "alpha\r\nβeta\n🙂",
+      "intent": "insert",
+      "expectedHex": ["1b5b3230307e", "616c7068610d0aceb26574610af09f9982", "1b5b3230317e"],
+      "expectedSleepMs": [120, 120],
+      "expectedDraftEffect": "clear"
+    },
+    {
+      "name": "multiline submit appends CR after the framed paste",
+      "payload": "one\ntwo",
+      "intent": "submit",
+      "expectedHex": ["1b5b3230307e", "6f6e650a74776f", "1b5b3230317e", "0d"],
+      "expectedSleepMs": [120, 120, 250],
+      "expectedDraftEffect": "clear"
+    },
+    {
+      "name": "attachment path block remains exact UTF-8 payload",
+      "payload": "Inspect café photo.\n\nAttached files:\n- ~/inbox/屏.png",
+      "intent": "submit",
+      "expectedHex": ["1b5b3230307e", "496e737065637420636166c3a92070686f746f2e0a0a41747461636865642066696c65733a0a2d207e2f696e626f782fe5b18f2e706e67", "1b5b3230317e", "0d"],
+      "expectedSleepMs": [120, 120, 250],
+      "expectedDraftEffect": "clear"
+    },
+    {
+      "name": "unpaired surrogates use UTF-8 replacement bytes",
+      "payload": "\ud800x\udc00",
+      "intent": "insert",
+      "expectedHex": ["efbfbd78efbfbd"],
+      "expectedSleepMs": [],
+      "expectedDraftEffect": "clear"
+    }
+  ]
+}
