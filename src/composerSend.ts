@@ -94,6 +94,264 @@ export function frameForPaste(payload: string): string {
  */
 export const PASTE_GAP_MS = 120;
 
+/**
+ * The payload writes shared by the desktop adapter and the portable delivery
+ * controller. The body is kept verbatim: CRLF, lone CR, Unicode and trailing
+ * newlines are all user input and are not normalized here.
+ */
+export function composerPayloadSegments(payload: string): string[] {
+  return needsBracketedPaste(payload) ? [BP_START, payload, BP_END] : [payload];
+}
+
+/** Encode JavaScript text as UTF-8 without depending on DOM or Node globals. */
+export function encodeComposerText(text: string): Uint8Array {
+  const bytes: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const first = text.charCodeAt(index);
+    let codePoint = first;
+    if (first >= 0xd800 && first <= 0xdbff) {
+      const second = text.charCodeAt(index + 1);
+      if (second >= 0xdc00 && second <= 0xdfff) {
+        codePoint = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
+        index += 1;
+      } else {
+        // Match TextEncoder's USVString conversion for an unpaired surrogate.
+        codePoint = 0xfffd;
+      }
+    } else if (first >= 0xdc00 && first <= 0xdfff) {
+      codePoint = 0xfffd;
+    }
+
+    if (codePoint <= 0x7f) {
+      bytes.push(codePoint);
+    } else if (codePoint <= 0x7ff) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint <= 0xffff) {
+      bytes.push(
+        0xe0 | (codePoint >> 12),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+export type ComposerDeliveryIntent = 'insert' | 'submit';
+export type ComposerDraftEffect = 'clear' | 'retain';
+
+export interface ComposerDeliveryRequest {
+  /** Unique per explicit user action; reused ids are never sent twice. */
+  operationId: string;
+  /** The exact composed text, including any staged attachment references. */
+  payload: string;
+  /** Insert leaves the prompt at the shell; submit appends a separate CR. */
+  intent: ComposerDeliveryIntent;
+}
+
+export interface ComposerWriteContext {
+  operationId: string;
+  /** One-based index of the write within this operation. */
+  writeIndex: number;
+}
+
+/** Platform effects for one PTY-bound composer controller. */
+export interface ComposerDeliveryEffects {
+  /** A resolving write acknowledges the bytes; a rejection is ambiguous. */
+  write: (bytes: Uint8Array, context: ComposerWriteContext) => Promise<void>;
+  /** Required so embedded engines do not need a host event-loop shim. */
+  sleep: (ms: number) => Promise<void>;
+}
+
+export type ComposerDeliveryResult =
+  | {
+    status: 'delivered';
+    operationId: string;
+    intent: ComposerDeliveryIntent;
+    draftEffect: 'clear';
+    bytesAttempted: number;
+    writeCount: number;
+  }
+  | {
+    status: 'not-sent';
+    operationId: string;
+    intent: ComposerDeliveryIntent;
+    draftEffect: 'retain';
+    reason:
+      | 'invalid-operation-id'
+      | 'empty-payload'
+      | 'disconnected'
+      | 'transport-changed'
+      | 'operation-id-reused';
+    bytesAttempted: 0;
+    writeCount: 0;
+  }
+  | {
+    status: 'uncertain';
+    operationId: string;
+    intent: ComposerDeliveryIntent;
+    draftEffect: 'retain';
+    reason: 'transport-lost' | 'effect-failed';
+    stage: 'write' | 'pacing';
+    bytesAttempted: number;
+    writeCount: number;
+    error: string;
+  };
+
+/**
+ * Serial composer delivery policy for one session's PTY.
+ *
+ * Create one controller per PTY. Every explicit insert/submit is serialized in
+ * call order. A connection-state change invalidates the generation captured by
+ * queued work, so an operation waiting for the queue cannot slip onto a newly
+ * connected PTY. A write rejection is ambiguous even when it is the first
+ * write: the bridge may have accepted some bytes before it failed. In that
+ * case the result says `draftEffect: 'retain'`; reconnecting never retries it.
+ *
+ * The platform owns the draft store and applies only the returned draftEffect:
+ * clear after a fully acknowledged operation, otherwise keep the same draft.
+ * The controller never keeps a pending payload to replay on reconnect.
+ */
+export class ComposerDeliveryController {
+  private transportState: 'connected' | 'lost' | 'closed' = 'closed';
+  private generation = 0;
+  private queue: Promise<void> = Promise.resolve();
+  private readonly operationIds = new Set<string>();
+  private readonly submitDelayMs: number;
+  private readonly pasteGapMs: number;
+
+  constructor(
+    private readonly effects: ComposerDeliveryEffects,
+    options: { submitDelayMs?: number; pasteGapMs?: number } = {},
+  ) {
+    this.submitDelayMs = options.submitDelayMs ?? composerTiming.submitDelayMs;
+    this.pasteGapMs = options.pasteGapMs ?? PASTE_GAP_MS;
+  }
+
+  /** Physical state only; TypeScript owns how a loss affects pending sends. */
+  setTransportState(state: 'connected' | 'lost' | 'closed'): void {
+    if (this.transportState === state) return;
+    this.transportState = state;
+    this.generation += 1;
+  }
+
+  /** Enqueue one user action. Reused ids are refused and never write again. */
+  deliver(request: ComposerDeliveryRequest): Promise<ComposerDeliveryResult> {
+    const notSent = (
+      reason: Extract<ComposerDeliveryResult, { status: 'not-sent' }>['reason'],
+    ): Promise<ComposerDeliveryResult> => Promise.resolve({
+      status: 'not-sent',
+      operationId: request.operationId,
+      intent: request.intent,
+      draftEffect: 'retain',
+      reason,
+      bytesAttempted: 0,
+      writeCount: 0,
+    });
+    if (request.operationId === '') {
+      return notSent('invalid-operation-id');
+    }
+    if (this.operationIds.has(request.operationId)) return notSent('operation-id-reused');
+    this.operationIds.add(request.operationId);
+
+    const generation = this.generation;
+    const result = this.queue.then(() => this.deliverOne(request, generation));
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async deliverOne(
+    request: ComposerDeliveryRequest,
+    generation: number,
+  ): Promise<ComposerDeliveryResult> {
+    const notSent = (
+      reason: Extract<ComposerDeliveryResult, { status: 'not-sent' }>['reason'],
+    ): ComposerDeliveryResult => ({
+      status: 'not-sent',
+      operationId: request.operationId,
+      intent: request.intent,
+      draftEffect: 'retain',
+      reason,
+      bytesAttempted: 0,
+      writeCount: 0,
+    });
+    const isCurrent = (): boolean =>
+      this.transportState === 'connected' && this.generation === generation;
+
+    if (request.payload.length === 0) return notSent('empty-payload');
+    if (this.transportState !== 'connected') return notSent('disconnected');
+    if (this.generation !== generation) return notSent('transport-changed');
+
+    let bytesAttempted = 0;
+    let writeCount = 0;
+    let stage: 'write' | 'pacing' = 'write';
+    const failIfStale = (): void => {
+      if (!isCurrent()) throw new Error('Composer transport generation changed.');
+    };
+    const write = async (text: string): Promise<void> => {
+      failIfStale();
+      const bytes = encodeComposerText(text);
+      writeCount += 1;
+      bytesAttempted += bytes.length;
+      stage = 'write';
+      await this.effects.write(bytes, { operationId: request.operationId, writeIndex: writeCount });
+      failIfStale();
+    };
+    const pause = async (ms: number): Promise<void> => {
+      if (ms <= 0) return;
+      failIfStale();
+      stage = 'pacing';
+      await this.effects.sleep(ms);
+      failIfStale();
+    };
+
+    try {
+      const parts = composerPayloadSegments(request.payload);
+      for (let index = 0; index < parts.length; index += 1) {
+        await write(parts[index]!);
+        if (index < parts.length - 1) await pause(this.pasteGapMs);
+      }
+      if (request.intent === 'submit') {
+        await pause(this.submitDelayMs);
+        await write(SUBMIT_KEY);
+      }
+      return {
+        status: 'delivered',
+        operationId: request.operationId,
+        intent: request.intent,
+        draftEffect: 'clear',
+        bytesAttempted,
+        writeCount,
+      };
+    } catch (error) {
+      if (writeCount === 0) {
+        return notSent(
+          this.transportState === 'connected' ? 'transport-changed' : 'disconnected',
+        );
+      }
+      const transportLost = !isCurrent();
+      return {
+        status: 'uncertain',
+        operationId: request.operationId,
+        intent: request.intent,
+        draftEffect: 'retain',
+        reason: transportLost ? 'transport-lost' : 'effect-failed',
+        stage,
+        bytesAttempted,
+        writeCount,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+}
+
 export interface DeliverOptions {
   /** Writes bytes to the PTY. Resolves false when the write did not land. */
   write: (data: string) => Promise<boolean>;
@@ -114,13 +372,14 @@ const defaultSleep = (ms: number): Promise<void> =>
  * The bracketed frame crosses the wire as three writes — START, body, END —
  * with `PASTE_GAP_MS` between them, because a single-write paste loses its
  * head to the shell's escape parser (module header). Returns false without
- * pressing Enter when a write failed, so a dead channel can never leave a
- * half-typed prompt sitting in the pane.
+ * pressing Enter when a write fails. A failed write can still be partial; new
+ * clients should use `ComposerDeliveryController` to distinguish uncertainty
+ * and retain the draft explicitly.
  */
 export async function deliverPayload(payload: string, opts: DeliverOptions): Promise<boolean> {
   const delay = opts.submitDelayMs ?? composerTiming.submitDelayMs;
   const sleep = opts.sleep ?? defaultSleep;
-  const parts = needsBracketedPaste(payload) ? [BP_START, payload, BP_END] : [payload];
+  const parts = composerPayloadSegments(payload);
   for (const [i, part] of parts.entries()) {
     if (!(await opts.write(part))) return false;
     if (i < parts.length - 1 && PASTE_GAP_MS > 0) await sleep(PASTE_GAP_MS);
