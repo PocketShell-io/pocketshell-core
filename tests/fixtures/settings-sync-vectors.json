@@ -1,0 +1,224 @@
+{
+  "fixtureSchemaVersion": 1,
+  "wireContract": {
+    "slot": "main",
+    "plaintext": { "hosts": [] },
+    "emptyPayloadPlaintext": "{\"hosts\":[]}",
+    "payloadSchemaVersion": null
+  },
+  "mergeCases": [
+    {
+      "id": "android-local-over-desktop-account-preserves-desktop-fields",
+      "direction": "android-upload-after-desktop-pull",
+      "local": [
+        {
+          "name": "prod",
+          "hostname": "prod-phone.example.net",
+          "port": 2222,
+          "user": "alexey"
+        }
+      ],
+      "remote": [
+        {
+          "name": "prod",
+          "hostname": "prod-old.example.net",
+          "port": 22,
+          "user": "old-user",
+          "identityFile": "~/.ssh/id_ed25519",
+          "proxyJump": "bastion",
+          "forwardAgent": true,
+          "localForwards": [
+            {
+              "kind": "local",
+              "listenHost": "127.0.0.1",
+              "listenPort": 8080,
+              "destHost": "127.0.0.1",
+              "destPort": 80
+            }
+          ],
+          "remoteForwards": [],
+          "fromConfig": true,
+          "futureDirective": {
+            "mode": "opaque",
+            "tags": ["desk", "keep"]
+          }
+        }
+      ],
+      "checked": ["prod"],
+      "expected": [
+        {
+          "name": "prod",
+          "hostname": "prod-phone.example.net",
+          "port": 2222,
+          "user": "alexey",
+          "identityFile": "~/.ssh/id_ed25519",
+          "proxyJump": "bastion",
+          "forwardAgent": true,
+          "localForwards": [
+            {
+              "kind": "local",
+              "listenHost": "127.0.0.1",
+              "listenPort": 8080,
+              "destHost": "127.0.0.1",
+              "destPort": 80
+            }
+          ],
+          "remoteForwards": [],
+          "fromConfig": true,
+          "futureDirective": {
+            "mode": "opaque",
+            "tags": ["desk", "keep"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "desktop-local-over-android-account-preserves-android-extensions",
+      "direction": "desktop-upload-after-android-pull",
+      "local": [
+        {
+          "name": "builder",
+          "hostname": "builder.local.example.net",
+          "port": 2022,
+          "user": "local-user",
+          "identityFile": null,
+          "proxyJump": null,
+          "forwardAgent": false,
+          "localForwards": [],
+          "remoteForwards": [],
+          "fromConfig": true,
+          "clientMetadata": { "owner": "desktop", "revision": 2 }
+        }
+      ],
+      "remote": [
+        {
+          "name": "builder",
+          "hostname": "builder-old.example.net",
+          "port": 22,
+          "user": "old-user",
+          "mobileExtension": {
+            "enabled": true,
+            "labels": ["phone", "future"]
+          },
+          "clientMetadata": { "owner": "stale", "revision": 1 }
+        }
+      ],
+      "checked": ["builder"],
+      "expected": [
+        {
+          "name": "builder",
+          "hostname": "builder.local.example.net",
+          "port": 2022,
+          "user": "local-user",
+          "identityFile": null,
+          "proxyJump": null,
+          "forwardAgent": false,
+          "localForwards": [],
+          "remoteForwards": [],
+          "fromConfig": true,
+          "mobileExtension": {
+            "enabled": true,
+            "labels": ["phone", "future"]
+          },
+          "clientMetadata": { "owner": "desktop", "revision": 2 }
+        }
+      ]
+    },
+    {
+      "id": "unticked-alias-is-deleted-by-omission",
+      "direction": "selection-replacement",
+      "local": [
+        { "name": "keep", "hostname": "keep.example.net", "port": 22, "user": "alexey" },
+        { "name": "remove", "hostname": "remove.example.net", "port": 22, "user": "alexey" }
+      ],
+      "remote": [
+        { "name": "keep", "hostname": "old-keep.example.net", "port": 22, "user": "old" },
+        { "name": "remove", "hostname": "remove.example.net", "port": 22, "user": "alexey" }
+      ],
+      "checked": ["keep"],
+      "expected": [
+        { "name": "keep", "hostname": "keep.example.net", "port": 22, "user": "alexey" }
+      ]
+    },
+    {
+      "id": "selected-remote-alias-falls-back-and-keeps-alias-order",
+      "direction": "account-only-restore",
+      "local": [
+        { "name": "local", "hostname": "local.example.net", "port": 22, "user": "alexey" }
+      ],
+      "remote": [
+        { "name": "remote-alias", "hostname": "remote.example.net", "port": 2200, "user": "restore" }
+      ],
+      "checked": ["remote-alias", "local"],
+      "expected": [
+        { "name": "remote-alias", "hostname": "remote.example.net", "port": 2200, "user": "restore" },
+        { "name": "local", "hostname": "local.example.net", "port": 22, "user": "alexey" }
+      ]
+    }
+  ],
+  "autoCheckCases": [
+    {
+      "id": "fresh-device-auto-checks-account-aliases",
+      "remote": [
+        { "name": "prod", "hostname": "prod.example.net", "port": 22, "user": "alexey" },
+        { "name": "builder", "hostname": "builder.example.net", "port": 22, "user": "alexey" }
+      ],
+      "checked": [],
+      "localAliases": [],
+      "expected": ["prod", "builder"]
+    },
+    {
+      "id": "local-unticked-alias-is-not-auto-checked",
+      "remote": [
+        { "name": "local-unticked", "hostname": "local.example.net", "port": 22, "user": "alexey" },
+        { "name": "remote-only", "hostname": "remote.example.net", "port": 22, "user": "alexey" }
+      ],
+      "checked": [],
+      "localAliases": ["local-unticked"],
+      "expected": ["remote-only"]
+    }
+  ],
+  "payloadCases": [
+    {
+      "id": "versionless-v1-payload-keeps-unknown-host-fields",
+      "plaintext": "{\"hosts\":[{\"name\":\"prod\",\"hostname\":\"prod.example.net\",\"port\":22,\"user\":\"alexey\",\"futureDirective\":{\"enabled\":true}}]}",
+      "expected": {
+        "kind": "ok",
+        "hosts": [
+          {
+            "name": "prod",
+            "hostname": "prod.example.net",
+            "port": 22,
+            "user": "alexey",
+            "futureDirective": { "enabled": true }
+          }
+        ]
+      }
+    },
+    {
+      "id": "explicit-empty-v1-payload-is-valid",
+      "plaintext": "{\"hosts\":[]}",
+      "expected": { "kind": "ok", "hosts": [] }
+    },
+    {
+      "id": "malformed-json-is-refused-before-upload",
+      "plaintext": "{\"hosts\":",
+      "expected": { "kind": "invalid", "reason": "invalid-json" }
+    },
+    {
+      "id": "wrong-shape-is-refused-before-upload",
+      "plaintext": "{\"host-list\":[]}",
+      "expected": { "kind": "invalid", "reason": "invalid-shape" }
+    },
+    {
+      "id": "explicit-schema-version-is-refused-until-migration-support-exists",
+      "plaintext": "{\"schemaVersion\":2,\"hosts\":[]}",
+      "expected": { "kind": "invalid", "reason": "unsupported-version" }
+    },
+    {
+      "id": "malformed-entry-refuses-the-whole-payload",
+      "plaintext": "{\"hosts\":[{\"name\":\"valid\",\"hostname\":\"valid.example.net\"},{\"name\":\"missing-hostname\"}]}",
+      "expected": { "kind": "invalid", "reason": "invalid-host-entry", "index": 1 }
+    }
+  ]
+}

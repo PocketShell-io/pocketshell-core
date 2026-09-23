@@ -1,5 +1,15 @@
 # Host CLI fixtures
 
+## `settings-sync-vectors.json`
+
+These runtime-neutral vectors define the settings-sync host merge and plaintext
+parse contract. Core's `syncMerge.test.ts` runs them directly. Desktop, web,
+and Android contract tests should load the same file from their pinned core
+source rather than copy the expected values. Its `fixtureSchemaVersion` is
+test-fixture metadata only; it is not added to the versionless `{ "hosts": [] }`
+wire payload. See [`docs/SYNC.md`](../../docs/SYNC.md) for field ownership,
+selection/deletion, and versioning rules.
+
 ## `pocketshell-0.5.8/`
 
 These response and stderr fixtures were captured from the real Docker helper

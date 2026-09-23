@@ -36,6 +36,10 @@ every contract and decision, and the client injects a one-method transport
 (desktop: SshService by connection id; web: the workspace connection; a
 future Android client: its SSH transport).
 
+The settings-sync plaintext and merge rules are documented in
+[`docs/SYNC.md`](docs/SYNC.md). The same runtime-neutral contract vectors for
+core and client suites live in `tests/fixtures/settings-sync-vectors.json`.
+
 `HostCliCore` is a separate contract for Android's versioned `pocketshell`
 CLI. Its `sessions`, `workspaces`, `engines`, and `profiles` commands are not
 the direct `a` commands in `AplexerCore`. It accepts the same small SSH exec
