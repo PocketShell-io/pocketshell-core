@@ -24,6 +24,8 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:browser": "node scripts/verify-browser-policy.mjs",
     "embed": "node scripts/build-embed.mjs && node scripts/verify-embed.mjs",
+    "build:ui": "npm --prefix packages/ui run build",
+    "typecheck:ui": "npm --prefix packages/ui run typecheck",
     "test:unit": "vitest run --exclude 'tests/integration/**'",
     "test:integration": "vitest run tests/integration",
     "build-docker": "bash scripts/build-docker.sh"

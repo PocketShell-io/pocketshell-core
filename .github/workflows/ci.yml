@@ -26,6 +26,16 @@ jobs:
         env:
           CHROMIUM_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
       - run: npm run embed
+      # The shared interface package (@pocketshell/ui) rides in this repo so
+      # desktop, web and Android consume one UI source — same bargain as the
+      # contract layer in src/. Gate it where it lives: its own pinned
+      # toolchain, then build + typecheck against that.
+      - name: Gate @pocketshell/ui
+        working-directory: packages/ui
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+          npm run typecheck
 
   # The Docker-backed tier: build the same fleet images the desktop and
   # Android projects build (tests-docker/ is a byte-identical copy of the
