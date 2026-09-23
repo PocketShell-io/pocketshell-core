@@ -32,6 +32,13 @@ shim set in `embed/host-shims.js`.
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
 | `shellQuote`, `userBinPath`, `net`, `byteSize` | quoting, `~/.local/bin`, loopback/port constants, byte formatting |
 
+The shared interface package lives here too: `packages/ui` holds the design
+tokens, terminal themes, fonts, and the shared Vue components, consumed as
+source by the desktop (via the `@ui` alias into this sibling) and the web
+(the same alias in its Vite config). See `packages/ui/README.md`. The web
+deploy watches this repo's main branch — a change merged here reaches the
+live site within minutes without anyone touching the web repo.
+
 `AplexerCore` shows the pattern the I/O-ish modules follow: the core holds
 every contract and decision, and the client injects a one-method transport
 (desktop: SshService by connection id; web: the workspace connection; a
