@@ -20,7 +20,12 @@ echo "==> Building pocketshell-test:tmux"
 docker build -t pocketshell-test:tmux -f "$DOCKER_DIR/Dockerfile.tmux" "$DOCKER_DIR"
 
 echo "==> Building pocketshell-test:helper"
-docker build -t pocketshell-test:helper -f "$DOCKER_DIR/Dockerfile.helper" "$DOCKER_DIR"
+# The generic fleet tag is shared with Android and desktop, whose helper pins
+# can differ. Keep a core-owned alias so a parallel build in another checkout
+# cannot silently replace the CLI image used by core's HostCliCore tests.
+docker build -t pocketshell-test:helper -t pocketshell-core-test:helper \
+  -f "$DOCKER_DIR/Dockerfile.helper" "$DOCKER_DIR"
 
 echo "==> Done. Images:"
 docker images --filter=reference='pocketshell-test:*' --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}'
+echo "Core-isolated HostCliCore target: pocketshell-core-test:helper"

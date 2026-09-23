@@ -42,12 +42,16 @@ report a green tick. Suites:
   stale-list `notFound` race, and totality (`listWarnings` never throws).
   The transport is core's one-method `exec` interface adapted to ssh2 — the
   same seam the desktop's SshService and the web's connection object sit in.
-- **HostCliCore** (`pocketshell-test:helper`, pinned `pocketshell==0.5.8`):
+- **HostCliCore** (`pocketshell-core-test:helper`, pinned
+  `pocketshell==0.5.8`):
   reads the seeded session list, verifies create idempotency and kill, runs a
   quote/newline/Unicode/shell-injection workspace round trip, and reads the
   real engine and profile catalogs. Captured response fixtures are under
   `tests/fixtures/pocketshell-0.5.8/`; their commands and setup are documented
-  in that directory. This release does not publish `sessions warnings` or
+  in that directory. The core-owned alias avoids collisions with Android and
+  desktop builds that share the generic `pocketshell-test:helper` tag; each
+  HostCliCore test checks the running CLI's version before invoking it. This
+  release does not publish `sessions warnings` or
   `sessions ack`: Docker verifies those verbs fail with the real CLI's exit
   code and stderr, while a source/reference fixture pins the parser shape for
   the newer warning schema. A successful Docker path for those verbs requires

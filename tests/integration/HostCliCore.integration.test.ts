@@ -50,14 +50,20 @@ function sshHostCliTransport(handle: SshHandle): HostCliTransport {
   };
 }
 
-describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
+async function expectPinnedCliVersion(transport: HostCliTransport): Promise<void> {
+  const outcome = await transport.exec('pocketshell --version', 5_000);
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.stdout.trim()).toBe('pocketshell, version 0.5.8');
+}
+
+describeDocker('HostCliCore integration (core-owned image, published pocketshell 0.5.8)', () => {
   let container: StartedTestContainer | undefined;
   let handle: SshHandle | undefined;
   let core: HostCliCore;
   let transport: HostCliTransport;
 
   beforeAll(async () => {
-    container = await new GenericContainer('pocketshell-test:helper')
+    container = await new GenericContainer('pocketshell-core-test:helper')
       .withExposedPorts(22)
       .start();
     handle = await connectSsh(container.getHost(), container.getMappedPort(22));
@@ -72,6 +78,7 @@ describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
   });
 
   it('lists the real seeded sessions, preserves create idempotency, and kills by exact display name', async () => {
+    await expectPinnedCliVersion(transport);
     const listing = await core.listSessions();
     const names = listing.sessions.map((session) => session.name);
     expect(names).toEqual(expect.arrayContaining(['testuser:main', 'testuser:build']));
@@ -110,6 +117,7 @@ describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
   }, 60_000);
 
   it('round-trips workspace identity containing quote, newline, Unicode, and shell syntax', async () => {
+    await expectPinnedCliVersion(transport);
     const host = "fixture host ' Ω\n$(touch /tmp/hostcli-shell-injection)";
     const path = "/home/testuser/project ' one\nΩ";
     const added = await core.addWorkspace(host, path);
@@ -125,6 +133,7 @@ describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
   }, 30_000);
 
   it('reads real engine and profile catalogs from the published host CLI', async () => {
+    await expectPinnedCliVersion(transport);
     const engines = await core.listEngines();
     expect(engines.map((engine) => engine.id)).toContain('claude');
     expect(engines.find((engine) => engine.id === 'claude')).toMatchObject({
