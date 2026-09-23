@@ -109,4 +109,19 @@ describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
     expect(afterKill.sessions.map((session) => session.name)).not.toContain('testuser:main');
   }, 60_000);
 
+  it('round-trips workspace identity containing quote, newline, Unicode, and shell syntax', async () => {
+    const host = "fixture host ' Ω\n$(touch /tmp/hostcli-shell-injection)";
+    const path = "/home/testuser/project ' one\nΩ";
+    const added = await core.addWorkspace(host, path);
+    expect(added.workspaces).toEqual([{ path, displayPath: path }]);
+
+    const listed = await core.listWorkspaces(host);
+    expect(listed.workspaces).toEqual([{ path, displayPath: path }]);
+
+    const noInjection = await transport.exec('test ! -e /tmp/hostcli-shell-injection', 5_000);
+    expect(noInjection.exitCode).toBe(0);
+
+    expect((await core.removeWorkspace(host, path)).workspaces).toEqual([]);
+  }, 30_000);
+
 });

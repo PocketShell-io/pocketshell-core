@@ -7,6 +7,7 @@ import {
   HostCliTooOld,
   parseHostSessionsList,
   parseHostWarnings,
+  parseHostWorkspaces,
   type HostCliExecOutcome,
   type HostCliTransport,
 } from '../src/index';
@@ -186,5 +187,58 @@ describe('HostCliCore warnings contract', () => {
       command: "pocketshell sessions ack --json -- '--help'",
       stderr: expect.stringContaining("No such command 'ack'"),
     });
+  });
+});
+
+describe('HostCliCore workspaces contract', () => {
+  it('parses captured schema-1 list, add, and remove responses', async () => {
+    const empty = parseHostWorkspaces(fixture('workspaces-list-empty.json'));
+    expect(empty.workspaces).toEqual([]);
+
+    const added = await new HostCliCore(
+      new ScriptedTransport(ok(fixture('workspaces-add.json'))),
+    ).addWorkspace('core fixture', '/home/testuser/core-fixture');
+    expect(added.workspaces).toEqual([{
+      path: '/home/testuser/core-fixture',
+      displayPath: '/home/testuser/core-fixture',
+    }]);
+
+    const removed = await new HostCliCore(
+      new ScriptedTransport(ok(fixture('workspaces-remove.json'))),
+    ).removeWorkspace('core fixture', '/home/testuser/core-fixture');
+    expect(removed.workspaces).toEqual([]);
+  });
+
+  it('quotes paths and host identities as single arguments', async () => {
+    const path = "/tmp/project 'one'\nΩ";
+    const host = "opaque 'host'\nΩ";
+    const transport = new ScriptedTransport(ok(fixture('workspaces-add.json')));
+    await new HostCliCore(transport).addWorkspace(host, path);
+
+    expect(transport.calls).toEqual([{
+      command: "pocketshell workspaces add '/tmp/project '\\''one'\\''\nΩ' --host 'opaque '\\''host'\\''\nΩ' --json",
+      timeoutMs: 20_000,
+    }]);
+  });
+
+  it('rejects too-old, partial, and invalid schema-1 workspaces responses', () => {
+    expect(() => parseHostWorkspaces('{"schema":0,"workspaces":[]}')).toThrow(HostCliTooOld);
+    expect(() => parseHostWorkspaces('{"schema":1,"workspaces":[')).toThrow(HostCliMalformed);
+    expect(() => parseHostWorkspaces('{"schema":1,"workspaces":[{"path":"  "}]}')).toThrow(HostCliMalformed);
+    expect(() => parseHostWorkspaces('{"schema":1,"workspaces":[{"path":"/tmp","display_path":null}]}'))
+      .toThrow(HostCliMalformed);
+  });
+
+  it('preserves structured mutation failure as a host failure', async () => {
+    const transport = new ScriptedTransport({
+      exitCode: 2,
+      stdout: '{"schema":1,"error":{"code":"invalid_request","message":"bad path"}}',
+      stderr: '{"schema": 1, "error": {"code": "invalid_request", "message": "bad path"}}\n',
+    });
+    await expect(new HostCliCore(transport).addWorkspace('host', 'relative-path'))
+      .rejects.toMatchObject<Partial<HostCliFailed>>({
+        exitCode: 2,
+        stderr: expect.stringContaining('invalid_request'),
+      });
   });
 });
