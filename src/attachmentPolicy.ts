@@ -2,9 +2,9 @@ import type { DirEntry } from './sftpCore';
 
 /** Default retention policy for per-session staged attachments. */
 export const DEFAULT_ATTACHMENT_RETENTION_POLICY: AttachmentRetentionPolicy = {
-  ttlMillis: 14 * 24 * 60 * 60 * 1_000,
-  keepNewest: 40,
-  protectNewestMillis: 60 * 60 * 1_000,
+  ttlMillis: 7 * 24 * 60 * 60 * 1_000,
+  keepNewest: 20,
+  protectNewestMillis: 24 * 60 * 60 * 1_000,
 };
 
 export interface AttachmentRetentionPolicy {
