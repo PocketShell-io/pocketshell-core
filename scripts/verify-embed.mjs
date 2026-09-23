@@ -8,11 +8,21 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { build } from 'esbuild';
 import { getQuickJS } from 'quickjs-emscripten';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const bundle = readFileSync(root + 'embed/pocketshell-core.js', 'utf8');
 const shims = readFileSync(root + 'embed/host-shims.js', 'utf8');
+const policyContract = await build({
+  entryPoints: ['tests/connectionControllerContract.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'PocketShellConnectionPolicyContract',
+  target: 'es2020',
+  write: false,
+});
+const policyBundle = policyContract.outputFiles[0].text;
 
 // Synchronous contract assertions work without host I/O in either engine.
 function contractAssertions(C) {
@@ -114,6 +124,7 @@ function runAsync(runner) {
 // The wrapper evaluates in-engine; only the verdict string crosses back.
 var source = '(' + run.toString() + ')(function () { return (' + contractAssertions.toString() + ')(globalThis.PocketShellCore); })';
 var asyncSource = '(' + runAsync.toString() + ')(function () { return (' + asyncContractAssertions.toString() + ')(globalThis.PocketShellCore); })';
+var policyAsyncSource = '(' + runAsync.toString() + ')(function () { return globalThis.PocketShellConnectionPolicyContract.runConnectionControllerContract(globalThis.PocketShellCore); })';
 
 function evalChunk(engine, chunk, label) {
   const result = engine.evalCode(chunk);
@@ -125,20 +136,26 @@ function evalChunk(engine, chunk, label) {
 // Engine 1: Node vm, bare context — nothing but the shims and the bundle.
 var nodeResult;
 var nodeAsyncResult;
+var nodePolicyResult;
 var nodeContext = {};
 try {
   nodeResult = vm.runInNewContext(shims + ';\n' + bundle + ';\n' + source, nodeContext, { timeout: 10_000 });
   nodeAsyncResult = await vm.runInNewContext(asyncSource, nodeContext, { timeout: 10_000 });
+  vm.runInNewContext(policyBundle, nodeContext, { timeout: 10_000 });
+  nodePolicyResult = await vm.runInNewContext(policyAsyncSource, nodeContext, { timeout: 10_000 });
 } catch (e) {
   nodeResult = 'FAIL node vm threw: ' + e.message;
   nodeAsyncResult = 'FAIL node vm async threw: ' + e.message;
+  nodePolicyResult = 'FAIL node vm policy threw: ' + e.message;
 }
 console.log('node vm sync :', nodeResult);
 console.log('node vm async:', nodeAsyncResult);
+console.log('node vm policy:', nodePolicyResult);
 
 // Engine 2: QuickJS.
 var quickResult;
 var quickAsyncResult;
+var quickPolicyResult;
 const QJS = await getQuickJS();
 const vmc = QJS.newContext();
 try {
@@ -163,20 +180,38 @@ try {
   quickAsyncResult = vmc.dump(asyncVerdict);
   asyncVerdict.dispose();
   asyncPromise.dispose();
+
+  vmc.unwrapResult(vmc.evalCode(policyBundle, 'connection-controller-contract.js')).dispose();
+  const policyPromise = vmc.unwrapResult(vmc.evalCode(policyAsyncSource, 'connection-controller-contract-run.js'));
+  const hostPolicyPromise = vmc.resolvePromise(policyPromise);
+  drainedJobs = 0;
+  while (vmc.runtime.hasPendingJob()) {
+    drainedJobs += vmc.unwrapResult(vmc.runtime.executePendingJobs());
+    if (drainedJobs > 10_000) throw new Error('QuickJS connection policy contract did not quiesce');
+  }
+  if (drainedJobs === 0) throw new Error('QuickJS connection policy contract queued no Promise jobs');
+  const policyVerdict = vmc.unwrapResult(await hostPolicyPromise);
+  quickPolicyResult = vmc.dump(policyVerdict);
+  policyVerdict.dispose();
+  policyPromise.dispose();
 } catch (e) {
   quickResult = 'FAIL quickjs threw: ' + e.message;
   quickAsyncResult = 'FAIL quickjs async threw: ' + e.message;
+  quickPolicyResult = 'FAIL quickjs policy threw: ' + e.message;
 } finally {
   vmc.dispose();
 }
 console.log('quickjs sync :', quickResult);
 console.log('quickjs async:', quickAsyncResult);
+console.log('quickjs policy:', quickPolicyResult);
 
 if (
   nodeResult.startsWith('OK ') &&
   nodeAsyncResult.startsWith('OK ') &&
+  nodePolicyResult.startsWith('OK ') &&
   typeof quickResult === 'string' && quickResult.startsWith('OK ') &&
-  typeof quickAsyncResult === 'string' && quickAsyncResult.startsWith('OK ')
+  typeof quickAsyncResult === 'string' && quickAsyncResult.startsWith('OK ') &&
+  typeof quickPolicyResult === 'string' && quickPolicyResult.startsWith('OK ')
 ) {
   console.log('embed verification passed in both engines');
 } else {

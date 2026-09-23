@@ -1,12 +1,13 @@
 # @pocketshell/core — Testing
 
-Two tiers, plus the embed check. The guiding rule is inherited from the
+Three suites, plus the embed check. The guiding rule is inherited from the
 desktop and Android projects: **only deterministic Docker targets, never
 real hosts or real provider credentials.**
 
 | Tier | Runner | Target | Covers | When |
 |---|---|---|---|---|
 | **Unit** | vitest (node) | none (pure logic) | the ported contract suites: parsers, quoting, sync merge, verdicts | every push |
+| **Browser policy** | Chromium headless | local HTTP fixture page | the shared SSH connection/session policy contract against a browser bundle | every push |
 | **Integration** | vitest + `testcontainers` | ephemeral Docker port per test | `AplexerCore`, `HostCliCore`, SFTP, and known-hosts verdicts — against real sshd/sftp/`a`/`pocketshell` | every push (requires Docker) |
 | **Embed check** | `npm run embed` | Node `vm` + real QuickJS | the IIFE bundle answers contract assertions in both engines | every push |
 
@@ -22,6 +23,13 @@ they pin bytes → data transformations to fixture shapes.
 pocketshell-desktop's `tests/integration`. `testcontainers` starts ephemeral
 containers from the prebuilt `pocketshell-test:*` tags and maps container 22
 to an ephemeral host port, so suites are isolated and parallel-safe.
+
+## Browser policy
+
+`npm run test:browser` builds the core and shared connection-controller
+contract as browser IIFEs, serves them from a temporary localhost page, and
+runs the same policy assertions in headless Chromium. CI installs Chrome before
+this gate; local runs can set `CHROMIUM_BIN` to a Chromium executable.
 
 The fleet lives in `tests-docker/` and is a **byte-identical copy** of the
 desktop fleet (which mirrors the Android project's) — a `pocketshell-test:*`
@@ -79,6 +87,6 @@ workspaces, engines, and profiles. See README ("The Android path").
 
 ## The gate
 
-`npm test` = unit + integration (Docker up, images built). CI runs the fast
-gate (build + unit + embed) on every push and the Docker-backed integration
-job next to it; see `.github/workflows/ci.yml`.
+`npm test` = unit + integration (Docker up, images built). CI runs build,
+unit, browser policy, and embed checks on every push, next to the Docker-backed
+integration job; see `.github/workflows/ci.yml`.

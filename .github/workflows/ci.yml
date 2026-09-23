@@ -8,8 +8,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Fast gate: build, the unit contract suites, and the dual-engine embed
-  # check. No Docker needed — this is the every-push floor.
+  # Fast gate: build, unit contracts, the browser policy contract, and the
+  # dual-engine embed check. No Docker needed — this is the every-push floor.
   gate:
     runs-on: ubuntu-latest
     steps:
@@ -20,6 +20,11 @@ jobs:
       - run: npm ci --no-fund --no-audit
       - run: npm run build
       - run: npm run test:unit
+      - uses: browser-actions/setup-chrome@v2
+        id: setup-chrome
+      - run: npm run test:browser
+        env:
+          CHROMIUM_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
       - run: npm run embed
 
   # The Docker-backed tier: build the same fleet images the desktop and

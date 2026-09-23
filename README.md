@@ -28,6 +28,7 @@ shim set in `embed/host-shims.js`.
 | `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | send pipeline: bracketed paste, three-write delivery, submit timing |
+| `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
 | `shellQuote`, `userBinPath`, `net`, `byteSize` | quoting, `~/.local/bin`, loopback/port constants, byte formatting |
 
@@ -67,26 +68,33 @@ published to npm, the `file:` specs become plain versions.
 
 1. Edit here. Keep modules pure; extend `types/globals.d.ts` only for APIs
    every client genuinely provides.
-2. `npm run test:unit` (the ported contract suites), `npm run test:integration`
+2. `npm run test:unit`, `npm run test:browser`, `npm run test:integration`
    (core's clients against the Docker fleet — see `docs/TESTING.md`), and
-   `npm run embed` (dual-engine verification) must pass.
+   `npm run embed` (Node and QuickJS verification) must pass.
 3. `npm run build` — the apps resolve into `dist/` through the `file:` link,
    so a rebuild here is propagation; no republish, no reinstall.
 4. Commit here first, then bump/pin the apps as they adopt it.
 
 ## The Android path
 
-The app is Kotlin, but the contracts above are already JS and the desktop +
-web prove a client only needs them plus a thin shell. The prototype path:
+The JS-first Android app bundles these TypeScript sources into its Capacitor
+WebView. Its native plugin implements `SshCapability`, the typed effect
+boundary in this package; `ConnectionController` owns host-key verdicts,
+HostCliCore calls, session switching, retries, reconnect, and background
+grace. The plugin reports transport state and moves bounded SSH/PTY/SFTP and
+forwarding data without deciding which session to restore or retrying an
+uncertain send.
+
+The core also maintains a single-file embed build for the prototype path:
 bundle the whole core into one file and evaluate it in an embedded JS engine
-(QuickJS, via quickjs-android or equivalent).
+(QuickJS, via quickjs-emscripten or equivalent).
 
 ```bash
 npm run embed
 ```
 
 - `embed/pocketshell-core.js` — the entire core as one IIFE installing a
-  single `PocketShellCore` global (~44 KB unminified).
+  single `PocketShellCore` global.
 - `embed/host-shims.js` — the host surface an engine must provide, with
   working fallbacks (`atob`, a UTF-8 `TextDecoder`; timers fail loudly unless
   the embedder wires real ones).
@@ -96,21 +104,23 @@ bundle in TWO engines — Node's vm, and a real QuickJS (quickjs-emscripten).
 The QuickJS pass is the Android integration surface exercised as code, not a
 claim. On the device, the Kotlin side is the same shape:
 
-```kotlin
-// build once, ship as an asset; evaluate with your QuickJS binding of choice
-quickjs.evaluate(asset("host-shims.js"))
-quickjs.evaluate(asset("pocketshell-core.js"))
-val quoted = quickjs.evaluate(
-    "PocketShellCore.shellQuote('some path with spaces')")
-// async contracts (AplexerCore and HostCliCore) go over a small JS<->Kotlin bridge object
-// that answers the injected transport's exec() with a real SSH exec.
+```js
+const controller = new PocketShellCore.ConnectionController({
+  capability: androidSshCapability,
+  trustStore: encryptedHostKeyStore,
+});
+await controller.connect(host);
 ```
 
-What is verified today: the bundle runs and answers contract assertions in
-QuickJS, and the Docker suite runs `HostCliCore` over SSH against the pinned
-published CLI. The Android app can load this bundle and use the same injected
-SSH exec transport; the source API and the embed artifact are checked here,
-while on-device adoption remains in the Android repository.
+The same portable connection-policy contract runs from source in Vitest,
+against a browser-targeted bundle in Chromium, and against the embed bundle in
+Node's `vm` and QuickJS. Existing Android SHA-256 host-key records are read as
+fingerprint pins and retained in that format when a user accepts a replacement.
+Closing a controller cancels a pending dial by request id; closing a live
+generation is the cancellation boundary for its in-flight channel operations.
+The Android repository imports the reviewed source revision directly for its
+WebView build and runs the same contract in its JS unit gate;
+packaged-device/Docker evidence remains part of the Android issue's acceptance.
 
 ## Development
 
@@ -119,8 +129,9 @@ npm install
 npm run build-docker  # once: the test fleet (same images as desktop + Android)
 npm test              # unit contract suites + integration tier (Docker)
 npm run test:unit     # unit tier only — no Docker needed
+npm run test:browser  # shared SSH policy contract in Chromium
 npm run build         # dist/esm + dist/cjs + types
-npm run embed         # esbuild bundle + dual-engine verification
+npm run embed         # esbuild bundle + Node/QuickJS verification
 ```
 
 ## Release flow
