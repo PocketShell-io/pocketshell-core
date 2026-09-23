@@ -467,6 +467,7 @@ export class ConnectionController {
       if (!pty || this.snapshot.phase !== 'live') {
         return { ok: false, reason: 'not-connected', message: 'Attach a session before sending terminal input.' };
       }
+      if (bytes.length === 0) return { ok: true, value: { sequence: this.ptyOperationSequence } };
       const sequence = ++this.ptyOperationSequence;
       const requestId = this.createId();
       try {

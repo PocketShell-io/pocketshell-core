@@ -487,6 +487,20 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().phase).toBe('live');
   });
 
+  it('treats empty terminal input as a no-op without consuming a PTY sequence', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    expect(await controller.writeTerminalBytes(new Uint8Array())).toMatchObject({ ok: true, value: { sequence: 0 } });
+    expect(capability.writeCalls).toHaveLength(0);
+    expect((await controller.writeTerminalBytes(new TextEncoder().encode('x'))).ok).toBe(true);
+    expect(capability.writeCalls[0]?.sequence).toBe(1);
+    expect(controller.getSnapshot().phase).toBe('live');
+  });
+
   it('awaits terminal output consumers and serializes PTY input and resize operations', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
