@@ -25,6 +25,7 @@ shim set in `embed/host-shims.js`.
 | `osc52` | OSC 52 clipboard decode |
 | `aplexer`, `aplexerCommands`, `aplexerParsers` | the session manager's types, CLI commands, and output parsers |
 | `aplexerClientCore` | the whole aplexer client brain over a one-method `exec` transport |
+| `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | send pipeline: bracketed paste, three-write delivery, submit timing |
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
@@ -34,6 +35,15 @@ shim set in `embed/host-shims.js`.
 every contract and decision, and the client injects a one-method transport
 (desktop: SshService by connection id; web: the workspace connection; a
 future Android client: its SSH transport).
+
+`HostCliCore` is a separate contract for Android's versioned `pocketshell`
+CLI. Its `sessions`, `workspaces`, `engines`, and `profiles` commands are not
+the direct `a` commands in `AplexerCore`. It accepts the same small SSH exec
+boundary, applies command timeouts and shell quoting, preserves host response
+fields the app needs, and rejects failed, old, or malformed responses with
+typed errors. Session attach is exposed as a process-replacing command for a
+PTY channel. See `docs/TESTING.md` for the pinned CLI release and its current
+warnings/acknowledgement limitation.
 
 ## Clients
 
@@ -88,15 +98,15 @@ quickjs.evaluate(asset("host-shims.js"))
 quickjs.evaluate(asset("pocketshell-core.js"))
 val quoted = quickjs.evaluate(
     "PocketShellCore.shellQuote('some path with spaces')")
-// async contracts (AplexerCore) go over a small JS<->Kotlin bridge object
+// async contracts (AplexerCore and HostCliCore) go over a small JS<->Kotlin bridge object
 // that answers the injected transport's exec() with a real SSH exec.
 ```
 
 What is verified today: the bundle runs and answers contract assertions in
-QuickJS, and the desktop + web suites pin the same sources. What is next:
-a Kotlin module that loads the bundle on-device and bridges `AplexerCore`'s
-transport to sshj, then parsers/usage move over module by module — each one
-deleting its Kotlin twin in the app's `shared/core-*`.
+QuickJS, and the Docker suite runs `HostCliCore` over SSH against the pinned
+published CLI. The Android app can load this bundle and use the same injected
+SSH exec transport; the source API and the embed artifact are checked here,
+while on-device adoption remains in the Android repository.
 
 ## Development
 

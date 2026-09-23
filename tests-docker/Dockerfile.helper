@@ -22,13 +22,17 @@ RUN apk add --no-cache python3 py3-pip git bash gcompat libgcc \
 #
 # PIN THE VERSION. This was previously an unpinned `uv tool install
 # pocketshell`, which does not mean "latest" — it means "whatever was latest
-# when this layer was first cached". The image sat at 0.4.8 while real hosts
-# ran 0.4.44, so integration and E2E never exercised what users actually run,
-# and four parser bugs reached the app that way (a `{profiles: [...]}`
-# envelope, a null `percent_remaining`, a removed `--json` flag, and a
-# fixed-width table whose columns overflow). Bump this deliberately
-# and re-capture the fixtures under tests/unit/fixtures/ when you do.
-ARG POCKETSHELL_VERSION=0.4.44
+# when this layer was first cached". The image previously sat at 0.4.8 while
+# real hosts ran 0.4.44, so integration and E2E never exercised what users
+# actually ran, and four parser bugs reached the app that way (a
+# `{profiles: [...]}` envelope, a null `percent_remaining`, a removed `--json`
+# flag, and a fixed-width table whose columns overflow). Keep this at the
+# latest published version, bump deliberately, and re-capture contract
+# fixtures whenever the release changes. The 0.5.8 release predates
+# `sessions warnings` / `sessions ack`; core tests pin those unsupported-host
+# failures while unit fixtures preserve the source contract for the newer
+# commands.
+ARG POCKETSHELL_VERSION=0.5.8
 # tmuxctl carries the same unpinned-install drift, and its drift is BEHAVIOR:
 # 0.3.5 moved `create-detached` onto a per-session server (`tmuxctl-<name>`
 # sockets beside the legacy one), so a session the helper reports as created
@@ -40,7 +44,13 @@ ARG POCKETSHELL_VERSION=0.4.44
 # whichever one PyPI served that morning; bump deliberately, together with
 # the socket assumptions named above.
 ARG TMUXCTL_VERSION=0.3.5
-RUN su testuser -c "uv tool install 'pocketshell==${POCKETSHELL_VERSION}' && uv tool install 'tmuxctl==${TMUXCTL_VERSION}'" \
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) uv_platform=x86_64-unknown-linux-gnu ;; \
+      aarch64) uv_platform=aarch64-unknown-linux-gnu ;; \
+      *) echo "no PocketShell CLI wheels for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    su testuser -c "uv tool install --python-platform '$uv_platform' 'pocketshell==${POCKETSHELL_VERSION}' && uv tool install --python-platform '$uv_platform' 'tmuxctl==${TMUXCTL_VERSION}'" \
     && mkdir -p /home/testuser/.local/bin
 
 ENV PATH="/home/testuser/.local/bin:${PATH}"
