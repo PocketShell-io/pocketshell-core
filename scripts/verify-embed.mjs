@@ -36,6 +36,18 @@ function contractAssertions(C) {
   n += 1;
   if (typeof C.AplexerCore !== 'function') throw new Error('AplexerCore class missing');
   n += 1;
+  if (typeof C.HostCliCore !== 'function') throw new Error('HostCliCore class missing');
+  n += 1;
+  var host = new C.HostCliCore({ exec: function () { throw new Error('unexpected transport call'); } });
+  eq(host.buildAttachCommand("it's a build"), "exec pocketshell sessions attach -- 'it'\\''s a build'", 'host CLI attach');
+  var sessions = C.parseHostSessionsList('{"schema":3,"sessions":[{"name":"main","attached":false,"agent_state":"waiting"}],"errors":[]}');
+  eq(sessions.sessions[0].agentState, 'waiting', 'host CLI sessions parser');
+  var workspaces = C.parseHostWorkspaces('{"schema":1,"workspaces":[{"path":"/workspace"}]}');
+  eq(workspaces.workspaces[0].displayPath, '/workspace', 'host CLI workspaces parser');
+  var engines = C.parseHostEnginesList('{"engines":[{"id":"claude","label":"Claude","available_for_create":true}]}');
+  eq(engines[0].availableForCreate, true, 'host CLI engines parser');
+  var profiles = C.parseHostProfilesList('{"profiles":[{"name":"Claude","engine":"claude","default":true}]}');
+  eq(profiles[0].isDefault, true, 'host CLI profiles parser');
   return 'assertions=' + n;
 }
 

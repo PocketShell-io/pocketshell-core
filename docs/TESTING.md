@@ -7,7 +7,7 @@ real hosts or real provider credentials.**
 | Tier | Runner | Target | Covers | When |
 |---|---|---|---|---|
 | **Unit** | vitest (node) | none (pure logic) | the ported contract suites: parsers, quoting, sync merge, verdicts | every push |
-| **Integration** | vitest + `testcontainers` | ephemeral Docker port per test | `AplexerCore`, the SFTP contract, known-hosts verdicts — against real sshd/sftp/`a` | every push (requires Docker) |
+| **Integration** | vitest + `testcontainers` | ephemeral Docker port per test | `AplexerCore`, `HostCliCore`, SFTP, and known-hosts verdicts — against real sshd/sftp/`a`/`pocketshell` | every push (requires Docker) |
 | **Embed check** | `npm run embed` | Node `vm` + real QuickJS | the IIFE bundle answers contract assertions in both engines | every push |
 
 ## Unit
@@ -42,6 +42,16 @@ report a green tick. Suites:
   stale-list `notFound` race, and totality (`listWarnings` never throws).
   The transport is core's one-method `exec` interface adapted to ssh2 — the
   same seam the desktop's SshService and the web's connection object sit in.
+- **HostCliCore** (`pocketshell-test:helper`, pinned `pocketshell==0.5.8`):
+  reads the seeded session list, verifies create idempotency and kill, runs a
+  quote/newline/Unicode/shell-injection workspace round trip, and reads the
+  real engine and profile catalogs. Captured response fixtures are under
+  `tests/fixtures/pocketshell-0.5.8/`; their commands and setup are documented
+  in that directory. This release does not publish `sessions warnings` or
+  `sessions ack`: Docker verifies those verbs fail with the real CLI's exit
+  code and stderr, while a source/reference fixture pins the parser shape for
+  the newer warning schema. A successful Docker path for those verbs requires
+  a later published CLI release and a deliberate fixture pin update.
 - **SftpCore** (`pocketshell-test:ssh`): REAL readdir/stat output through
   `toDirEntry`/`toFileStat` — the exact mapping desktop's SftpService runs —
   plus a write → read-back byte-equality check, an exact-size stat, and the
@@ -59,7 +69,9 @@ features, and core's transport is a one-method interface.
 
 `npm run embed` — builds the single-file IIFE and verifies the SAME contract
 assertions in Node's `vm` AND a real QuickJS. This is the Android surface
-exercised as code. See README ("The Android path").
+exercised as code, including `HostCliCore`'s attach builder and pure parsers
+for sessions, workspaces, engines, and profiles. See README ("The Android
+path").
 
 ## The gate
 
