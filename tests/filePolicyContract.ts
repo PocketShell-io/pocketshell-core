@@ -40,6 +40,11 @@ export function runFilePolicyContract(C: typeof import('../src/index')): string 
   ), 'unchanged', 'accepts unchanged edit version');
   equal(C.evaluateFileEditSave(null, { isDirectory: false, sizeBytes: 4, modifiedEpochMs: 5 }),
     'unverifiable', 'fails closed without baseline');
+  equal(C.DEFAULT_ATTACHMENT_RETENTION_POLICY, {
+    ttlMillis: 7 * 24 * 60 * 60 * 1_000,
+    keepNewest: 20,
+    protectNewestMillis: 24 * 60 * 60 * 1_000,
+  }, 'uses desktop retention defaults');
   equal(C.decideAttachmentStage([
     { kind: 'uploaded', attachment: 'a' },
     { kind: 'failed' },

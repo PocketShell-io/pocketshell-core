@@ -16,6 +16,14 @@ const policy = (overrides: Partial<AttachmentRetentionPolicy>): AttachmentRetent
 });
 
 describe('planAttachmentRetention', () => {
+  it('uses the desktop retention defaults', () => {
+    expect(DEFAULT_ATTACHMENT_RETENTION_POLICY).toEqual({
+      ttlMillis: day(7),
+      keepNewest: 20,
+      protectNewestMillis: day(1),
+    });
+  });
+
   it('retains recent staged files even when over the TTL and newest-file cap', () => {
     const plan = planAttachmentRetention(
       [file('recent-a', NOW - 1), file('recent-b', NOW - hour(1) + 1)],
