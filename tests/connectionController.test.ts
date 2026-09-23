@@ -434,6 +434,59 @@ describe('JS connection and session policy', () => {
     expect(capability.openPtyCalls[1]?.command).toContain("'beta'");
   });
 
+  it('does not let old queued operations or resize errors poison a new PTY', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    const resizeGate = deferred<void>();
+    const resizeStarted = deferred<void>();
+    capability.resizePty = async (options) => {
+      resizeStarted.resolve();
+      await resizeGate.promise;
+      throw new Error(`The closed PTY ${options.channelId} cannot be resized.`);
+    };
+    const resize = controller.resizeTerminal(37, 15);
+    await resizeStarted.promise;
+    const queuedWrite = controller.writeTerminalBytes(new TextEncoder().encode('old-session-input'));
+    const switchResult = controller.switchSession(session('beta'));
+    expect((await switchResult).ok).toBe(true);
+    expect(capability.closePtyCalls).toHaveLength(1);
+
+    resizeGate.resolve();
+    expect(await resize).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(await queuedWrite).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(capability.writeCalls).toHaveLength(0);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+    expect(controller.getSnapshot().phase).toBe('live');
+  });
+
+  it('ignores an old native write failure after switching PTYs', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    const writeGate = deferred<void>();
+    const writeStarted = deferred<void>();
+    capability.writePty = async () => {
+      writeStarted.resolve();
+      await writeGate.promise;
+      throw new Error('The old PTY was closed.');
+    };
+    const oldWrite = controller.writeTerminalBytes(new TextEncoder().encode('old input'));
+    await writeStarted.promise;
+    expect((await controller.switchSession(session('beta'))).ok).toBe(true);
+
+    writeGate.resolve();
+    expect(await oldWrite).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+    expect(controller.getSnapshot().phase).toBe('live');
+  });
+
   it('awaits terminal output consumers and serializes PTY input and resize operations', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));

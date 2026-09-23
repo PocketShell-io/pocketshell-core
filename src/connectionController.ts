@@ -85,7 +85,7 @@ export interface ConnectionControllerOptions {
 
 export type ConnectionActionResult<T = undefined> =
   | { ok: true; value: T }
-  | { ok: false; reason: 'trust-required' | 'trust-mismatch' | 'not-connected' | 'not-found' | 'failed'; message: string };
+  | { ok: false; reason: 'trust-required' | 'trust-mismatch' | 'not-connected' | 'not-found' | 'superseded' | 'failed'; message: string };
 
 const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
@@ -458,8 +458,12 @@ export class ConnectionController {
   }
 
   async writeTerminalBytes(bytes: Uint8Array): Promise<ConnectionActionResult<{ sequence: number }>> {
+    const selectedPty = this.pty;
     return this.withPtyOperation(async () => {
       const pty = this.pty;
+      if (pty?.channelId !== selectedPty?.channelId) {
+        return { ok: false, reason: 'superseded', message: 'The selected PTY changed before terminal input was sent.' };
+      }
       if (!pty || this.snapshot.phase !== 'live') {
         return { ok: false, reason: 'not-connected', message: 'Attach a session before sending terminal input.' };
       }
@@ -477,6 +481,9 @@ export class ConnectionController {
         }
         return { ok: true, value: { sequence } };
       } catch (error) {
+        if (this.pty?.channelId !== pty.channelId) {
+          return { ok: false, reason: 'superseded', message: 'The selected PTY changed while terminal input was sent.' };
+        }
         const message = error instanceof Error ? error.message : String(error);
         await this.abandonPty(pty);
         this.setSnapshot({ phase: 'error', error: message });
@@ -489,8 +496,12 @@ export class ConnectionController {
   }
 
   async resizeTerminal(cols: number, rows: number): Promise<ConnectionActionResult<{ sequence: number }>> {
+    const selectedPty = this.pty;
     return this.withPtyOperation(async () => {
       const pty = this.pty;
+      if (pty?.channelId !== selectedPty?.channelId) {
+        return { ok: false, reason: 'superseded', message: 'The selected PTY changed before terminal resize.' };
+      }
       if (!pty || this.snapshot.phase !== 'live') {
         return { ok: false, reason: 'not-connected', message: 'Attach a session before resizing the terminal.' };
       }
@@ -506,6 +517,9 @@ export class ConnectionController {
         }
         return { ok: true, value: { sequence } };
       } catch (error) {
+        if (this.pty?.channelId !== pty.channelId) {
+          return { ok: false, reason: 'superseded', message: 'The selected PTY changed while terminal resize ran.' };
+        }
         const message = error instanceof Error ? error.message : String(error);
         await this.abandonPty(pty);
         this.setSnapshot({ phase: 'error', error: message });
