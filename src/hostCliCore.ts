@@ -2,13 +2,16 @@
 
 import { HostCliSessions } from './hostCliSessions';
 import { HostCliWorkspaces } from './hostCliWorkspaces';
+import { HostCliCatalog } from './hostCliCatalog';
 import type { HostCliTransport } from './hostCliCommon';
 import type { CreatedSession, SessionsListing, WarningRow } from './hostCliSessions';
 import type { WorkspacesListing } from './hostCliWorkspaces';
+import type { HostEngineInfo, HostProfileInfo } from './hostCliCatalog';
 
 export class HostCliCore {
   private readonly sessions: HostCliSessions;
   private readonly workspaces: HostCliWorkspaces;
+  private readonly catalog: HostCliCatalog;
 
   constructor(
     transport: HostCliTransport,
@@ -16,6 +19,7 @@ export class HostCliCore {
   ) {
     this.sessions = new HostCliSessions(transport, binary);
     this.workspaces = new HostCliWorkspaces(transport, binary);
+    this.catalog = new HostCliCatalog(transport, binary);
   }
 
   listSessions(): Promise<SessionsListing> {
@@ -55,5 +59,13 @@ export class HostCliCore {
 
   removeWorkspace(host: string, path: string): Promise<WorkspacesListing> {
     return this.workspaces.removeWorkspace(host, path);
+  }
+
+  listEngines(): Promise<HostEngineInfo[]> {
+    return this.catalog.listEngines();
+  }
+
+  listProfiles(): Promise<HostProfileInfo[]> {
+    return this.catalog.listProfiles();
   }
 }

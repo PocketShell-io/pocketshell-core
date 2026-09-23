@@ -7,6 +7,8 @@ import {
   HostCliTooOld,
   parseHostSessionsList,
   parseHostWarnings,
+  parseHostEnginesList,
+  parseHostProfilesList,
   parseHostWorkspaces,
   type HostCliExecOutcome,
   type HostCliTransport,
@@ -240,5 +242,72 @@ describe('HostCliCore workspaces contract', () => {
         exitCode: 2,
         stderr: expect.stringContaining('invalid_request'),
       });
+  });
+});
+
+describe('HostCliCore engine and profile catalog contract', () => {
+  it('parses captured published engine output and uses host createability as-is', async () => {
+    const engines = await new HostCliCore(
+      new ScriptedTransport(ok(fixture('engines-list.json'))),
+    ).listEngines();
+
+    expect(engines.map((engine) => engine.id)).toEqual(['claude', 'codex', 'opencode', 'grok']);
+    expect(engines[0]).toMatchObject({
+      id: 'claude',
+      label: 'Claude',
+      family: 'claude',
+      harness: 'claude',
+      providerMark: 'Anthropic',
+      usageProvider: 'claude',
+      enabled: true,
+      available: true,
+      availableForCreate: true,
+      unavailableReason: null,
+    });
+    expect(engines[3]).toMatchObject({
+      id: 'grok',
+      enabled: true,
+      available: false,
+      availableForCreate: false,
+      unavailableReason: '`grok` is not installed on this host (not on PATH).',
+    });
+  });
+
+  it('parses the captured empty profile list and retains host-defined defaults', async () => {
+    expect(await new HostCliCore(
+      new ScriptedTransport(ok(fixture('profiles-list-empty.json'))),
+    ).listProfiles()).toEqual([]);
+
+    expect(parseHostProfilesList(JSON.stringify({ profiles: [
+      { name: 'Claude', engine: 'claude', config_dir: null, default: true, future_field: 'ignored' },
+      { name: 'Codex', engine: 'codex', config_dir: '/home/testuser/.codex' },
+    ] }))).toEqual([
+      { name: 'Claude', engine: 'claude', configDir: null, isDefault: true },
+      { name: 'Codex', engine: 'codex', configDir: '/home/testuser/.codex', isDefault: false },
+    ]);
+  });
+
+  it('requires catalog envelopes and fields that decide whether a row is usable', () => {
+    expect(() => parseHostEnginesList('{"engines":[]}')).not.toThrow();
+    expect(() => parseHostEnginesList('{}')).toThrow(HostCliMalformed);
+    expect(() => parseHostEnginesList('{"engines":[{"id":"claude","label":"Claude"}]}'))
+      .toThrow(HostCliMalformed);
+    expect(() => parseHostEnginesList('{"engines":[{"id":"claude","label":"Claude","available_for_create":null}]}'))
+      .toThrow(HostCliMalformed);
+    expect(() => parseHostProfilesList('{}')).toThrow(HostCliMalformed);
+    expect(() => parseHostProfilesList('{"profiles":[{"name":"Claude"}]}')).toThrow(HostCliMalformed);
+    expect(() => parseHostProfilesList('{"profiles":[{"name":"Claude","engine":"claude","default":null}]}'))
+      .toThrow(HostCliMalformed);
+  });
+
+  it('uses the exact list commands and refuses empty or failing host output', async () => {
+    const transport = new ScriptedTransport(ok(fixture('profiles-list-empty.json')));
+    await new HostCliCore(transport).listProfiles();
+    expect(transport.calls).toEqual([{ command: 'pocketshell profiles list --json', timeoutMs: 20_000 }]);
+
+    await expect(new HostCliCore(new ScriptedTransport(ok(''))).listEngines())
+      .rejects.toThrow(HostCliMalformed);
+    await expect(new HostCliCore(new ScriptedTransport({ exitCode: 127, stdout: '', stderr: 'missing cli' }))
+      .listProfiles()).rejects.toThrow(HostCliFailed);
   });
 });

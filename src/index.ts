@@ -30,6 +30,7 @@ export * from './aplexerClientCore';
 export * from './hostCliCommon';
 export * from './hostCliSessions';
 export * from './hostCliWorkspaces';
+export * from './hostCliCatalog';
 export * from './hostCliCore';
 export * from './agentCommands';
 export * from './agentLaunch';

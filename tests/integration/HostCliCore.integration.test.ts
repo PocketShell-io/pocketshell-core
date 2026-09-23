@@ -124,4 +124,17 @@ describeDocker('HostCliCore integration (published pocketshell 0.5.8)', () => {
     expect((await core.removeWorkspace(host, path)).workspaces).toEqual([]);
   }, 30_000);
 
+  it('reads real engine and profile catalogs from the published host CLI', async () => {
+    const engines = await core.listEngines();
+    expect(engines.map((engine) => engine.id)).toContain('claude');
+    expect(engines.find((engine) => engine.id === 'claude')).toMatchObject({
+      label: 'Claude',
+      available: true,
+      availableForCreate: true,
+    });
+
+    const profiles = await core.listProfiles();
+    expect(profiles).toEqual([]);
+  }, 30_000);
+
 });
