@@ -86,6 +86,7 @@ class FakeCapability {
   private readonly pendingReads: Array<{
     options: SshPtyReadOptions;
     resolve: (value: SshPtyReadResult) => void;
+    reject: (reason?: unknown) => void;
   }> = [];
   private readonly queuedOutput = new Map<string, Array<{ bytes: Uint8Array; eof: boolean }>>();
   readonly sessions: SessionRow[] = [session('alpha'), session('beta')];
@@ -215,7 +216,7 @@ class FakeCapability {
   readPty = async (options: SshPtyReadOptions): Promise<SshPtyReadResult> => {
     const queued = this.queuedOutput.get(options.channelId)?.shift();
     if (queued) return this.readResult(options, queued.bytes, queued.eof);
-    return new Promise((resolve) => this.pendingReads.push({ options, resolve }));
+    return new Promise((resolve, reject) => this.pendingReads.push({ options, resolve, reject }));
   };
 
   writePty = async (options: SshPtyWriteOptions) => {
@@ -280,6 +281,23 @@ class FakeCapability {
     }
     const [pending] = this.pendingReads.splice(index, 1);
     pending!.resolve(this.readResult(pending!.options, bytes, eof));
+  }
+
+  failRead(channelId: string, error: unknown): void {
+    const index = this.pendingReads.findIndex((pending) => pending.options.channelId === channelId);
+    if (index < 0) throw new Error(`No pending PTY read for ${channelId}.`);
+    const [pending] = this.pendingReads.splice(index, 1);
+    pending!.reject(error);
+  }
+
+  emitGraceExpired(connection: SshConnectionRef): void {
+    this.connections.delete(connection.connectionId);
+    const event: SshConnectionStateEvent = {
+      ...connection,
+      state: 'closed',
+      reason: 'grace-expired',
+    };
+    for (const listener of this.listeners) listener(event);
   }
 
   emitLost(reason = 'socket reset'): void {
@@ -491,6 +509,60 @@ describe('JS connection and session policy', () => {
     expect(capability.connectCalls).toHaveLength(2);
     expect(controller.getSnapshot().phase).toBe('live');
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+  });
+
+  it.each([
+    { exit: 'EOF', order: 'PTY EOF before the native grace event' },
+    { exit: 'EOF', order: 'native grace event before PTY EOF' },
+    { exit: 'transport error', order: 'PTY read error before the native grace event' },
+    { exit: 'transport error', order: 'native grace event before PTY read error' },
+  ])('keeps background lifecycle state through $exit when $order', async ({ exit, order }) => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const originalConnection = controller.getSnapshot().connectionId;
+    const originalGeneration = controller.getSnapshot().generationId;
+    expect(originalConnection).toBeTruthy();
+    expect(originalGeneration).toBeTruthy();
+    await waitFor(() => capability.pendingReads.length === 1);
+    const channelId = capability.pendingReads[0]!.options.channelId;
+
+    await controller.enterBackground(10_000);
+    const expiredRef = { connectionId: originalConnection!, generationId: originalGeneration! };
+    const endPump = () => {
+      if (exit === 'EOF') {
+        capability.emitOutput(channelId, new Uint8Array(), true);
+      } else {
+        capability.failRead(channelId, new SshCapabilityError('SSH transport closed.', 'CONNECTION_LOST'));
+      }
+    };
+
+    if (order.startsWith('PTY')) {
+      const revisionBeforeReadExit = controller.getSnapshot().revision;
+      endPump();
+      await waitFor(() => controller.getSnapshot().revision > revisionBeforeReadExit);
+      expect(controller.getSnapshot().phase).toBe('background');
+      expect(capability.connectCalls).toHaveLength(1);
+      capability.emitGraceExpired(expiredRef);
+    } else {
+      capability.emitGraceExpired(expiredRef);
+      endPump();
+      await waitFor(() => capability.pendingReads.length === 0);
+    }
+
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'background', connectionId: null });
+    expect(capability.connectCalls).toHaveLength(1);
+    now += 10_001;
+    await controller.returnToForeground();
+
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().connectionId).not.toBe(originalConnection);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    expect(capability.openPtyCalls).toHaveLength(2);
   });
 
   it('does not resend uncertain create or kill operations and reconciles the host listing', async () => {

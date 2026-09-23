@@ -696,7 +696,14 @@ export class ConnectionController {
         if (result.eof) {
           if (selection === this.selectionToken) {
             this.pty = null;
-            this.setSnapshot({ phase: 'connected', error: `Session “${session.name}” ended.` });
+            // A channel can report EOF just before the native grace-expired
+            // event arrives. Keep the lifecycle state in the background so
+            // the app still runs the foreground reconciliation path.
+            const backgrounded = this.snapshot.phase === 'background';
+            this.setSnapshot({
+              phase: backgrounded ? 'background' : 'connected',
+              error: `Session “${session.name}” ended.`,
+            });
             await this.capability.closePty({ ...pty, requestId: this.createId() }).catch(() => undefined);
           }
           return;
@@ -705,7 +712,11 @@ export class ConnectionController {
     } catch (error) {
       if (pumpToken !== this.ptyPumpToken || this.disposed) return;
       const message = error instanceof Error ? error.message : String(error);
-      this.setSnapshot({ phase: 'error', error: message });
+      // Transport closure can reject the pending PTY read before the native
+      // grace-expired event reaches this controller. Preserve background
+      // until foreground decides whether to reuse or reconnect the transport.
+      const backgrounded = this.snapshot.phase === 'background';
+      this.setSnapshot({ phase: backgrounded ? 'background' : 'error', error: message });
       if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY output reader observed a transport failure');
     }
   }
