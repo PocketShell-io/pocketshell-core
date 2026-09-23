@@ -19,8 +19,15 @@ export const SYNC_API_URL = 'https://a7sota2qic.execute-api.eu-west-1.amazonaws.
 /** The one settings blob the app syncs. */
 export const SYNC_SLOT = 'main';
 
-/** The sync payload the server never sees unencrypted is this JSON shape. */
+/**
+ * The versionless plaintext shape the server never sees unencrypted.
+ *
+ * Host objects may contain fields a particular client does not model. They
+ * must be preserved by merge/serialization rather than reconstructed from a
+ * narrower client type. See docs/SYNC.md for the wire compatibility and
+ * strict parsing contract.
+ */
 export interface SyncPayload {
-  /** Host entries as `listConfigHosts()` returns them (never private keys). */
+  /** Host entries, including unknown JSON properties (never private keys). */
   hosts: unknown[];
 }

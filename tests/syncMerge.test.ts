@@ -3,9 +3,44 @@ import {
   aliasesToAutoCheck,
   assembleSyncSet,
   parseSyncPayload,
+  parseSyncPayloadResult,
   serializeSyncPayload,
 } from '../src/syncMerge';
 import type { HostEntry } from '../src/types';
+import rawSyncVectors from './fixtures/settings-sync-vectors.json';
+
+interface SyncVectors {
+  wireContract: {
+    emptyPayloadPlaintext: string;
+  };
+  mergeCases: Array<{
+    id: string;
+    local: unknown[];
+    remote: unknown[];
+    checked: string[];
+    expected: unknown[];
+  }>;
+  autoCheckCases: Array<{
+    id: string;
+    remote: unknown[];
+    checked: string[];
+    localAliases: string[];
+    expected: string[];
+  }>;
+  payloadCases: Array<{
+    id: string;
+    plaintext: string;
+    expected: unknown;
+  }>;
+}
+
+const syncVectors = rawSyncVectors as unknown as SyncVectors;
+
+function fixtureHosts(hosts: unknown[]): HostEntry[] {
+  // The shared JSON vectors model each client's actual representation. In
+  // particular Android local entries intentionally contain only its fields.
+  return hosts as HostEntry[];
+}
 
 function host(name: string, hostname = `${name}.example.com`, port = 22): HostEntry {
   return {
@@ -102,5 +137,78 @@ describe('payload round-trip', () => {
       { ...host('bad'), hostname: '' },
     ]);
     expect(parseSyncPayload(payload).map((h) => h.name)).toEqual(['good']);
+  });
+});
+
+describe('shared cross-client sync vectors', () => {
+  it('keeps the existing versionless plaintext serialization', () => {
+    expect(serializeSyncPayload([])).toBe(syncVectors.wireContract.emptyPayloadPlaintext);
+    expect(JSON.parse(syncVectors.wireContract.emptyPayloadPlaintext)).toEqual({ hosts: [] });
+  });
+
+  for (const vector of syncVectors.mergeCases) {
+    it(vector.id, () => {
+      const assembled = assembleSyncSet(
+        fixtureHosts(vector.local),
+        fixtureHosts(vector.remote),
+        vector.checked,
+      );
+      expect(assembled).toEqual(vector.expected);
+      expect(JSON.parse(serializeSyncPayload(assembled))).toEqual({ hosts: vector.expected });
+    });
+  }
+
+  for (const vector of syncVectors.autoCheckCases) {
+    it(vector.id, () => {
+      expect(
+        aliasesToAutoCheck(
+          fixtureHosts(vector.remote),
+          vector.checked,
+          vector.localAliases,
+        ),
+      ).toEqual(vector.expected);
+    });
+  }
+
+  for (const vector of syncVectors.payloadCases) {
+    it(vector.id, () => {
+      const parsed = parseSyncPayloadResult(vector.plaintext);
+      expect(parsed).toEqual(vector.expected);
+      if ((vector.expected as { kind?: string }).kind === 'invalid') {
+        // Invalid plaintext has no host list that a mutating caller could
+        // mistake for an explicit request to replace the account with empty.
+        expect(parsed).not.toHaveProperty('hosts');
+      }
+    });
+  }
+});
+
+describe('strict payload parsing for writes', () => {
+  it('keeps an undefined local extension from erasing the account value', () => {
+    const local = { ...host('a'), futureDirective: undefined } as unknown as HostEntry;
+    const remote = {
+      ...host('a'),
+      futureDirective: { nested: ['preserved'] },
+    } as unknown as HostEntry;
+    const assembled = assembleSyncSet([local], [remote], ['a']);
+    expect(JSON.parse(serializeSyncPayload(assembled))["hosts"][0]["futureDirective"])
+      .toEqual({ nested: ['preserved'] });
+  });
+
+  it('distinguishes an explicit empty payload from malformed data', () => {
+    expect(parseSyncPayloadResult('{"hosts":[]}')).toEqual({ kind: 'ok', hosts: [] });
+    expect(parseSyncPayloadResult('{"hosts":')).toEqual({ kind: 'invalid', reason: 'invalid-json' });
+  });
+
+  it('refuses the whole payload when any entry is malformed', () => {
+    expect(
+      parseSyncPayloadResult('{"hosts":[{"name":"good","hostname":"good.example"},{"name":"bad"}]}'),
+    ).toEqual({ kind: 'invalid', reason: 'invalid-host-entry', index: 1 });
+  });
+
+  it('keeps the legacy degraded parser behavior for read-only compatibility', () => {
+    expect(parseSyncPayload('{"hosts":[{"name":"good","hostname":"good.example"},{"name":"bad"}]}'))
+      .toEqual([{ name: 'good', hostname: 'good.example' }]);
+    expect(parseSyncPayload('{"hosts":')).toEqual([]);
   });
 });
