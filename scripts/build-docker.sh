@@ -23,7 +23,10 @@ echo "==> Building pocketshell-test:helper"
 # The generic fleet tag is shared with Android and desktop, whose helper pins
 # can differ. Keep a core-owned alias so a parallel build in another checkout
 # cannot silently replace the CLI image used by core's HostCliCore tests.
+# Pin the release already used by pocketshell-cli: a CI build must not depend
+# on an unauthenticated GitHub "latest" API request or drift between runs.
 docker build -t pocketshell-test:helper -t pocketshell-core-test:helper \
+  --build-arg APLEXER_VERSION=0.1.8 \
   -f "$DOCKER_DIR/Dockerfile.helper" "$DOCKER_DIR"
 
 echo "==> Done. Images:"

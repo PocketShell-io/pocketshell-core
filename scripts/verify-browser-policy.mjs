@@ -1,5 +1,5 @@
 /**
- * Run the shared connection and composer policy contracts against a real browser build.
+ * Run the shared connection, composer, and file policy contracts against a real browser build.
  * CI provisions Chrome; local runs may set CHROMIUM_BIN to a Chromium binary.
  */
 import { createServer } from 'node:http';
@@ -49,6 +49,15 @@ const composerContract = await build({
   target: 'es2020',
   write: false,
 });
+const filePolicyContract = await build({
+  entryPoints: ['tests/filePolicyContract.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'PocketShellFilePolicyContract',
+  platform: 'browser',
+  target: 'es2020',
+  write: false,
+});
 
 const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Connection policy contract</title></head>
@@ -56,12 +65,14 @@ const html = `<!doctype html>
 <script>${core.outputFiles[0].text}</script>
 <script>${contract.outputFiles[0].text}</script>
 <script>${composerContract.outputFiles[0].text}</script>
+<script>${filePolicyContract.outputFiles[0].text}</script>
 <script>
 Promise.resolve()
   .then(function () {
     return Promise.all([
       PocketShellConnectionPolicyContract.runConnectionControllerContract(PocketShellCore),
-      PocketShellComposerDeliveryContract.runComposerDeliveryContract(PocketShellCore)
+      PocketShellComposerDeliveryContract.runComposerDeliveryContract(PocketShellCore),
+      Promise.resolve(PocketShellFilePolicyContract.runFilePolicyContract(PocketShellCore))
     ]);
   })
   .then(function (results) {
