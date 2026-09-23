@@ -49,6 +49,7 @@ export * from './sessionGrouping';
 export * from './sessionRoots';
 export * from './sessionTree';
 export * from './sessionTreeText';
+export * from './snippets';
 export * from './sessionNameParts';
 export * from './sessionIdentity';
 export * from './sessionGrouping';
