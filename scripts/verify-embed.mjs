@@ -32,6 +32,15 @@ const composerContract = await build({
   write: false,
 });
 const composerBundle = composerContract.outputFiles[0].text;
+const filePolicyContract = await build({
+  entryPoints: ['tests/filePolicyContract.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'PocketShellFilePolicyContract',
+  target: 'es2020',
+  write: false,
+});
+const filePolicyBundle = filePolicyContract.outputFiles[0].text;
 
 // Synchronous contract assertions work without host I/O in either engine.
 function contractAssertions(C) {
@@ -135,6 +144,7 @@ var source = '(' + run.toString() + ')(function () { return (' + contractAsserti
 var asyncSource = '(' + runAsync.toString() + ')(function () { return (' + asyncContractAssertions.toString() + ')(globalThis.PocketShellCore); })';
 var policyAsyncSource = '(' + runAsync.toString() + ')(function () { return globalThis.PocketShellConnectionPolicyContract.runConnectionControllerContract(globalThis.PocketShellCore); })';
 var composerPolicyAsyncSource = '(' + runAsync.toString() + ')(function () { return globalThis.PocketShellComposerDeliveryContract.runComposerDeliveryContract(globalThis.PocketShellCore); })';
+var filePolicySource = '(' + run.toString() + ')(function () { return globalThis.PocketShellFilePolicyContract.runFilePolicyContract(globalThis.PocketShellCore); })';
 
 function evalChunk(engine, chunk, label) {
   const result = engine.evalCode(chunk);
@@ -148,6 +158,7 @@ var nodeResult;
 var nodeAsyncResult;
 var nodePolicyResult;
 var nodeComposerResult;
+var nodeFilePolicyResult;
 var nodeContext = {};
 try {
   nodeResult = vm.runInNewContext(shims + ';\n' + bundle + ';\n' + source, nodeContext, { timeout: 10_000 });
@@ -156,22 +167,27 @@ try {
   nodePolicyResult = await vm.runInNewContext(policyAsyncSource, nodeContext, { timeout: 10_000 });
   vm.runInNewContext(composerBundle, nodeContext, { timeout: 10_000 });
   nodeComposerResult = await vm.runInNewContext(composerPolicyAsyncSource, nodeContext, { timeout: 10_000 });
+  vm.runInNewContext(filePolicyBundle, nodeContext, { timeout: 10_000 });
+  nodeFilePolicyResult = vm.runInNewContext(filePolicySource, nodeContext, { timeout: 10_000 });
 } catch (e) {
   nodeResult = 'FAIL node vm threw: ' + e.message;
   nodeAsyncResult = 'FAIL node vm async threw: ' + e.message;
   nodePolicyResult = 'FAIL node vm policy threw: ' + e.message;
   nodeComposerResult = 'FAIL node vm composer policy threw: ' + e.message;
+  nodeFilePolicyResult = 'FAIL node vm file policy threw: ' + e.message;
 }
 console.log('node vm sync :', nodeResult);
 console.log('node vm async:', nodeAsyncResult);
 console.log('node vm policy:', nodePolicyResult);
 console.log('node vm composer:', nodeComposerResult);
+console.log('node vm file policy:', nodeFilePolicyResult);
 
 // Engine 2: QuickJS.
 var quickResult;
 var quickAsyncResult;
 var quickPolicyResult;
 var quickComposerResult;
+var quickFilePolicyResult;
 const QJS = await getQuickJS();
 const vmc = QJS.newContext();
 try {
@@ -224,11 +240,17 @@ try {
   quickComposerResult = vmc.dump(composerVerdict);
   composerVerdict.dispose();
   composerPromise.dispose();
+
+  vmc.unwrapResult(vmc.evalCode(filePolicyBundle, 'file-policy-contract.js')).dispose();
+  const filePolicyVerdict = vmc.unwrapResult(vmc.evalCode(filePolicySource, 'file-policy-contract-run.js'));
+  quickFilePolicyResult = vmc.dump(filePolicyVerdict);
+  filePolicyVerdict.dispose();
 } catch (e) {
   quickResult = 'FAIL quickjs threw: ' + e.message;
   quickAsyncResult = 'FAIL quickjs async threw: ' + e.message;
   quickPolicyResult = 'FAIL quickjs policy threw: ' + e.message;
   quickComposerResult = 'FAIL quickjs composer policy threw: ' + e.message;
+  quickFilePolicyResult = 'FAIL quickjs file policy threw: ' + e.message;
 } finally {
   vmc.dispose();
 }
@@ -236,16 +258,19 @@ console.log('quickjs sync :', quickResult);
 console.log('quickjs async:', quickAsyncResult);
 console.log('quickjs policy:', quickPolicyResult);
 console.log('quickjs composer:', quickComposerResult);
+console.log('quickjs file policy:', quickFilePolicyResult);
 
 if (
   nodeResult.startsWith('OK ') &&
   nodeAsyncResult.startsWith('OK ') &&
   nodePolicyResult.startsWith('OK ') &&
   nodeComposerResult.startsWith('OK ') &&
+  nodeFilePolicyResult.startsWith('OK ') &&
   typeof quickResult === 'string' && quickResult.startsWith('OK ') &&
   typeof quickAsyncResult === 'string' && quickAsyncResult.startsWith('OK ') &&
   typeof quickPolicyResult === 'string' && quickPolicyResult.startsWith('OK ') &&
-  typeof quickComposerResult === 'string' && quickComposerResult.startsWith('OK ')
+  typeof quickComposerResult === 'string' && quickComposerResult.startsWith('OK ') &&
+  typeof quickFilePolicyResult === 'string' && quickFilePolicyResult.startsWith('OK ')
 ) {
   console.log('embed verification passed in both engines');
 } else {
