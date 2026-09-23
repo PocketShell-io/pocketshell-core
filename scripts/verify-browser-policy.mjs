@@ -1,5 +1,5 @@
 /**
- * Run the shared connection policy contract against a real browser build.
+ * Run the shared connection and composer policy contracts against a real browser build.
  * CI provisions Chrome; local runs may set CHROMIUM_BIN to a Chromium binary.
  */
 import { createServer } from 'node:http';
@@ -40,19 +40,37 @@ const contract = await build({
   target: 'es2020',
   write: false,
 });
+const composerContract = await build({
+  entryPoints: ['tests/composerDeliveryContract.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'PocketShellComposerDeliveryContract',
+  platform: 'browser',
+  target: 'es2020',
+  write: false,
+});
 
 const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Connection policy contract</title></head>
 <body><output id="result" data-result="pending">pending</output>
 <script>${core.outputFiles[0].text}</script>
 <script>${contract.outputFiles[0].text}</script>
+<script>${composerContract.outputFiles[0].text}</script>
 <script>
 Promise.resolve()
   .then(function () {
-    return PocketShellConnectionPolicyContract.runConnectionControllerContract(PocketShellCore);
+    return Promise.all([
+      PocketShellConnectionPolicyContract.runConnectionControllerContract(PocketShellCore),
+      PocketShellComposerDeliveryContract.runComposerDeliveryContract(PocketShellCore)
+    ]);
   })
-  .then(function (result) {
-    document.getElementById('result').setAttribute('data-result', 'OK ' + result);
+  .then(function (results) {
+    var total = results.reduce(function (sum, result) {
+      var match = result.match(/^assertions=(\\d+)$/);
+      if (!match) throw new Error('Unexpected policy contract result: ' + result);
+      return sum + Number(match[1]);
+    }, 0);
+    document.getElementById('result').setAttribute('data-result', 'OK assertions=' + total);
   }, function (error) {
     document.getElementById('result').setAttribute('data-result', 'FAIL ' + (error && error.message || String(error)));
   });

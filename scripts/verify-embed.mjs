@@ -23,6 +23,15 @@ const policyContract = await build({
   write: false,
 });
 const policyBundle = policyContract.outputFiles[0].text;
+const composerContract = await build({
+  entryPoints: ['tests/composerDeliveryContract.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'PocketShellComposerDeliveryContract',
+  target: 'es2020',
+  write: false,
+});
+const composerBundle = composerContract.outputFiles[0].text;
 
 // Synchronous contract assertions work without host I/O in either engine.
 function contractAssertions(C) {
@@ -125,6 +134,7 @@ function runAsync(runner) {
 var source = '(' + run.toString() + ')(function () { return (' + contractAssertions.toString() + ')(globalThis.PocketShellCore); })';
 var asyncSource = '(' + runAsync.toString() + ')(function () { return (' + asyncContractAssertions.toString() + ')(globalThis.PocketShellCore); })';
 var policyAsyncSource = '(' + runAsync.toString() + ')(function () { return globalThis.PocketShellConnectionPolicyContract.runConnectionControllerContract(globalThis.PocketShellCore); })';
+var composerPolicyAsyncSource = '(' + runAsync.toString() + ')(function () { return globalThis.PocketShellComposerDeliveryContract.runComposerDeliveryContract(globalThis.PocketShellCore); })';
 
 function evalChunk(engine, chunk, label) {
   const result = engine.evalCode(chunk);
@@ -137,25 +147,31 @@ function evalChunk(engine, chunk, label) {
 var nodeResult;
 var nodeAsyncResult;
 var nodePolicyResult;
+var nodeComposerResult;
 var nodeContext = {};
 try {
   nodeResult = vm.runInNewContext(shims + ';\n' + bundle + ';\n' + source, nodeContext, { timeout: 10_000 });
   nodeAsyncResult = await vm.runInNewContext(asyncSource, nodeContext, { timeout: 10_000 });
   vm.runInNewContext(policyBundle, nodeContext, { timeout: 10_000 });
   nodePolicyResult = await vm.runInNewContext(policyAsyncSource, nodeContext, { timeout: 10_000 });
+  vm.runInNewContext(composerBundle, nodeContext, { timeout: 10_000 });
+  nodeComposerResult = await vm.runInNewContext(composerPolicyAsyncSource, nodeContext, { timeout: 10_000 });
 } catch (e) {
   nodeResult = 'FAIL node vm threw: ' + e.message;
   nodeAsyncResult = 'FAIL node vm async threw: ' + e.message;
   nodePolicyResult = 'FAIL node vm policy threw: ' + e.message;
+  nodeComposerResult = 'FAIL node vm composer policy threw: ' + e.message;
 }
 console.log('node vm sync :', nodeResult);
 console.log('node vm async:', nodeAsyncResult);
 console.log('node vm policy:', nodePolicyResult);
+console.log('node vm composer:', nodeComposerResult);
 
 // Engine 2: QuickJS.
 var quickResult;
 var quickAsyncResult;
 var quickPolicyResult;
+var quickComposerResult;
 const QJS = await getQuickJS();
 const vmc = QJS.newContext();
 try {
@@ -194,24 +210,42 @@ try {
   quickPolicyResult = vmc.dump(policyVerdict);
   policyVerdict.dispose();
   policyPromise.dispose();
+
+  vmc.unwrapResult(vmc.evalCode(composerBundle, 'composer-delivery-contract.js')).dispose();
+  const composerPromise = vmc.unwrapResult(vmc.evalCode(composerPolicyAsyncSource, 'composer-delivery-contract-run.js'));
+  const hostComposerPromise = vmc.resolvePromise(composerPromise);
+  drainedJobs = 0;
+  while (vmc.runtime.hasPendingJob()) {
+    drainedJobs += vmc.unwrapResult(vmc.runtime.executePendingJobs());
+    if (drainedJobs > 10_000) throw new Error('QuickJS composer policy contract did not quiesce');
+  }
+  if (drainedJobs === 0) throw new Error('QuickJS composer policy contract queued no Promise jobs');
+  const composerVerdict = vmc.unwrapResult(await hostComposerPromise);
+  quickComposerResult = vmc.dump(composerVerdict);
+  composerVerdict.dispose();
+  composerPromise.dispose();
 } catch (e) {
   quickResult = 'FAIL quickjs threw: ' + e.message;
   quickAsyncResult = 'FAIL quickjs async threw: ' + e.message;
   quickPolicyResult = 'FAIL quickjs policy threw: ' + e.message;
+  quickComposerResult = 'FAIL quickjs composer policy threw: ' + e.message;
 } finally {
   vmc.dispose();
 }
 console.log('quickjs sync :', quickResult);
 console.log('quickjs async:', quickAsyncResult);
 console.log('quickjs policy:', quickPolicyResult);
+console.log('quickjs composer:', quickComposerResult);
 
 if (
   nodeResult.startsWith('OK ') &&
   nodeAsyncResult.startsWith('OK ') &&
   nodePolicyResult.startsWith('OK ') &&
+  nodeComposerResult.startsWith('OK ') &&
   typeof quickResult === 'string' && quickResult.startsWith('OK ') &&
   typeof quickAsyncResult === 'string' && quickAsyncResult.startsWith('OK ') &&
-  typeof quickPolicyResult === 'string' && quickPolicyResult.startsWith('OK ')
+  typeof quickPolicyResult === 'string' && quickPolicyResult.startsWith('OK ') &&
+  typeof quickComposerResult === 'string' && quickComposerResult.startsWith('OK ')
 ) {
   console.log('embed verification passed in both engines');
 } else {

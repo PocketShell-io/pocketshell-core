@@ -7,9 +7,9 @@ real hosts or real provider credentials.**
 | Tier | Runner | Target | Covers | When |
 |---|---|---|---|---|
 | **Unit** | vitest (node) | none (pure logic) | the ported contract suites: parsers, quoting, sync merge, verdicts | every push |
-| **Browser policy** | Chromium headless | local HTTP fixture page | the shared SSH connection/session policy contract against a browser bundle | every push |
+| **Browser policy** | Chromium headless | local HTTP fixture page | the shared SSH and composer policy contracts against a browser bundle | every push |
 | **Integration** | vitest + `testcontainers` | ephemeral Docker port per test | `AplexerCore`, `HostCliCore`, SFTP, and known-hosts verdicts — against real sshd/sftp/`a`/`pocketshell` | every push (requires Docker) |
-| **Embed check** | `npm run embed` | Node `vm` + real QuickJS | the IIFE bundle answers contract assertions in both engines | every push |
+| **Embed check** | `npm run embed` | Node `vm` + real QuickJS | the IIFE bundle answers connection and composer contract assertions in both engines | every push |
 
 ## Unit
 
@@ -26,10 +26,13 @@ to an ephemeral host port, so suites are isolated and parallel-safe.
 
 ## Browser policy
 
-`npm run test:browser` builds the core and shared connection-controller
-contract as browser IIFEs, serves them from a temporary localhost page, and
-runs the same policy assertions in headless Chromium. CI installs Chrome before
-this gate; local runs can set `CHROMIUM_BIN` to a Chromium executable.
+`npm run test:browser` builds the core plus its connection-controller and
+composer-delivery contracts as browser IIFEs, serves them from a temporary
+localhost page, and runs the same policy assertions in headless Chromium. The
+composer vectors under `tests/fixtures/composer-delivery-vectors.json` pin exact
+UTF-8 bytes, line framing, insert/submit order, pacing and draft effects across
+all tested runtimes. CI installs Chrome before this gate; local runs can set
+`CHROMIUM_BIN` to a Chromium executable.
 
 The fleet lives in `tests-docker/` and is a **byte-identical copy** of the
 desktop fleet (which mirrors the Android project's) — a `pocketshell-test:*`
@@ -79,8 +82,8 @@ features, and core's transport is a one-method interface.
 
 ## Embed check
 
-`npm run embed` — builds the single-file IIFE and verifies the SAME contract
-assertions in Node's `vm` AND a real QuickJS. This is the Android surface
+`npm run embed` — builds the single-file IIFE and verifies the SAME connection
+and composer contract assertions in Node's `vm` AND a real QuickJS. This is the Android surface
 exercised as code, including `HostCliCore`'s async exec bridge success and
 typed failure paths, attach builder, and pure parsers for sessions,
 workspaces, engines, and profiles. See README ("The Android path").
