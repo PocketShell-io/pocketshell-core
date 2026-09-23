@@ -69,9 +69,9 @@ features, and core's transport is a one-method interface.
 
 `npm run embed` — builds the single-file IIFE and verifies the SAME contract
 assertions in Node's `vm` AND a real QuickJS. This is the Android surface
-exercised as code, including `HostCliCore`'s attach builder and pure parsers
-for sessions, workspaces, engines, and profiles. See README ("The Android
-path").
+exercised as code, including `HostCliCore`'s async exec bridge success and
+typed failure paths, attach builder, and pure parsers for sessions,
+workspaces, engines, and profiles. See README ("The Android path").
 
 ## The gate
 

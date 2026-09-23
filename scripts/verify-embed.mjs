@@ -14,8 +14,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const bundle = readFileSync(root + 'embed/pocketshell-core.js', 'utf8');
 const shims = readFileSync(root + 'embed/host-shims.js', 'utf8');
 
-// Sync contract assertions only: the async paths (AplexerCore round-trips)
-// are pinned by the apps' vitest suites against the same sources.
+// Synchronous contract assertions work without host I/O in either engine.
 function contractAssertions(C) {
   var n = 0;
   var eq = function (got, want, what) {
@@ -51,6 +50,52 @@ function contractAssertions(C) {
   return 'assertions=' + n;
 }
 
+// Exercise the Android bridge seam in-engine too. This Promise-based transport
+// returns deterministic SSH exec outcomes, just as the Kotlin bridge does.
+async function asyncContractAssertions(C) {
+  var n = 0;
+  var eq = function (got, want, what) {
+    if (got !== want) {
+      throw new Error(what + ': got ' + JSON.stringify(got) + ', want ' + JSON.stringify(want));
+    }
+    n += 1;
+  };
+  var calls = [];
+  var host = new C.HostCliCore({
+    exec: function (command, timeoutMs) {
+      calls.push({ command: command, timeoutMs: timeoutMs });
+      if (command === 'pocketshell sessions list --json') {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: '{"schema":3,"sessions":[{"name":"fixture:main","attached":false,"agent_state":"working"}],"errors":[]}',
+          stderr: '',
+        });
+      }
+      return Promise.resolve({ exitCode: 2, stdout: '', stderr: "No such command 'profiles'.\n" });
+    },
+  });
+
+  var sessions = await host.listSessions();
+  eq(sessions.sessions[0].name, 'fixture:main', 'async host CLI parsed session');
+  eq(sessions.sessions[0].agentState, 'working', 'async host CLI parsed agent state');
+  eq(calls[0].command, 'pocketshell sessions list --json', 'async host CLI success command');
+  eq(calls[0].timeoutMs, 20_000, 'async host CLI success timeout');
+
+  var failure;
+  try {
+    await host.listProfiles();
+  } catch (error) {
+    failure = error;
+  }
+  eq(failure instanceof C.HostCliFailed, true, 'async host CLI failure type');
+  eq(failure.kind, 'failed', 'async host CLI failure kind');
+  eq(failure.exitCode, 2, 'async host CLI failure exit');
+  eq(failure.stderr, "No such command 'profiles'.\n", 'async host CLI failure stderr');
+  eq(calls[1].command, 'pocketshell profiles list --json', 'async host CLI failure command');
+  eq(calls[1].timeoutMs, 20_000, 'async host CLI failure timeout');
+  return 'assertions=' + n;
+}
+
 function run(runner) {
   try {
     return 'OK ' + runner();
@@ -59,8 +104,16 @@ function run(runner) {
   }
 }
 
+function runAsync(runner) {
+  return Promise.resolve().then(runner).then(
+    function (value) { return 'OK ' + value; },
+    function (e) { return 'FAIL ' + (e && e.message ? e.message : String(e)); },
+  );
+}
+
 // The wrapper evaluates in-engine; only the verdict string crosses back.
 var source = '(' + run.toString() + ')(function () { return (' + contractAssertions.toString() + ')(globalThis.PocketShellCore); })';
+var asyncSource = '(' + runAsync.toString() + ')(function () { return (' + asyncContractAssertions.toString() + ')(globalThis.PocketShellCore); })';
 
 function evalChunk(engine, chunk, label) {
   const result = engine.evalCode(chunk);
@@ -71,15 +124,21 @@ function evalChunk(engine, chunk, label) {
 
 // Engine 1: Node vm, bare context — nothing but the shims and the bundle.
 var nodeResult;
+var nodeAsyncResult;
+var nodeContext = {};
 try {
-  nodeResult = vm.runInNewContext(shims + ';\n' + bundle + ';\n' + source, {}, { timeout: 10_000 });
+  nodeResult = vm.runInNewContext(shims + ';\n' + bundle + ';\n' + source, nodeContext, { timeout: 10_000 });
+  nodeAsyncResult = await vm.runInNewContext(asyncSource, nodeContext, { timeout: 10_000 });
 } catch (e) {
   nodeResult = 'FAIL node vm threw: ' + e.message;
+  nodeAsyncResult = 'FAIL node vm async threw: ' + e.message;
 }
-console.log('node vm   :', nodeResult);
+console.log('node vm sync :', nodeResult);
+console.log('node vm async:', nodeAsyncResult);
 
 // Engine 2: QuickJS.
 var quickResult;
+var quickAsyncResult;
 const QJS = await getQuickJS();
 const vmc = QJS.newContext();
 try {
@@ -89,14 +148,36 @@ try {
   const verdict = vmc.unwrapResult(vmc.evalCode(source, 'assertions.js'));
   quickResult = vmc.dump(verdict);
   verdict.dispose();
+
+  // Promise jobs in QuickJS do not run automatically. The embedder must drain
+  // them after evaluating async work, before reading the returned Promise.
+  const asyncPromise = vmc.unwrapResult(vmc.evalCode(asyncSource, 'async-assertions.js'));
+  const hostPromise = vmc.resolvePromise(asyncPromise);
+  let drainedJobs = 0;
+  while (vmc.runtime.hasPendingJob()) {
+    drainedJobs += vmc.unwrapResult(vmc.runtime.executePendingJobs());
+    if (drainedJobs > 10_000) throw new Error('QuickJS async contract did not quiesce');
+  }
+  if (drainedJobs === 0) throw new Error('QuickJS async contract queued no Promise jobs');
+  const asyncVerdict = vmc.unwrapResult(await hostPromise);
+  quickAsyncResult = vmc.dump(asyncVerdict);
+  asyncVerdict.dispose();
+  asyncPromise.dispose();
 } catch (e) {
   quickResult = 'FAIL quickjs threw: ' + e.message;
+  quickAsyncResult = 'FAIL quickjs async threw: ' + e.message;
 } finally {
   vmc.dispose();
 }
-console.log('quickjs   :', quickResult);
+console.log('quickjs sync :', quickResult);
+console.log('quickjs async:', quickAsyncResult);
 
-if (nodeResult.startsWith('OK ') && typeof quickResult === 'string' && quickResult.startsWith('OK ')) {
+if (
+  nodeResult.startsWith('OK ') &&
+  nodeAsyncResult.startsWith('OK ') &&
+  typeof quickResult === 'string' && quickResult.startsWith('OK ') &&
+  typeof quickAsyncResult === 'string' && quickAsyncResult.startsWith('OK ')
+) {
   console.log('embed verification passed in both engines');
 } else {
   console.error('embed verification FAILED');
