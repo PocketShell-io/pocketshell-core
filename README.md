@@ -28,6 +28,7 @@ shim set in `embed/host-shims.js`.
 | `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | send pipeline: bracketed paste, three-write delivery, submit timing |
+| `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
 | `shellQuote`, `userBinPath`, `net`, `byteSize` | quoting, `~/.local/bin`, loopback/port constants, byte formatting |
 
@@ -76,10 +77,17 @@ published to npm, the `file:` specs become plain versions.
 
 ## The Android path
 
-The app is Kotlin, but the contracts above are already JS and the desktop +
-web prove a client only needs them plus a thin shell. The prototype path:
+The JS-first Android app bundles these TypeScript sources into its Capacitor
+WebView. Its native plugin implements `SshCapability`, the typed effect
+boundary in this package; `ConnectionController` owns host-key verdicts,
+HostCliCore calls, session switching, retries, reconnect, and background
+grace. The plugin reports transport state and moves bounded SSH/PTY/SFTP and
+forwarding data without deciding which session to restore or retrying an
+uncertain send.
+
+The core also maintains a single-file embed build for the prototype path:
 bundle the whole core into one file and evaluate it in an embedded JS engine
-(QuickJS, via quickjs-android or equivalent).
+(QuickJS, via quickjs-emscripten or equivalent).
 
 ```bash
 npm run embed
@@ -96,21 +104,19 @@ bundle in TWO engines — Node's vm, and a real QuickJS (quickjs-emscripten).
 The QuickJS pass is the Android integration surface exercised as code, not a
 claim. On the device, the Kotlin side is the same shape:
 
-```kotlin
-// build once, ship as an asset; evaluate with your QuickJS binding of choice
-quickjs.evaluate(asset("host-shims.js"))
-quickjs.evaluate(asset("pocketshell-core.js"))
-val quoted = quickjs.evaluate(
-    "PocketShellCore.shellQuote('some path with spaces')")
-// async contracts (AplexerCore and HostCliCore) go over a small JS<->Kotlin bridge object
-// that answers the injected transport's exec() with a real SSH exec.
+```js
+const controller = new PocketShellCore.ConnectionController({
+  capability: androidSshCapability,
+  trustStore: encryptedHostKeyStore,
+});
+await controller.connect(host);
 ```
 
-What is verified today: the bundle runs and answers contract assertions in
-QuickJS, and the Docker suite runs `HostCliCore` over SSH against the pinned
-published CLI. The Android app can load this bundle and use the same injected
-SSH exec transport; the source API and the embed artifact are checked here,
-while on-device adoption remains in the Android repository.
+The same portable connection-policy contract runs from source in Vitest and
+against the embed bundle in Node's `vm` and QuickJS. The Android repository
+imports the reviewed source revision directly for its WebView build and runs
+the same contract in its JS unit gate; packaged-device/Docker evidence remains
+part of the Android issue's acceptance.
 
 ## Development
 
