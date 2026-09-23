@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HostCliFailed, type HostKeyPin, type SessionRow } from '../src';
+import {
+  HostCliFailed,
+  verifyHostKeyTrustPin,
+  type HostKeyTrustPin,
+  type SessionRow,
+} from '../src';
 import { ConnectionController, type HostKeyTrustStore } from '../src/connectionController';
 import { runConnectionControllerContract } from './connectionControllerContract';
 import {
@@ -23,8 +28,8 @@ import {
   type SshResourceSnapshot,
 } from '../src/sshCapability';
 
-const PIN = { keyType: 'ssh-ed25519', keyB64: 'AQIDBA==' } as const;
-const HOST_KEY = { ...PIN, fingerprintSha256: 'SHA256:abc123' } as const;
+const HOST_KEY = { keyType: 'ssh-ed25519', keyB64: 'AQIDBA==', fingerprintSha256: 'SHA256:abc123' } as const;
+const PIN = { kind: 'wire-key', ...HOST_KEY } as const;
 
 function session(name: string): SessionRow {
   return {
@@ -103,7 +108,7 @@ class FakeCapability {
 
   connect = async (options: SshConnectOptions): Promise<SshConnectResult> => {
     this.connectCalls.push(options);
-    if (!options.expectedHostKey || options.expectedHostKey.keyType !== PIN.keyType || options.expectedHostKey.keyB64 !== PIN.keyB64) {
+    if (verifyHostKeyTrustPin(options.expectedHostKey, HOST_KEY) !== 'trusted') {
       throw new SshCapabilityError('Host key needs a user decision.', 'HOST_KEY_REJECTED', HOST_KEY);
     }
     const connectionId = `connection-${++this.connectionOrdinal}`;
@@ -123,6 +128,13 @@ class FakeCapability {
     }
     this.graceScheduled.delete(ref.connectionId);
     return { requestId: ref.requestId };
+  };
+
+  cancelOperation = async (options: { requestId: string; target: any }) => {
+    if (options.target.kind === 'connection') {
+      await this.closeConnection({ ...options.target, requestId: options.requestId });
+    }
+    return { requestId: options.requestId, cancelled: true };
   };
 
   scheduleClose = async (ref: SshConnectionRef & { requestId: string }) => {
@@ -314,7 +326,7 @@ const host: SshHostTarget = {
   credential: { kind: 'private-key', privateKeyPem: 'test-private-key' },
 };
 
-function trustStore(initial: HostKeyPin | null = null) {
+function trustStore(initial: HostKeyTrustPin | null = null) {
   let pin = initial;
   const store: HostKeyTrustStore = {
     get: vi.fn(async () => pin),
@@ -372,7 +384,7 @@ describe('JS connection and session policy', () => {
     expect(trust.current()).toEqual(PIN);
 
     await controller.close();
-    const changedTrust = trustStore({ keyType: 'ssh-rsa', keyB64: 'different' });
+    const changedTrust = trustStore({ kind: 'wire-key', keyType: 'ssh-rsa', keyB64: 'different', fingerprintSha256: 'SHA256:different' });
     const changedCapability = new FakeCapability();
     const changed = controllerFor(changedCapability, changedTrust);
     controllers.push(changed.controller);

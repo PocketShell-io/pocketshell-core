@@ -1,7 +1,7 @@
 /**
- * Runtime-neutral connection policy contract. The Vitest suite and the
- * Node-vm/QuickJS embed verifier run this same function against the same core
- * bundle, so bridge-portability failures cannot hide behind unit-only mocks.
+ * Runtime-neutral connection policy contract. Vitest, the Chromium browser
+ * build, and the Node-vm/QuickJS embed verifier run the same assertions
+ * against the core, so runtime-specific failures cannot hide behind mocks.
  */
 export async function runConnectionControllerContract(Core: any): Promise<string> {
   let assertions = 0;
@@ -18,6 +18,7 @@ export async function runConnectionControllerContract(Core: any): Promise<string
 
   const pin = { keyType: 'ssh-ed25519', keyB64: 'AQIDBA==' };
   const presented = { ...pin, fingerprintSha256: 'SHA256:abc123' };
+  const acceptedPin = { kind: 'wire-key', ...presented };
   const makeSession = (name: string) => ({
     name,
     id: `${name}-id`,
@@ -50,6 +51,11 @@ export async function runConnectionControllerContract(Core: any): Promise<string
     scheduledClose = new Set<string>();
     connectionOrdinal = 0;
     ptyOrdinal = 0;
+    cancelCalls: any[] = [];
+    holdNextConnect = false;
+    heldConnect: { options: any; resolve: (result: any) => void } | null = null;
+    nextConnectResultHostKey: any = null;
+    bypassExpectedKeyForNextConnect = false;
     createRequests = 0;
     killRequests = 0;
     createAfterApplyFailure = false;
@@ -61,14 +67,34 @@ export async function runConnectionControllerContract(Core: any): Promise<string
       return { remove: async () => { this.listeners.delete(listener); } };
     };
 
-    connect = async (options: any) => {
+    connect = (options: any) => {
       this.connectCalls.push(options);
-      if (!options.expectedHostKey || options.expectedHostKey.keyType !== pin.keyType || options.expectedHostKey.keyB64 !== pin.keyB64) {
-        throw new Core.SshCapabilityError('Host key needs a user decision.', 'HOST_KEY_REJECTED', presented);
+      if (this.holdNextConnect) {
+        this.holdNextConnect = false;
+        return new Promise((resolve) => { this.heldConnect = { options, resolve }; });
+      }
+      return this.finishConnect(options);
+    };
+
+    finishConnect = (options: any, returnedHostKey?: any, enforceExpectedKey = true) => {
+      const actualHostKey = returnedHostKey ?? this.nextConnectResultHostKey ?? presented;
+      const bypassPin = !enforceExpectedKey || this.bypassExpectedKeyForNextConnect;
+      this.nextConnectResultHostKey = null;
+      this.bypassExpectedKeyForNextConnect = false;
+      const verdict = Core.verifyHostKeyTrustPin(options.expectedHostKey, actualHostKey);
+      if (!bypassPin && verdict !== 'trusted') {
+        throw new Core.SshCapabilityError('Host key needs a user decision.', 'HOST_KEY_REJECTED', actualHostKey);
       }
       const connectionId = `connection-${++this.connectionOrdinal}`;
       this.connections.set(connectionId, options.generationId);
-      return { requestId: options.requestId, connectionId, generationId: options.generationId, hostKey: presented };
+      return { requestId: options.requestId, connectionId, generationId: options.generationId, hostKey: actualHostKey };
+    };
+
+    resolveHeldConnect = (hostKey: any = presented) => {
+      if (!this.heldConnect) throw new Error('No held connect operation.');
+      const held = this.heldConnect;
+      this.heldConnect = null;
+      held.resolve(this.finishConnect(held.options, hostKey, false));
     };
 
     getConnectionState = async (ref: any) => ({
@@ -83,6 +109,18 @@ export async function runConnectionControllerContract(Core: any): Promise<string
       }
       this.scheduledClose.delete(ref.connectionId);
       return { requestId: ref.requestId };
+    };
+
+    cancelOperation = async (options: any) => {
+      this.cancelCalls.push(options);
+      if (options.target.kind === 'connection') {
+        this.connections.delete(options.target.connectionId);
+        for (const pty of [...this.ptys.values()]) {
+          if (pty.connectionId === options.target.connectionId) this.closePtyRef(pty);
+        }
+        this.scheduledClose.delete(options.target.connectionId);
+      }
+      return { requestId: options.requestId, cancelled: true };
     };
 
     scheduleClose = async (ref: any) => {
@@ -300,16 +338,60 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   equal(unknownController.getSnapshot().trustDecision.reason, 'unknown', 'unknown trust prompt');
   equal(unknownCapability.connections.size, 0, 'unknown key must not connect');
   check((await unknownController.acceptPresentedHostKey()).ok, 'accepted unknown key reconnect');
-  equal(unknownTrust.current(), pin, 'accepted key pin');
+  equal(unknownTrust.current(), acceptedPin, 'accepted key pin');
   await unknownController.close();
 
+  const oldFingerprint = Core.fromAndroidTrustedHostKeySha256(presented.fingerprintSha256);
+  equal(Core.toAndroidTrustedHostKeySha256(oldFingerprint), presented.fingerprintSha256, 'Android SHA-256 trust value round-trip');
+  const legacyController = createController(new FakeCapability(), makeTrustStore(oldFingerprint));
+  check((await legacyController.connect(host)).ok, 'existing Android SHA-256 pin connects');
+  equal(legacyController.getSnapshot().phase, 'connected', 'legacy SHA-256 pin remains trusted');
+  await legacyController.close();
+  const changedLegacyTrust = makeTrustStore(Core.fromAndroidTrustedHostKeySha256('SHA256:old-pin'));
+  const changedLegacy = createController(new FakeCapability(), changedLegacyTrust);
+  equal((await changedLegacy.connect(host)).reason, 'trust-mismatch', 'changed legacy Android fingerprint is rejected');
+  equal(changedLegacy.getSnapshot().trustDecision.previouslyTrusted.fingerprintSha256, 'SHA256:old-pin', 'legacy mismatch retains previous fingerprint');
+  check((await changedLegacy.acceptPresentedHostKey()).ok, 'accepting changed legacy pin reconnects');
+  equal(changedLegacyTrust.current(), Core.fromAndroidTrustedHostKeySha256(presented.fingerprintSha256), 'rotated Android fingerprint remains in legacy storage format');
+  await changedLegacy.close();
+
   const mismatchCapability = new FakeCapability();
-  const mismatchController = createController(mismatchCapability, makeTrustStore({ keyType: 'ssh-rsa', keyB64: 'different' }));
+  const mismatchController = createController(mismatchCapability, makeTrustStore({
+    kind: 'wire-key', keyType: 'ssh-rsa', keyB64: 'different', fingerprintSha256: 'SHA256:different',
+  }));
   const mismatch = await mismatchController.connect(host);
   equal(mismatch.reason, 'trust-mismatch', 'changed host key verdict');
   equal(mismatchController.getSnapshot().trustDecision.reason, 'mismatch', 'mismatch trust prompt');
   check((await mismatchController.acceptPresentedHostKey()).ok, 'accepted changed key reconnect');
+  equal(mismatchController.getSnapshot().trustDecision, null, 'accepted replacement clears trust prompt');
   await mismatchController.close();
+
+  const wrongSuccessCapability = new FakeCapability();
+  wrongSuccessCapability.nextConnectResultHostKey = { ...presented, keyB64: 'BQ==', fingerprintSha256: 'SHA256:wrong' };
+  wrongSuccessCapability.bypassExpectedKeyForNextConnect = true;
+  const wrongSuccessController = createController(wrongSuccessCapability, makeTrustStore(acceptedPin));
+  equal((await wrongSuccessController.connect(host)).reason, 'trust-mismatch', 'successful handshake with wrong returned key fails closed');
+  equal(wrongSuccessController.getSnapshot().phase, 'awaiting-trust', 'wrong returned key publishes a mismatch prompt');
+  equal(wrongSuccessController.getSnapshot().connectionId, null, 'wrong returned key is never adopted');
+  equal(wrongSuccessCapability.connections.size, 0, 'wrong returned key connection is explicitly closed');
+  check(wrongSuccessCapability.cancelCalls.some((call) => call.target.kind === 'connection'), 'wrong returned key generation is cancelled');
+  await wrongSuccessController.close();
+
+  const lateCapability = new FakeCapability();
+  lateCapability.holdNextConnect = true;
+  const lateController = createController(lateCapability, makeTrustStore(acceptedPin));
+  const observedPhases: string[] = [];
+  lateController.subscribe((snapshot: any) => observedPhases.push(snapshot.phase));
+  const lateConnect = lateController.connect(host);
+  await waitFor(() => lateCapability.heldConnect !== null, 'pending connect reaches capability');
+  const lateRequestId = lateCapability.connectCalls[0].requestId;
+  await lateController.close();
+  check(lateCapability.cancelCalls.some((call) => call.target.kind === 'connect' && call.target.targetRequestId === lateRequestId), 'close cancels pending dial by request id');
+  lateCapability.resolveHeldConnect();
+  equal((await lateConnect).ok, false, 'late connect resolves as cancelled');
+  equal(lateController.getSnapshot().phase, 'idle', 'late connect cannot replace closed snapshot');
+  check(!observedPhases.includes('connected'), 'late connect is never published as connected');
+  equal(lateCapability.connections.size, 0, 'late successful connection is explicitly closed');
 
   const capability = new FakeCapability();
   const clock = { now: 1000 };
@@ -389,6 +471,7 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   const stillLive = await controller.getResourceSnapshot();
   equal(stillLive.ptys, 1, 'reattached PTY exists before close');
   await controller.close();
+  check(capability.cancelCalls.some((call) => call.target.kind === 'connection'), 'close cancels active generation');
   const closed = await capability.resourceSnapshot('contract-after-close');
   equal(
     [closed.connections, closed.ptys, closed.sftpClients, closed.forwards],

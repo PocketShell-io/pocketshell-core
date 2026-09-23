@@ -37,3 +37,4 @@ export * from './agentLaunch';
 export * from './composerSend';
 export * from './sshCapability';
 export * from './connectionController';
+export * from './hostKeyTrustCore';

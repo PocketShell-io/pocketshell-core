@@ -1,4 +1,4 @@
-import type { HostKeyPin } from './knownHostsCore';
+import type { HostKeyTrustPin, PresentedHostKey } from './hostKeyTrustCore';
 
 export type SshCredential =
   | { kind: 'private-key'; privateKeyPem: string; passphrase?: string | null }
@@ -40,17 +40,26 @@ export interface SshResourceSnapshot extends SshAck {
 export interface SshConnectOptions extends SshHostTarget {
   requestId: string;
   generationId: string;
-  expectedHostKey: HostKeyPin | null;
+  expectedHostKey: HostKeyTrustPin | null;
   connectTimeoutMs?: number;
-}
-
-export interface SshPresentedHostKey extends HostKeyPin {
-  fingerprintSha256: string;
 }
 
 export interface SshConnectResult extends SshConnectionRef {
   requestId: string;
-  hostKey: SshPresentedHostKey;
+  hostKey: PresentedHostKey;
+}
+
+export type SshCancellationTarget =
+  | { kind: 'connect'; targetRequestId: string }
+  | { kind: 'connection'; connectionId: string; generationId: string };
+
+export interface SshCancellationOptions {
+  requestId: string;
+  target: SshCancellationTarget;
+}
+
+export interface SshCancellationResult extends SshAck {
+  cancelled: boolean;
 }
 
 export interface SshExecOptions extends SshConnectionRef {
@@ -149,6 +158,14 @@ export interface SshCapability {
   connect(options: SshConnectOptions): Promise<SshConnectResult>;
   getConnectionState(ref: SshConnectionRef & { requestId: string }): Promise<SshAck & { state: 'connected' | 'lost' | 'closed' }>;
   closeConnection(ref: SshConnectionRef & { requestId: string }): Promise<SshAck>;
+  /**
+   * Cancel a pending dial by request id (including a cancellation that races
+   * native dial registration), or cancel a generation to stop all its
+   * in-flight exec/PTY/SFTP/forwarding I/O. Generation cancellation closes
+   * the transport as a safe cancellation boundary: callers treat interrupted
+   * mutations as uncertain and never replay them automatically.
+   */
+  cancelOperation(options: SshCancellationOptions): Promise<SshCancellationResult>;
   scheduleClose(ref: SshConnectionRef & { requestId: string; deadlineEpochMs: number }): Promise<SshAck>;
   cancelScheduledClose(ref: SshConnectionRef & { requestId: string }): Promise<SshAck & { cancelled: boolean }>;
   exec(options: SshExecOptions): Promise<SshExecResult>;

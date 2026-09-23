@@ -1,11 +1,18 @@
 import { HostCliCore } from './hostCliCore';
 import { HostCliFailed, type HostCliTransport } from './hostCliCommon';
-import { bytesToBase64 as encodeBase64, verifyHostKeyPin, type HostKeyPin } from './knownHostsCore';
+import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
+import {
+  acceptedHostKeyPin,
+  verifyHostKeyTrustPin,
+  type HostKeyTrustPin,
+  type PresentedHostKey,
+} from './hostKeyTrustCore';
 import type { SessionRow, SessionsListing } from './hostCliSessions';
 import {
   readSshCapabilityError,
   type SshCapability,
   type SshConnectionRef,
+  type SshCancellationTarget,
   type SshConnectionStateEvent,
   type SshHostTarget,
   type SshListenerHandle,
@@ -27,16 +34,16 @@ export type ConnectionPhase =
   | 'error';
 
 export interface HostKeyTrustStore {
-  get(hostId: string): Promise<HostKeyPin | null>;
-  record(hostId: string, pin: HostKeyPin): Promise<void>;
+  get(hostId: string): Promise<HostKeyTrustPin | null>;
+  record(hostId: string, pin: HostKeyTrustPin): Promise<void>;
 }
 
 export interface PendingHostKeyDecision {
   hostId: string;
   hostLabel: string;
   reason: 'unknown' | 'mismatch';
-  presented: HostKeyPin & { fingerprintSha256: string };
-  previouslyTrusted: HostKeyPin | null;
+  presented: PresentedHostKey;
+  previouslyTrusted: HostKeyTrustPin | null;
 }
 
 export interface UncertainMutation {
@@ -165,6 +172,8 @@ export class ConnectionController {
   private reconnectTask: Promise<void> | null = null;
   private disposed = false;
   private lastDialRetryable = true;
+  private connectIntent = 0;
+  private pendingConnectRequestId: string | null = null;
 
   constructor(options: ConnectionControllerOptions) {
     this.capability = options.capability;
@@ -195,49 +204,56 @@ export class ConnectionController {
 
   async connect(host: SshHostTarget): Promise<ConnectionActionResult<SshConnectionRef>> {
     this.assertLive();
-    await this.listenerReady;
-    if (this.connection && this.host?.hostId === host.hostId) {
-      try {
-        const requestId = this.createId();
-        const status = await this.capability.getConnectionState({ ...this.connection, requestId });
-        if (status.requestId !== requestId) throw new Error('SSH state returned a stale request.');
-        if (status.state === 'connected') return { ok: true, value: this.connection };
-      } catch {
-        // A missing native handle is the same as a spent transport here.
+    const intent = ++this.connectIntent;
+    const requestId = this.createId();
+    this.pendingConnectRequestId = requestId;
+    try {
+      await this.listenerReady;
+      if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+      if (this.connection && this.host?.hostId === host.hostId) {
+        try {
+          const stateRequestId = this.createId();
+          const status = await this.capability.getConnectionState({ ...this.connection, requestId: stateRequestId });
+          if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+          if (status.requestId !== stateRequestId) throw new Error('SSH state returned a stale request.');
+          if (status.state === 'connected') return { ok: true, value: this.connection };
+        } catch {
+          // A missing native handle is the same as a spent transport here.
+        }
       }
-    }
 
-    await this.closeCurrentTransport();
-    this.host = host;
-    this.setSnapshot({
-      phase: 'connecting',
-      hostId: host.hostId,
-      hostLabel: host.hostname,
-      connectionId: null,
-      generationId: null,
-      sessions: [],
-      selectedSession: null,
-      retryAttempt: 0,
-      error: null,
-      trustDecision: null,
-      uncertainMutation: null,
-    });
-    const result = await this.dial(host);
-    if (result.ok) {
-      this.setSnapshot({ phase: 'connected', connectionId: result.value.connectionId, generationId: result.value.generationId });
+      await this.closeCurrentTransport();
+      if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+      this.host = host;
+      this.setSnapshot({
+        phase: 'connecting',
+        hostId: host.hostId,
+        hostLabel: host.hostname,
+        connectionId: null,
+        generationId: null,
+        sessions: [],
+        selectedSession: null,
+        retryAttempt: 0,
+        error: null,
+        trustDecision: null,
+        uncertainMutation: null,
+      });
+      const result = await this.dial(host, intent, requestId);
+      if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+      if (result.ok) {
+        this.setSnapshot({ phase: 'connected', connectionId: result.value.connectionId, generationId: result.value.generationId });
+      }
       return result;
+    } finally {
+      if (this.pendingConnectRequestId === requestId) this.pendingConnectRequestId = null;
     }
-    return result;
   }
 
   async acceptPresentedHostKey(): Promise<ConnectionActionResult<SshConnectionRef>> {
     const pending = this.snapshot.trustDecision;
     const host = this.host;
     if (!pending || !host) return { ok: false, reason: 'failed', message: 'There is no pending host-key decision.' };
-    await this.trustStore.record(host.hostId, {
-      keyType: pending.presented.keyType,
-      keyB64: pending.presented.keyB64,
-    });
+    await this.trustStore.record(host.hostId, acceptedHostKeyPin(pending.previouslyTrusted, pending.presented));
     this.setSnapshot({ trustDecision: null, phase: 'connecting', error: null });
     return this.connect(host);
   }
@@ -414,7 +430,13 @@ export class ConnectionController {
   async close(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.connectIntent += 1;
     this.selectionToken += 1;
+    const pendingConnectRequestId = this.pendingConnectRequestId;
+    this.pendingConnectRequestId = null;
+    if (pendingConnectRequestId) {
+      await this.cancelCapability({ kind: 'connect', targetRequestId: pendingConnectRequestId });
+    }
     await this.closeCurrentPty();
     await this.closeCurrentTransport();
     this.host = null;
@@ -509,13 +531,17 @@ export class ConnectionController {
     this.setSnapshot({ uncertainMutation: null });
   }
 
-  private async dial(host: SshHostTarget): Promise<ConnectionActionResult<SshConnectionRef>> {
+  private async dial(
+    host: SshHostTarget,
+    intent: number,
+    requestId: string,
+  ): Promise<ConnectionActionResult<SshConnectionRef>> {
     const generationId = this.createId();
-    const requestId = this.createId();
-    let expectedHostKey: HostKeyPin | null = null;
+    let expectedHostKey: HostKeyTrustPin | null = null;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
     try {
       expectedHostKey = await this.trustStore.get(host.hostId);
+      if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const connected = await this.capability.connect({
         ...host,
         requestId,
@@ -523,13 +549,24 @@ export class ConnectionController {
         expectedHostKey,
         connectTimeoutMs: DEFAULT_CONNECT_TIMEOUT_MS,
       });
+      if (!this.isCurrentConnect(intent)) {
+        await this.closeReturnedConnection(connected);
+        return this.cancelledConnectResult();
+      }
       if (connected.requestId !== requestId || connected.generationId !== generationId) {
-        await this.capability.closeConnection({
-          connectionId: connected.connectionId,
-          generationId: connected.generationId,
-          requestId: this.createId(),
-        });
+        await this.closeReturnedConnection(connected);
         return { ok: false, reason: 'failed', message: 'SSH connect returned a stale generation.' };
+      }
+      const presented = this.readPresentedKey(connected.hostKey as unknown as Record<string, unknown>);
+      if (!presented) {
+        await this.closeReturnedConnection(connected);
+        throw new Error('SSH connect returned an invalid host key.');
+      }
+      const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
+      if (verdict !== 'trusted') {
+        await this.closeReturnedConnection(connected);
+        if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+        return this.presentHostKeyDecision(host, generationId, expectedHostKey, presented, verdict);
       }
       this.connection = { connectionId: connected.connectionId, generationId };
       this.hostCli = new HostCliCore(this.createHostCliTransport(this.connection));
@@ -542,36 +579,59 @@ export class ConnectionController {
       });
       return { ok: true, value: this.connection };
     } catch (error) {
+      if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const sshError = readSshCapabilityError(error);
       this.lastDialRetryable = isRetryableDialError(error);
       const presented = this.readPresentedKey(sshError.data);
       if (sshError.code === 'HOST_KEY_REJECTED' && presented) {
-        const verdict = verifyHostKeyPin(expectedHostKey ?? undefined, presented.keyType, presented.keyB64);
-        const reason = verdict === 'mismatch' ? 'mismatch' : 'unknown';
-        this.setSnapshot({
-          phase: 'awaiting-trust',
-          generationId,
-          trustDecision: {
-            hostId: host.hostId,
-            hostLabel: host.hostname,
-            reason,
-            presented,
-            previouslyTrusted: expectedHostKey,
-          },
-          error: reason === 'unknown'
-            ? `First connection to ${host.hostname}; verify ${presented.fingerprintSha256} before trusting it.`
-            : `The host key for ${host.hostname} changed. The new fingerprint is ${presented.fingerprintSha256}.`,
-        });
-        return {
-          ok: false,
-          reason: reason === 'mismatch' ? 'trust-mismatch' : 'trust-required',
-          message: this.snapshot.error ?? 'Host key requires a decision.',
-        };
+        const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
+        if (verdict !== 'trusted') {
+          return this.presentHostKeyDecision(host, generationId, expectedHostKey, presented, verdict);
+        }
       }
       const message = sshError.message;
       this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null });
       return { ok: false, reason: 'failed', message };
     }
+  }
+
+  private presentHostKeyDecision(
+    host: SshHostTarget,
+    generationId: string,
+    previouslyTrusted: HostKeyTrustPin | null,
+    presented: PresentedHostKey,
+    verdict: 'unknown' | 'mismatch',
+  ): ConnectionActionResult<SshConnectionRef> {
+    const reason = verdict === 'mismatch' ? 'mismatch' : 'unknown';
+    const message = reason === 'unknown'
+      ? `First connection to ${host.hostname}; verify ${presented.fingerprintSha256} before trusting it.`
+      : `The host key for ${host.hostname} changed. The new fingerprint is ${presented.fingerprintSha256}.`;
+    this.setSnapshot({
+      phase: 'awaiting-trust',
+      generationId,
+      trustDecision: {
+        hostId: host.hostId,
+        hostLabel: host.hostname,
+        reason,
+        presented,
+        previouslyTrusted,
+      },
+      error: message,
+    });
+    return {
+      ok: false,
+      reason: reason === 'mismatch' ? 'trust-mismatch' : 'trust-required',
+      message,
+    };
+  }
+
+  private async closeReturnedConnection(connection: SshConnectionRef): Promise<void> {
+    await this.cancelCapability({
+      kind: 'connection',
+      connectionId: connection.connectionId,
+      generationId: connection.generationId,
+    });
+    await this.capability.closeConnection({ ...connection, requestId: this.createId() }).catch(() => undefined);
   }
 
   private createHostCliTransport(connection: SshConnectionRef): HostCliTransport {
@@ -656,7 +716,8 @@ export class ConnectionController {
     const host = this.host;
     const selected = this.snapshot.selectedSession;
     if (!host) return;
-    this.reconnectTask = this.runReconnect(host, selected, reason).finally(() => {
+    const intent = ++this.connectIntent;
+    this.reconnectTask = this.runReconnect(host, selected, reason, intent).finally(() => {
       this.reconnectTask = null;
     });
     return this.reconnectTask;
@@ -667,7 +728,7 @@ export class ConnectionController {
     void this.reconnectAndAttach(reason);
   }
 
-  private async runReconnect(host: SshHostTarget, selected: SessionRow | null, reason: string): Promise<void> {
+  private async runReconnect(host: SshHostTarget, selected: SessionRow | null, reason: string, intent: number): Promise<void> {
     const oldPty = this.pty;
     const oldConnection = this.connection;
     this.pty = null;
@@ -676,19 +737,32 @@ export class ConnectionController {
     this.ptyPumpToken += 1;
     this.setSnapshot({ phase: 'reconnecting', retryAttempt: 0, error: reason, connectionId: null });
     if (oldPty) await this.capability.closePty({ ...oldPty, requestId: this.createId() }).catch(() => undefined);
-    if (oldConnection) await this.capability.closeConnection({ ...oldConnection, requestId: this.createId() }).catch(() => undefined);
+    if (oldConnection) {
+      await this.cancelCapability({ kind: 'connection', ...oldConnection });
+      await this.capability.closeConnection({ ...oldConnection, requestId: this.createId() }).catch(() => undefined);
+    }
+    if (!this.isCurrentConnect(intent)) return;
 
     for (let attempt = 0; attempt < this.retryDelaysMs.length; attempt += 1) {
       if (attempt > 0) await this.delay(this.retryDelaysMs[attempt] ?? 0);
-      if (this.disposed) return;
+      if (!this.isCurrentConnect(intent)) return;
       this.setSnapshot({ phase: 'reconnecting', retryAttempt: attempt + 1, error: reason });
-      const connected = await this.dial(host);
+      const requestId = this.createId();
+      this.pendingConnectRequestId = requestId;
+      let connected: ConnectionActionResult<SshConnectionRef>;
+      try {
+        connected = await this.dial(host, intent, requestId);
+      } finally {
+        if (this.pendingConnectRequestId === requestId) this.pendingConnectRequestId = null;
+      }
+      if (!this.isCurrentConnect(intent)) return;
       if (!connected.ok) {
         if (connected.reason === 'trust-required' || connected.reason === 'trust-mismatch') return;
         if (!this.lastDialRetryable) break;
         continue;
       }
       const listing = await this.refreshSessions();
+      if (!this.isCurrentConnect(intent)) return;
       if (!listing.ok) {
         if (this.snapshot.phase === 'reconnecting') continue;
         return;
@@ -700,6 +774,7 @@ export class ConnectionController {
           return;
         }
         const attached = await this.attachListedSession(current);
+        if (!this.isCurrentConnect(intent)) return;
         if (attached.ok) return;
         if (!this.isCurrentTransportFailure(attached.message)) return;
       } else {
@@ -707,7 +782,9 @@ export class ConnectionController {
         return;
       }
     }
-    this.setSnapshot({ phase: 'lost', error: `Could not reconnect to ${host.hostname} after ${this.retryDelaysMs.length} attempts.` });
+    if (this.isCurrentConnect(intent)) {
+      this.setSnapshot({ phase: 'lost', error: `Could not reconnect to ${host.hostname} after ${this.retryDelaysMs.length} attempts.` });
+    }
   }
 
   private async attachListedSession(session: SessionRow): Promise<ConnectionActionResult<SessionRow>> {
@@ -768,10 +845,26 @@ export class ConnectionController {
     this.connection = null;
     this.hostCli = null;
     if (!connection) return;
+    await this.cancelCapability({ kind: 'connection', ...connection });
     const requestId = this.createId();
     await this.capability.closeConnection({ ...connection, requestId }).then((result) => {
       if (result.requestId !== requestId) throw new Error('SSH close returned a stale request.');
     }).catch(() => undefined);
+  }
+
+  private async cancelCapability(target: SshCancellationTarget): Promise<void> {
+    const requestId = this.createId();
+    await this.capability.cancelOperation({ requestId, target }).then((result) => {
+      if (result.requestId !== requestId) throw new Error('SSH cancel returned a stale request.');
+    }).catch(() => undefined);
+  }
+
+  private isCurrentConnect(intent: number): boolean {
+    return !this.disposed && this.connectIntent === intent;
+  }
+
+  private cancelledConnectResult(): ConnectionActionResult<SshConnectionRef> {
+    return { ok: false, reason: 'failed', message: 'SSH connect was cancelled.' };
   }
 
   private onConnectionState(event: SshConnectionStateEvent): void {
