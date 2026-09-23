@@ -1,0 +1,38 @@
+{
+  "schema": 3,
+  "sessions": [
+    {
+      "name": "testuser:build",
+      "id": "8e50e9ad-7454-4bb6-8e2f-61ed3eb63715",
+      "workspace": "/home/testuser",
+      "tag": "build",
+      "engine": null,
+      "profile": null,
+      "agent": null,
+      "agent_state": "waiting",
+      "agent_state_source": "heuristic",
+      "attached": false,
+      "created_epoch": 1790138025,
+      "activity_epoch": 1790138025,
+      "phase": "running",
+      "alive": true
+    },
+    {
+      "name": "testuser:main",
+      "id": "3763a224-3f30-4320-9d92-951ae7f6c972",
+      "workspace": "/home/testuser",
+      "tag": "main",
+      "engine": null,
+      "profile": null,
+      "agent": null,
+      "agent_state": "waiting",
+      "agent_state_source": "heuristic",
+      "attached": false,
+      "created_epoch": 1790138025,
+      "activity_epoch": 1790138025,
+      "phase": "running",
+      "alive": true
+    }
+  ],
+  "errors": []
+}

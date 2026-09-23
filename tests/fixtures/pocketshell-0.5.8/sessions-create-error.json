@@ -1,0 +1,4 @@
+{
+  "schema": 3,
+  "error": "pocketshell: `a start --tag core-cli-capture` exited 127: [Errno 2] No such file or directory: 'systemd-run'"
+}

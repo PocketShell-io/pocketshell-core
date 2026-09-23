@@ -1,0 +1,9 @@
+{
+  "schema": 3,
+  "sessions": [],
+  "errors": [
+    {
+      "message": "`/does/not/exist --json snapshot` and `/does/not/exist --json list` both failed or returned unreadable JSON"
+    }
+  ]
+}
