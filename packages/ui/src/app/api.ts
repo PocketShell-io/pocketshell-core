@@ -1,8 +1,8 @@
 /**
  * The typed transport contract between the shared UI and whatever platform
  * hosts it. Generated from the desktop preload's api object shape, so the
- * two cannot drift: the desktop's `window.api` satisfies this interface and
- * provideApi(window.api) typechecks; the web app implements the same
+ * two cannot drift: the desktop's preload bridge satisfies this interface and
+ * the desktop's provideApi call typechecks; the web app implements the same
  * interface over its browser transport.
  *
  * Groups map to platform capabilities: win/app (host window), ssh (connection
@@ -62,7 +62,7 @@ import type { ZoomCommand } from '@pocketshell/core/shared/zoomKeys';
 /**
  * The full transport surface the shared UI consumes, generated from the
  * desktop preload's api object. Desktop provides it over Electron IPC
- * (window.api); the web app provides the same surface over its browser
+ * (the preload bridge); the web app provides the same surface over its browser
  * transport. Event subscriptions return an unsubscribe closure.
  */
 export interface PocketShellApi {

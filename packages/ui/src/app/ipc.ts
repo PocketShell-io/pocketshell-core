@@ -3,7 +3,7 @@
  * `api` from here and never learns what platform it runs on.
  *
  * The host app provides the implementation at startup:
- *   - desktop: provideApi(window.api)  (Electron IPC via the preload bridge)
+ *   - desktop: provideApi(the preload bridge)  (Electron IPC)
  *   - web:     provideApi(webApi)      (the browser transport module)
  *
  * `api` is a deferred proxy so store module scope can hold it before the

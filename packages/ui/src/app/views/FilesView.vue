@@ -305,7 +305,7 @@ defineExpose({ focus });
              fixture page in the packaged renderer and probing from inside the
              frame:
 
-               window.api                 -> undefined  (no preload in subframes)
+               the bridge                 -> undefined  (no preload in subframes)
                window.parent.document     -> SecurityError
                window.top.location.href   -> SecurityError
                inline <script>            -> "Blocked script execution … the
