@@ -573,7 +573,7 @@ function persistNow(): void {
     s.error = null;
 
     try {
-      await stageBatch(key, s, batch, payload);
+      await stageBatch(s, batch, payload);
     } finally {
       // EVERY exit settles it, including a throw. `send` may be parked on this
       // promise, and a send that never resumes is a composer that has quietly
@@ -598,7 +598,6 @@ function persistNow(): void {
    * can end.
    */
   async function stageBatch(
-    key: string,
     s: ComposerSessionState,
     batch: Batch,
     payload: {
