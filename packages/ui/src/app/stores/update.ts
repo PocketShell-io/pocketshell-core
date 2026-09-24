@@ -33,6 +33,9 @@ export const useUpdateStore = defineStore('update', {
   }),
   actions: {
     async check(): Promise<void> {
+      // A platform without the group (the web) has no check to run; staying
+      // `idle` is the honest answer and no update surface renders over it.
+      if (!api.update) return;
       this.status = 'checking';
       try {
         const result = await api.update.check();

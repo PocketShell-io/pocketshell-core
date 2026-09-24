@@ -15,12 +15,16 @@ import { useUpdateStore } from '../stores/update';
 import { api } from '../ipc';
 
 const store = useUpdateStore();
-const visible = computed(() => store.status === 'available');
+// A platform without the update capability (the web) never shows the strip —
+// and never reaches the store's `available`, but the seam is the honest gate.
+const visible = computed(() => api.update !== undefined && store.status === 'available');
 const openDownload = () => {
-  if (store.downloadUrl) void api.update.open(store.downloadUrl);
+  if (!api.update || !store.downloadUrl) return;
+  void api.update.open(store.downloadUrl);
 };
 const openNotes = () => {
-  if (store.notesUrl) void api.update.open(store.notesUrl);
+  if (!api.update || !store.notesUrl) return;
+  void api.update.open(store.notesUrl);
 };
 const dismiss = () => {
   store.status = 'up-to-date';

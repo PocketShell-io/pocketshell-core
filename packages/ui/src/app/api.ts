@@ -225,7 +225,10 @@ export interface PocketShellApi {
     "log": (entry: { kind: string; message: string; stack?: string; detail?: Record<string, unknown> }) => void;
     };
 
-    "update": {
+    // Optional capability: a browser deployment IS the current build (a reload
+    // is the update path), so the web platform omits the group and the shared
+    // UI hides every update surface over the seam.
+    "update"?: {
     "check": () => Promise<UpdateCheckResult>;
     "open": (url: string) => Promise<void>;
     };

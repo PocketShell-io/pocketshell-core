@@ -32,6 +32,7 @@ import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import { useUpdateStore } from '../stores/update';
+import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
 import { canonicalisePath } from '../sessionGrouping';
 import {
@@ -63,6 +64,10 @@ const projects = useProjectsStore();
 const sessions = useSessionsStore();
 const settings = useSettingsStore();
 const updates = useUpdateStore();
+// Update checks are a desktop capability (the desktop install replaces itself
+// from GitHub releases); the web deployment is always current, so the whole
+// group stays hidden over a platform without the seam.
+const updatesSupported = api.update !== undefined;
 
 /**
  * The host whose project roots this section edits.
@@ -609,7 +614,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
     </section>
 
 
-    <section class="group">
+    <section v-if="updatesSupported" class="group">
       <h3 class="group-title">Updates</h3>
 
       <div class="row">

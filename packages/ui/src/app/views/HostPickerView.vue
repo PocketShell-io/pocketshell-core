@@ -383,6 +383,9 @@ function onToggleDefault(host: HostEntry): void {
            say how to reveal it rather than reading as an empty account. -->
       <p v-if="accountSignedIn && !accountUnlocked" class="muted locked-note">
         Your account's hosts show up here once Account &amp; sync has checked the account.
+        <!-- The unlock lives behind the account action; a note alone would
+             send a first-run reader hunting through chrome for it. -->
+        <button class="btn-ghost" @click="onAccountAction">Open Account &amp; sync</button>
       </p>
       <!-- The two host sources. Each group is a labelled list; the config
            group keeps the empty state, the account group only exists when it
