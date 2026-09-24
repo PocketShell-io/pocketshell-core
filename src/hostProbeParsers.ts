@@ -8,7 +8,7 @@
  * asks, so the parsing cannot be allowed to drift either.
  */
 
-import type { SessionSummary } from './types';
+import type { EnvVarRow, SessionSummary } from './types';
 
 /**
  * Parse `command -v <binary>` output into an absolute path, or null if the
@@ -78,4 +78,19 @@ export function parseTmuxListSessionsFallback(stdout: string): SessionSummary[] 
     });
   }
   return out;
+}
+
+/**
+ * One `pocketshell env list --json` row — `{file, has_value, key}`, names
+ * only, never values (the helper's write-only default, D24).
+ */
+export function parseEnvVarRow(row: unknown): EnvVarRow | undefined {
+  if (row === null || typeof row !== 'object') return undefined;
+  const doc = row as Record<string, unknown>;
+  if (typeof doc['key'] !== 'string' || doc['key'].length === 0) return undefined;
+  return {
+    file: typeof doc['file'] === 'string' ? doc['file'] : '',
+    hasValue: doc['has_value'] === true,
+    key: doc['key'],
+  };
 }
