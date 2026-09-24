@@ -4,14 +4,33 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "types": [],
     "strict": true,
-    "noUncheckedIndexedAccess": true,
     "noImplicitReturns": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "outDir": "../../out/tsbuildinfo/ui"
+    "outDir": "../../out/tsbuildinfo/ui",
+    "baseUrl": ".",
+    "paths": {
+      "@ui/*": [
+        "./src/*"
+      ],
+      "@pocketshell/core": [
+        "../../src/index.ts"
+      ],
+      "@pocketshell/core/*": [
+        "../../src/*"
+      ]
+    }
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "src/**/*.d.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "src/**/*.d.ts"
+  ]
 }
