@@ -13,6 +13,21 @@
       "types": "./dist/esm/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.js"
+    },
+    "./shared/*": {
+      "types": "./dist/esm/shared/*.d.ts",
+      "import": "./dist/esm/shared/*.js",
+      "require": "./dist/cjs/shared/*.js"
+    },
+    "./attachments/*": {
+      "types": "./dist/esm/attachments/*.d.ts",
+      "import": "./dist/esm/attachments/*.js",
+      "require": "./dist/cjs/attachments/*.js"
+    },
+    "./preview/*": {
+      "types": "./dist/esm/preview/*.d.ts",
+      "import": "./dist/esm/preview/*.js",
+      "require": "./dist/cjs/preview/*.js"
     }
   },
   "files": [
