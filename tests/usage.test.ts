@@ -8,6 +8,7 @@ import {
   usageIsNearLimit,
   usageMostConstrainedWindow,
   usageThresholdState,
+  usageWindowDisplayLabel,
 } from '../src/usage.js';
 
 const quseFixture = readFileSync(
@@ -47,6 +48,18 @@ describe('usage NDJSON contract', () => {
     });
     // Provider details may contain their own windows; only top-level windows drive quota state.
     expect(usageMostConstrainedWindow(records[1]!)?.name).toBe('7d');
+  });
+
+  it('maps known usage spans to shared display labels case-insensitively', () => {
+    expect(usageWindowDisplayLabel('5h')).toBe('5h window');
+    expect(usageWindowDisplayLabel('7d')).toBe('7d window');
+    expect(usageWindowDisplayLabel('weekly')).toBe('Weekly limit');
+    expect(usageWindowDisplayLabel('MONTHLY')).toBe('Monthly limit');
+  });
+
+  it('formats custom span labels and uses a fallback for empty names', () => {
+    expect(usageWindowDisplayLabel('per-provider_window')).toBe('Per Provider Window');
+    expect(usageWindowDisplayLabel('')).toBe('Custom span');
   });
 
   it('rejects malformed NDJSON and schema drift as a whole-panel parse error', () => {

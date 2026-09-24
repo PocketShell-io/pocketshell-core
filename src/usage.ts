@@ -281,6 +281,17 @@ export function usageDisplayName(provider: string): string {
   }
 }
 
+/** Display label for a producer-owned usage span key. */
+export function usageWindowDisplayLabel(name: string): string {
+  switch (name.toLowerCase()) {
+    case '5h': return '5h window';
+    case '7d': return '7d window';
+    case 'weekly': return 'Weekly limit';
+    case 'monthly': return 'Monthly limit';
+    default: return name.replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()) || 'Custom span';
+  }
+}
+
 export function usageWindowPercent(window: UsageWindow): number {
   return window.unit.toLowerCase() === 'percent' || window.unit === '%' ? window.used
     : window.limit > 0 ? window.used / window.limit * 100 : 0;
