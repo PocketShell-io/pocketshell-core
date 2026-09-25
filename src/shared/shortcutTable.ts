@@ -181,6 +181,16 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
       'The tab bar\'s "Rename…" menu item, on the keyboard, at the user\'s words ("ctrl+shift+R - rename the current tab"): it opens the same inline field on the ACTIVE tab, pre-filled with the name the host knows. The shifted letter encodes nothing at a terminal, so the shell is owed nothing — but the chord is Electron\'s Force Reload wherever the default menu survives. Windows and Linux run with that menu nulled (169cf60), so the chord is free there; macOS keeps the menu, a cancelled renderer keydown cannot stop a window role, and claiming it would run the rename AND the reload — so the handler stands down on darwin (defaultMenu.ts), the same call text.deleteWordBackward makes. Fixed rather than rebindable because the validator refuses this chord outright (the menu list), so a user who moved it away could never move it back. Stands down in a text field, over a Files tab (nothing the host names to relabel), and while a rename is open — the field owns the keyboard until Enter or Escape.',
   },
   {
+    id: 'tabs.close',
+    surface: 'workspace',
+    label: 'Close the current tab',
+    defaults: ['Ctrl+F4'],
+    owner: 'app',
+    rebindable: true,
+    note:
+      'The `×`, on the keyboard, at the user\'s words ("ctrl+f4 to close the current tab"). The two tab kinds keep the two meanings their `×` has: a FILES tab closes outright, and a SESSION tab ARMS the same named Stop confirmation the `×` and the tab menu open — the chord never kills directly, because the one control that can destroy a live process on another machine must say so and ask (useSessionStop.ts). Key repeat is refused: a held chord would close Files tabs at the autorepeat rate. WHAT IT COSTS is real and stated rather than assumed: xterm encodes Ctrl+F4 as ESC [ 1 ; 5 S — a modified function key that programs can bind — so a genuine key is taken from the shell, claimed at the user\'s word like Ctrl+N was. Free of the other claims: the default menu is gone on Windows and Linux (Alt+F4 and the title bar still close the window, and the app\'s own close is Ctrl+Shift+W), and no other binding or reservation holds F4. Stands down in a text field and while a rename is open, like the other tab chords.',
+  },
+  {
     id: 'workspaces.stepUpDown',
     surface: 'global',
     label: 'The workspace above, the workspace below',

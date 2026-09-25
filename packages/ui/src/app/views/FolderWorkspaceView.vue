@@ -69,6 +69,7 @@ import OverlayPanel from '../components/OverlayPanel.vue';
 import LaunchSessionDialog from '../components/LaunchSessionDialog.vue';
 import WorkspaceTabBar from '../components/WorkspaceTabBar.vue';
 import type { Box } from '@pocketshell/core/shared/popupPlacement';
+import type { WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import { composerAgentKind } from '@pocketshell/core';
 import { normalisePart } from '@pocketshell/core';
 import { absoluteRemoteFolder, vscodeHostToken } from '@pocketshell/core/shared/vscodeDeepLink';
@@ -387,14 +388,9 @@ const { launching, createError, openLaunchDialog, cancelPendingLaunch, createSes
     addAnchor,
   });
 
-/**
- * The window chords — `Ctrl+[` / `Ctrl+]`, `Ctrl+Shift+R` and `Ctrl+N` — moved
- * whole, comments and all, to ../useWorkspaceChords.ts; the listener registers
- * itself here for the mount's lifetime, exactly where the view's handler used
- * to. The rename chord shares the tab menu's `beginRename` rather than
- * re-opening the field by another path.
- */
-useWorkspaceChords({ renaming, tabs, activeTab, settings, goToTab, createSession, beginRename });
+// The window chords live in ../useWorkspaceChords.ts; the call itself sits
+// under the stop machinery below, because the close chord's wiring reads
+// `stopping` — see `closeActiveTab` there.
 
 /**
  * What the strip under the tab bar shows: the rename's refusal when there is
@@ -538,6 +534,35 @@ const { stopping, stopBusy, confirmStop } = useSessionStop({
   openPanes,
   createError,
   selectAfterClose,
+});
+
+/**
+ * `Ctrl+F4` — the `×`, on the keyboard, keeping the `×`'s two meanings: a
+ * Files tab closes outright, a session tab ARMS the stop — the same named
+ * confirmation the `×` and the menu open, never the kill itself, because the
+ * one control that can destroy a live process must say so and ask.
+ */
+function closeActiveTab(tab: WorkspaceTab): void {
+  if (tab.kind === 'files') closeFilesTab(tab.id);
+  else stopping.value = tab.session;
+}
+
+/**
+ * The window chords — `Ctrl+[` / `Ctrl+]`, `Ctrl+Shift+R`, `Ctrl+N`,
+ * `Ctrl+F4` — live in ../useWorkspaceChords.ts and register themselves here
+ * for the mount's lifetime. Nothing is re-implemented at a second path: the
+ * rename chord shares the tab menu's `beginRename`, the close chord shares
+ * the `×`'s two meanings through `closeActiveTab` above.
+ */
+useWorkspaceChords({
+  renaming,
+  tabs,
+  activeTab,
+  settings,
+  goToTab,
+  createSession,
+  beginRename,
+  closeTab: closeActiveTab,
 });
 
 /**

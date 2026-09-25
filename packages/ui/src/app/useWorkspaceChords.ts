@@ -19,14 +19,20 @@ export interface WorkspaceChordsDeps {
   createSession: (choice: LaunchChoice | null) => Promise<void>;
   /** The tab menu's "Rename…", which the rename chord opens on the active tab. */
   beginRename: (tab: WorkspaceTab) => void;
+  /**
+   * The `×`'s close, which the close chord shares rather than re-implements:
+   * a Files tab closes outright, a session tab arms the confirmed Stop. The
+   * view owns that policy; the chord only aims it at the ACTIVE tab.
+   */
+  closeTab: (tab: WorkspaceTab) => void;
 }
 
 /**
  * The folder workspace's window chords: `Ctrl+[` / `Ctrl+]` to step one tab
- * left or right, `Ctrl+Shift+R` to rename the active tab, and `Ctrl+N` for a
- * plain shell in this folder. Extracted from FolderWorkspaceView.vue with its
- * reasoning; the listener registers itself for the mount's lifetime, exactly
- * where the view's used to.
+ * left or right, `Ctrl+Shift+R` to rename the active tab, `Ctrl+N` for a
+ * plain shell in this folder, and `Ctrl+F4` to close the active tab.
+ * Extracted from FolderWorkspaceView.vue with its reasoning; the listener
+ * registers itself for the mount's lifetime, exactly where the view's used to.
  */
 export function useWorkspaceChords(deps: WorkspaceChordsDeps): void {
   /**
@@ -166,6 +172,29 @@ export function useWorkspaceChords(deps: WorkspaceChordsDeps): void {
       e.preventDefault();
       e.stopPropagation();
       deps.beginRename(active);
+      return;
+    }
+
+    // `Ctrl+F4`: close the ACTIVE tab — the `×`, on the keyboard. The registry
+    // entry records the cost (xterm encodes this chord as ESC [ 1 ; 5 S, a
+    // modified function key programs can bind) and why the chord is claimable
+    // anyway; what belongs HERE is the two-kinds rule the `×` itself obeys:
+    // the chord routes through `closeTab`, which a Files tab answers by
+    // closing and a session tab answers by ARMING the stop — the same named,
+    // confirmed dialog the `×` and the menu open. The chord never kills
+    // directly: a keystroke gives the user no aim at a tab, so it cannot be
+    // the thing that destroys one. `e.repeat` is refused because a held chord
+    // would close Files tabs at the autorepeat rate (a session tab is safe —
+    // the dialog takes the keyboard — but one rule for both kinds is a rule a
+    // reader can trust).
+    if (isShortcut(bindings, 'tabs.close', e)) {
+      if (editingTarget(e.target)) return;
+      if (e.repeat) return;
+      const active = deps.activeTab.value;
+      if (!active) return;
+      e.preventDefault();
+      e.stopPropagation();
+      deps.closeTab(active);
       return;
     }
 
