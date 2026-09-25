@@ -486,12 +486,15 @@ function onToggleDefault(host: HostEntry): void {
           {{ ' ' }}
           <!-- The platform's way out of an empty list — the web routes to its
                add/import surface, which nothing else links to since this view
-               became the home. -->
-          <router-link
+               became the home. A plain button, not router-link: the route is
+               platform data, and this view navigates by router.push anyway. -->
+          <button
             v-if="hostSource?.emptyAction"
             class="btn-ghost"
-            :to="hostSource.emptyAction.route"
-          >{{ hostSource.emptyAction.label }}</router-link>
+            @click="router.push(hostSource.emptyAction.route)"
+          >
+            {{ hostSource.emptyAction.label }}
+          </button>
         </p>
       </template>
       <p v-if="connectError" class="error">{{ connectError }}</p>
@@ -751,11 +754,6 @@ h1 {
 }
 .error {
   font-size: var(--fs-300);
-}
-/* The empty-state action is an anchor (router-link) wearing .btn-ghost, a
-   button recipe: strip the link look the class does not anticipate. */
-a.btn-ghost {
-  text-decoration: none;
 }
 code {
   background: var(--surface-2);
