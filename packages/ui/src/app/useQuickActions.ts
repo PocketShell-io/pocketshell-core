@@ -135,26 +135,21 @@ export function useQuickActions(deps: QuickActionsDeps): {
         deps.roots.value.find((root) => root.directories.some((d) => d.key === dir.key))
           ?.key ?? 'other';
       const names = dir.rows.map((r) => r.session.name).join(' ');
-      // The folder row: the switcher's row, in the palette. A folder holding
-      // several sessions also gets one row PER SESSION below — that is the
-      // "which one" the user asked for — while a folder holding exactly one
-      // needs no session row, because folder and session are one destination
-      // and saying so twice is the dead field the panel's count rule retired.
-      list.push({
-        id: `folder:${dir.key}`,
-        label: `Open ${dir.label}`,
-        hint: dir.rows.length > 1 ? `${rootKey} · ${dir.rows.length}` : (rootKey ?? dir.path),
-        keywords: `${dir.path} ${names}`,
-        group: rootKey,
-        dot: dir.active,
-        run: () => deps.onSelectFolder(dir),
-      });
+
+      // A folder holding SEVERAL sessions gets one row PER SESSION, spelled
+      // `folder:session` — the host's own selector spelling (the same
+      // `workspace:tag` the crash warnings speak), because a bare tag like
+      // `main` repeats down the list. The folder's own row is deliberately
+      // ABSENT here: typing the folder's name must present the choice the
+      // user asked for — which session to open — and a vaguer "just open the
+      // folder" row sitting above the choice would win Enter every time while
+      // answering a question nobody was asking.
+      //
+      // A folder holding exactly one session keeps a single row labelled by
+      // the folder: folder and session are one destination there, and saying
+      // so twice is the dead field the panel's count rule retired.
       if (dir.rows.length > 1) {
         for (const row of dir.rows) {
-          // `folder:session` — the host's own selector spelling (the same
-          // `workspace:tag` the crash warnings speak). The label carries the
-          // whole address because `main` alone repeats down the list; the
-          // hint would only say the label again.
           list.push({
             id: `session:${sessionIdentityKey(row.session.name, {
               backend: row.session.backend,
@@ -167,6 +162,16 @@ export function useQuickActions(deps: QuickActionsDeps): {
             run: () => deps.onSelectFolder(dir, row.session.name),
           });
         }
+      } else {
+        list.push({
+          id: `folder:${dir.key}`,
+          label: `Open ${dir.label}`,
+          hint: rootKey ?? dir.path,
+          keywords: `${dir.path} ${names}`,
+          group: rootKey,
+          dot: dir.active,
+          run: () => deps.onSelectFolder(dir),
+        });
       }
     }
 
