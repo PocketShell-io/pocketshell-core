@@ -111,6 +111,21 @@ export interface FolderTree {
   filtering: ComputedRef<boolean>;
 }
 
+/**
+ * The quick search's text. MODULE scope, and that is load-bearing, not
+ * style: `useFolderTree()` runs once per consumer — the panel's input, the
+ * rows, the workspace view — and a ref created inside the composable gives
+ * every consumer its own private copy. That is the bug this shape replaces:
+ * the input wrote its ref, the rows rendered from a different one that was
+ * empty forever, and typing filtered nothing. One module ref is one tree.
+ *
+ * Not persisted on purpose: a filter is where the user is looking right now,
+ * not a preference. It clears when the panel unmounts with the route and when
+ * a session the user just created needs revealing (SessionTree's create path)
+ * — both deliberate forgettings.
+ */
+const filterQuery = ref('');
+
 export function useFolderTree(): FolderTree {
   const connection = useConnectionStore();
   const projects = useProjectsStore();
@@ -163,13 +178,6 @@ export function useFolderTree(): FolderTree {
   const arranged = computed(() =>
     applyFolderOrder(grouped.value, settings.folderOrderFor(host.value)),
   );
-
-  /**
-   * The quick search's text. One module-scope ref, shared by every component
-   * that calls this composable — see `filterQuery` on the returned shape for
-   * why it is shared and why it is deliberately ephemeral.
-   */
-  const filterQuery = ref('');
 
   // The filter is the LAST stage and the only one that removes rows rather
   // than reordering them: what survives is what the panel draws, and both
