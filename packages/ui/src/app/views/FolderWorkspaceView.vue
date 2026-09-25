@@ -478,13 +478,16 @@ function addFilesFromMenu(): void {
  * `~/git/foo` would look for a directory NAMED `~`.
  *
  * The button is hidden when the workspace has no real path (an untracked
- * session's pseudo-folder), so the refusals below are edge-conditions, not
- * UI states.
+ * session's pseudo-folder), and when the platform omits the editors
+ * capability — the deep link's host token is only as good as the user's
+ * LOCAL ~/.ssh/config, which a browser cannot see — so the refusals below
+ * are edge-conditions, not UI states.
  */
 async function openInVsCode(): Promise<void> {
+  const editors = api.editors;
   const path = folderPath.value;
   const host = connection.activeHost;
-  if (path === null || !host || !connection.connectionId) return;
+  if (path === null || !host || !connection.connectionId || !editors) return;
   let absolute = absoluteRemoteFolder(path, projects.home);
   if (absolute === null) {
     // The null can be premature: the ref is only as good as the last
@@ -507,7 +510,7 @@ async function openInVsCode(): Promise<void> {
     return;
   }
   try {
-    await api.editors.openVsCode({ hostToken: vscodeHostToken(host), path: absolute });
+    await editors.openVsCode({ hostToken: vscodeHostToken(host), path: absolute });
   } catch (e) {
     // The OS may have nothing registered for the scheme (VS Code without
     // Remote-SSH, or no VS Code). Visible in the strip, reason in the log.
@@ -632,7 +635,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       :session-tab-title="sessionTabTitle"
       :tab-mark="tabMark"
       :identity-for="identityFor"
-      :vs-code="folderPath !== null"
+      :vs-code="folderPath !== null && api.editors !== undefined"
       @select="selectTab"
       @begin-rename="beginRename"
       @commit-rename="commitRename"

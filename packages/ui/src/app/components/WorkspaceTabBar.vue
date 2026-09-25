@@ -39,9 +39,10 @@ const props = defineProps<{
   /** The workspace-qualified identity for a session name. */
   identityFor: (name: string, like?: string) => string;
   /**
-   * Whether the workspace has a real folder path for the "Open in VS Code"
-   * button to hand over — false for an untracked session's pseudo-folder,
-   * which has no path on disk to open.
+   * Whether the "Open in VS Code" button shows at all: the workspace has a
+   * real folder path to hand over (false for an untracked session's
+   * pseudo-folder, which has no path on disk to open) AND the platform
+   * provides the editors capability — the parent folds both halves in.
    */
   vsCode: boolean;
 }>();

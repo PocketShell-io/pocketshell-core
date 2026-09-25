@@ -235,7 +235,10 @@ function setSort(key: FolderSortKey): void {
  * the same way. Two derivations of one key is a row that opens a workspace with
  * no tabs in it — see the header of `folderTree.ts` for the whole argument.
  */
-const { home, roots, folders, filterQuery, filtering } = useFolderTree();
+// `filtering` stays in the derivation — SessionTreeRows pulls its own
+// useFolderTree and reads it there — but this component has no use for it,
+// and a web tsconfig with noUnusedLocals does.
+const { home, roots, folders, filterQuery } = useFolderTree();
 
 // The quick search — a summoned filter row, and its chord. The state machine
 // (summon, dismiss, Enter-takes-first) lives in ../useSessionSearch.ts; the

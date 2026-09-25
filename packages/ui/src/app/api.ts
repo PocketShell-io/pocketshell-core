@@ -249,7 +249,14 @@ export interface PocketShellApi {
     "emptyAction"?: { label: string; route: string };
     };
 
-    "editors": {
+    // Optional capability: the vscode:// deep link. Remote-SSH resolves the
+    // host token against the user's LOCAL ~/.ssh/config on the machine the
+    // OS dispatches to — a file only the desktop can vouch for (it parsed
+    // that config itself). A browser can hand the OS the scheme but cannot
+    // prove the alias exists, and a synced-only host would strand the user
+    // in a VS Code connect error the app cannot explain. The web omits the
+    // group and the shared UI hides the action over the seam.
+    "editors"?: {
     "openVsCode": (req: { hostToken: string; path: string }) => Promise<boolean>;
     };
 
