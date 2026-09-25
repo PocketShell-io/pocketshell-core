@@ -63,7 +63,7 @@
 // moved the same way: the timers to useSessionTreePoll, the row drag to
 // useFolderDrag, the row menu to useFolderMenu, the folder stop to
 // useFolderStop, and the row text (tooltips, badges, ages) to sessionTreeText.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import NewSessionDialog from './NewSessionDialog.vue';
 import HostPanelButtons from './HostPanelButtons.vue';
@@ -93,6 +93,7 @@ import { useFolderStop } from '../useFolderStop';
 import CrashWarningBanner from './CrashWarningBanner.vue';
 import { useWarningsStore } from '../stores/warnings';
 import { useSessionTreePoll } from '../useSessionTreePoll';
+import { useSessionSearch } from '../useSessionSearch';
 import { sessionCountLabel } from '../sessionTreeText';
 
 defineProps<{
@@ -225,64 +226,6 @@ function setSort(key: FolderSortKey): void {
   sortMenu.value = null;
 }
 
-// ---------------------------------------------------------------------------
-// The quick search — a summoned filter row, and its chord
-// ---------------------------------------------------------------------------
-
-/**
- * The filter row exists ONLY while summoned — `sessions.filterTree`
- * (Ctrl+Shift+F) opens it focused, Escape clears and closes it, Enter takes
- * the first match and closes. The Files pane's Ctrl+F is the pattern being
- * copied whole, and the reason is the same one that killed the permanent
- * strip this row replaced: the panel is the app's front door and 36px of
- * always-on chrome for a tool used in bursts was space the rows were paying
- * for. A filter you summon is where you are looking RIGHT NOW; when the look
- * ends, the row leaves with it.
- *
- * The text itself lives in the SHARED derivation (folderTree.ts's
- * `filterQuery`), not here: `Ctrl+↑`/`Ctrl+↓` and the collapsed rail's
- * switcher must see exactly the rows this panel draws, and a second copy of
- * the query they cannot read would put the chord on hidden rows — the
- * two-derivations bug that file exists to prevent, one level up. The rules
- * the match itself obeys (label, path, and the session names the rows no
- * longer show; a query that names a root keeps the root whole) live in
- * ../folderFilter.ts.
- */
-const searchOpen = ref(false);
-const filterEl = ref<HTMLInputElement | null>(null);
-
-/** Summon the row and put the keyboard in it, previous query selected. */
-function openSearch(): void {
-  searchOpen.value = true;
-  void nextTick(() => {
-    filterEl.value?.focus();
-    filterEl.value?.select();
-  });
-}
-
-/**
- * Dismiss: the query goes WITH the row — a closed search keeping its text is
- * a filter the panel still applies with nothing on screen to say so, which is
- * how a tree ends up quietly missing folders.
- */
-function closeSearch(): void {
-  searchOpen.value = false;
-  filterQuery.value = '';
-}
-
-/** Enter takes the first visible folder and ends the search. */
-function onFilterEnter(): void {
-  const first = folders.value[0];
-  if (first) {
-    closeSearch();
-    emit('select', first);
-  }
-}
-
-function onFilterEscape(): void {
-  closeSearch();
-}
-
 /**
  * `$HOME` and the tree, from the ONE derivation (../folderTree.ts).
  *
@@ -293,6 +236,16 @@ function onFilterEscape(): void {
  * no tabs in it — see the header of `folderTree.ts` for the whole argument.
  */
 const { home, roots, folders, filterQuery, filtering } = useFolderTree();
+
+// The quick search — a summoned filter row, and its chord. The state machine
+// (summon, dismiss, Enter-takes-first) lives in ../useSessionSearch.ts; the
+// panel hands it the shared query ref and its own select. The text itself
+// lives in the SHARED derivation read above, not here: `Ctrl+↑`/`Ctrl+↓` and
+// the collapsed rail's switcher must see exactly the rows this panel draws —
+// the two-derivations bug that file exists to prevent, one level up. The
+// match rules are ../folderFilter.ts's.
+const { searchOpen, filterEl, openSearch, closeSearch, onFilterEnter, onFilterEscape } =
+  useSessionSearch({ folders, filterQuery, onSelect: (dir) => emit('select', dir) });
 
 /**
  * The panel's two timers — the cosmetic minute clock and the five-second poll
@@ -457,6 +410,25 @@ function onSessionStarted(summary: SessionSummary): void {
     emit('select', dir, summary.name);
   }
 }
+
+/**
+ * The two verbs the quick-actions palette reaches for, published for the host
+ * workspace (HostWorkspaceView holds the ref): the palette's "New session…"
+ * is THIS dialog, not a second one, and its "Quick search" is the summoned
+ * row above, not a lookalike. One implementation per verb is the whole point —
+ * a palette command that half-worked would be worse than a palette without
+ * the command.
+ *
+ * `openCreate` is the header `+`'s exact body, guard included: the palette
+ * and the chord both stand down while the picker is already open, and a
+ * second summons must not reset a browse in progress.
+ */
+function openCreate(): void {
+  if (creating.value) return;
+  creating.value = { startIn: defaultStartIn.value };
+}
+
+defineExpose({ openCreate, openSearch });
 </script>
 
 <template>

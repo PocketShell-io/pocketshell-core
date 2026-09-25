@@ -189,6 +189,15 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     rebindable: false,
     note: 'The other half of the same gesture: it walks the session panel’s folder rows, flat across roots (a root header is a label, not a stop), and opens each one’s workspace. Owned by HostWorkspaceView, because it changes WHICH workspace is mounted and that view owns the route — surface "global" for the same reason. Clamps at both ends. The cheaper half at the terminal: xterm sends ESC [ 1 ; 5 A / B, which readline leaves unbound by default. Same text-field exemption as the tab arrows, kept in step deliberately.',
   },
+  {
+    id: 'workspace.quickActions',
+    surface: 'global',
+    label: 'Quick actions — the command palette',
+    defaults: ['Ctrl+P', 'Ctrl+Shift+P'],
+    owner: 'app',
+    rebindable: false,
+    note: 'One overlay that lists the workspace’s verbs — open a folder, open a panel, new session, sort, back to the host list — filtered as you type, run with Enter. A PAIR of chords, fixed for the same reason a pair always is here: an override replaces a binding’s chords outright and would lose one. Ctrl+Shift+P is the VS Code reflex and encodes nothing at the shell; bare Ctrl+P is ^P — readline previous-history — a real key taken from programs that bind it, claimed at the user’s word for the same reason Ctrl+N was ("maybe ctrl+p"): the palette is the one surface meant to be reachable from anywhere, terminal included, and a chord that stands down at the prompt would not be that. Stands down inside a text field, where the prose is.',
+  },
 
   // `tabs.move` (Ctrl+Shift+PageUp/PageDown), `tabs.jumpToIndex`
   // (Ctrl+1..Ctrl+9) and the tab CYCLE (`tabs.next`/`tabs.previous`,

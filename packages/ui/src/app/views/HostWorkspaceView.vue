@@ -45,8 +45,10 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import PopupMenu from '../components/PopupMenu.vue';
 import SessionTree from '../components/SessionTree.vue';
+import CommandPalette from '../components/CommandPalette.vue';
 import HostPanelButtons from '../components/HostPanelButtons.vue';
 import { type HostPanel } from '../hostPanels';
+import { useQuickActions } from '../useQuickActions';
 import { type Box } from '@pocketshell/core/shared/popupPlacement';
 import { requestWorkspaceFocus } from '../workspaceFocus';
 import { useFolderTree } from '../folderTree';
@@ -415,6 +417,28 @@ const switcherTitle = computed(() =>
   sessionTotal.value > 0 ? `Sessions — ${sessionTotal.value}` : 'Sessions',
 );
 
+/* ── Quick actions — the command palette ───────────────────────────────────
+ * One summoned overlay listing the workspace's verbs, in the VS Code Ctrl+P
+ * shape (`workspace.quickActions` in the registry — a pair with Ctrl+Shift+P,
+ * both opening the same surface). This view owns it for the same reason it
+ * owns `Ctrl+↑`/`Ctrl+↓`: every verb the palette speaks is something this
+ * view or its children can already do — select a folder, open a panel, hide
+ * the panel, go back — and a palette that re-implemented any of them would be
+ * a second opinion about how navigation works. The command list itself lives
+ * in `useQuickActions.ts` (a design-gate payment; the rules travel with it) —
+ * the view hands it the handlers and refs above and renders the surface.
+ */
+const sessionTreeEl = ref<{ openCreate: () => void; openSearch: () => void } | null>(null);
+const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
+  allFolders,
+  roots,
+  panel,
+  panelCollapsed,
+  sessionTree: sessionTreeEl,
+  onSelectFolder,
+  onBack,
+});
+
 /* ── `Ctrl+↑` / `Ctrl+↓`: the workspace above, the workspace below ─────────
  *
  * Asked for as one gesture with the tab chords — "up and down - different
@@ -482,12 +506,20 @@ function stepWorkspace(direction: 1 | -1): void {
 function onWindowKeydown(e: KeyboardEvent): void {
   if (!e.ctrlKey && !e.metaKey) return;
   if (e.altKey) return;
+  if (editingTarget(e.target)) return;
+  // The quick-actions chord. Checked BEFORE the step pair: it is the newer
+  // verb, and a palette summoned over anything outranks stepping within it.
+  if (isShortcut(settings.shortcutBindings, 'workspace.quickActions', e)) {
+    e.preventDefault();
+    e.stopPropagation();
+    paletteOpen.value = true;
+    return;
+  }
   // The chord lives in the registry (`workspaces.stepUpDown`). The old
   // hand-spelled `e.shiftKey` exit went with the inline spelling, for the same
   // reason FolderWorkspaceView's did: a stand-in for "this chord wears no Shift"
   // would silently refuse any rebinding that does.
   if (!isShortcut(settings.shortcutBindings, 'workspaces.stepUpDown', e)) return;
-  if (editingTarget(e.target)) return;
   e.preventDefault();
   e.stopPropagation();
   stepWorkspace(e.key === 'ArrowDown' ? 1 : -1);
@@ -654,6 +686,7 @@ async function onRefreshUsage(): Promise<void> {
              overflow menu; it emits which overlay was asked for and this view
              still owns them. -->
         <SessionTree
+          ref="sessionTreeEl"
           :active-folder="activeFolder"
           :auto-forward="autoFwd"
           :forward-count="fwdCount"
@@ -715,6 +748,16 @@ async function onRefreshUsage(): Promise<void> {
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">
       <SettingsView />
     </OverlayPanel>
+
+    <!-- The quick actions palette — `workspace.quickActions` (Ctrl+P /
+         Ctrl+Shift+P) summons it, Escape or a run dismisses it. The command
+         list above is the whole feature; this is only the surface. -->
+    <CommandPalette
+      v-if="paletteOpen"
+      :commands="paletteCommands"
+      label="Quick actions"
+      @close="paletteOpen = false"
+    />
   </div>
 </template>
 
