@@ -87,14 +87,17 @@ export function useQuickActions(deps: QuickActionsDeps): {
       });
       if (dir.rows.length > 1) {
         for (const row of dir.rows) {
+          // `folder:session` — the host's own selector spelling (the same
+          // `workspace:tag` the crash warnings speak). The label carries the
+          // whole address because `main` alone repeats down the list; the
+          // hint would only say the label again.
           list.push({
             id: `session:${sessionIdentityKey(row.session.name, {
               backend: row.session.backend,
               workspace: row.session.workspace,
             })}:${dir.key}`,
-            label: `Open ${row.session.name}`,
-            hint: dir.label,
-            keywords: `${dir.label} ${dir.path}`,
+            label: `Open ${dir.label}:${row.session.name}`,
+            keywords: `${dir.label} ${row.session.name} ${dir.path}`,
             group: rootKey,
             dot: row.session.attached,
             run: () => deps.onSelectFolder(dir, row.session.name),
