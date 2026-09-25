@@ -49,6 +49,34 @@ function resetsAvailable(details: Record<string, unknown> | undefined): number |
 }
 
 /**
+ * The soonest expiry across the provider's reset credits. The arrays ride
+ * beside the counts under one detail key per provider (codex `reset_credits`,
+ * grok `resets`), each entry an `{expires_at}`; entries the provider no
+ * longer counts as available are skipped, so the date always belongs to a
+ * credit the count is actually talking about.
+ */
+function resetsExpireAt(details: Record<string, unknown> | undefined): string | null {
+  const credits = details?.['reset_credits'] ?? details?.['resets'];
+  if (!Array.isArray(credits)) return null;
+  let soonest: { t: number; iso: string } | null = null;
+  for (const credit of credits) {
+    if (!credit || typeof credit !== 'object') continue;
+    const { status, expires_at: expiresAt } = credit as {
+      status?: unknown;
+      expires_at?: unknown;
+    };
+    // Grok's entries carry no status at all; only a positive one (spent)
+    // disqualifies an entry.
+    if (typeof status === 'string' && status !== 'available') continue;
+    if (typeof expiresAt !== 'string') continue;
+    const t = Date.parse(expiresAt);
+    if (!Number.isFinite(t)) continue;
+    if (!soonest || t < soonest.t) soonest = { t, iso: expiresAt };
+  }
+  return soonest?.iso ?? null;
+}
+
+/**
  * Rebuild the row's window list from either wire shape. The helper still
  * self-reports 0.4.44 while quse's record underneath it moved from the
  * top-level pair to a keyed map, and a row consumed raw has neither a
@@ -95,7 +123,12 @@ function normalizeUsageRow(row: WireRow): UsageRow {
       window: label ?? generic,
     }))
     .sort((a, b) => termRank(a.window) - termRank(b.window));
-  return { ...row, windows, resets_available: resetsAvailable(row.details) };
+  return {
+    ...row,
+    windows,
+    resets_available: resetsAvailable(row.details),
+    resets_expire_at: resetsExpireAt(row.details),
+  };
 }
 
 /** Parse `pocketshell usage --json` (one JSON object per line). */

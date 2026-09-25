@@ -46,6 +46,13 @@ export interface UsageRow {
    * normalized view of both, so consumers print one field.
    */
   resets_available: number | null;
+  /**
+   * When the soonest of those credits is withdrawn — the `expires_at` each
+   * entry of the per-provider credit arrays carries (codex `reset_credits`,
+   * grok `resets`). Null when the provider names no expiry the parser can
+   * read, so the note degrades to the bare count.
+   */
+  resets_expire_at: string | null;
 }
 
 // ---- from src/main/projects/repos.ts ----
