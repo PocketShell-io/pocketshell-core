@@ -10,7 +10,11 @@
 // (`~/git/pocketshell` -> `git-pocketshell`, the rule `tmuxctl` and the
 // Android app apply so all three clients agree about which session belongs to
 // which folder). The name the create WILL ask for is previewed in the footer
-// before anything is committed; it is never typed.
+// before anything is committed. It is derived, not typed — with one exception
+// that is the preview itself: clicking it opens an inline field, and a label
+// typed there is carried through the SAME derivation the folder name takes
+// (see `customName` in useNewSessionCommit.ts), so the footer keeps showing
+// the name the host will actually answer to.
 //
 // Three routes, one destination:
 //
@@ -69,7 +73,7 @@
 // missing directory exits 0 and silently lands the pane in `$HOME`. Both are
 // worth a sentence, so in those cases the dialog stays put, says it, and the
 // user presses Open (or goes round again) having read it.
-import { ref } from 'vue';
+import { nextTick, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from './OverlayPanel.vue';
 import LaunchSessionDialog from './LaunchSessionDialog.vue';
@@ -137,6 +141,7 @@ const {
   manualRepo,
   selectedRepo,
   cloneRoot,
+  customName,
   derivedName,
   preparing,
   stepError,
@@ -183,6 +188,46 @@ const {
   toggleRootsMenu,
   onRoot,
 } = useNewSessionFolders({ projects, connection, route, busy, commit });
+
+// ---- the editable name ----------------------------------------------------
+//
+// The preview is the honest place to rename: it sits beside the button that
+// will commit the name, and it already shows the sanitised form the host will
+// resolve (the derivation runs THROUGH the host's rule — see `customName`).
+// A separate "session name" field would promise more than the flow delivers,
+// because the host still owns uniqueness — `main` can still come back as
+// `main-2` — and the preview is where that truth is already being told.
+//
+// One field, swapped in for the name, in place — not a second dialog for one
+// word. Enter or blur commits; Escape puts the preview back. The draft starts
+// from the override when there is one and from the derived name when there is
+// not, so "click `main`, change it" is editing in place, and committing an
+// untouched field is a no-op by construction.
+const nameEditing = ref(false);
+const nameDraft = ref('');
+const nameInputEl = ref<HTMLInputElement | null>(null);
+
+async function editName(): Promise<void> {
+  if (busy.value || !targetFolder.value) return;
+  nameDraft.value = customName.value || derivedName.value;
+  nameEditing.value = true;
+  await nextTick();
+  // Selected, not just focused: the common edit replaces the whole name, and
+  // a caret at the end invites appending to `main` instead.
+  nameInputEl.value?.select();
+}
+
+function commitNameEdit(): void {
+  // Escape unmounts the field before the blur it would otherwise leave behind
+  // can fire; a commit after a cancel would resurrect the override.
+  if (!nameEditing.value) return;
+  nameEditing.value = false;
+  customName.value = nameDraft.value.trim();
+}
+
+function cancelNameEdit(): void {
+  nameEditing.value = false;
+}
 </script>
 <template>
   <!-- Step two, INSTEAD of step one rather than on top of it. See `agentStep`.
@@ -439,7 +484,34 @@ const {
         <footer class="commit">
           <div class="preview">
             <span class="preview-label muted">session name</span>
-            <code class="preview-name">{{ derivedName || '—' }}</code>
+            <!-- The name is a control, not a label: it names the thing the
+                 Start button is about to create, so it is the one place a
+                 rename belongs. Gated on the same things Start is — with no
+                 folder there is nothing for a name to name, and the field
+                 would sit there claiming otherwise. -->
+            <input
+              v-if="nameEditing"
+              ref="nameInputEl"
+              v-model="nameDraft"
+              class="text-input name-edit"
+              spellcheck="false"
+              autocomplete="off"
+              aria-label="Session name"
+              :disabled="busy"
+              @keydown.enter.prevent="commitNameEdit"
+              @keydown.esc.prevent="cancelNameEdit"
+              @blur="commitNameEdit"
+            />
+            <button
+              v-else
+              class="preview-name"
+              type="button"
+              :title="targetFolder ? 'Rename this session' : undefined"
+              :disabled="busy || !targetFolder"
+              @click="editName"
+            >
+              {{ derivedName || '—' }}
+            </button>
             <span class="preview-label muted">in</span>
             <code class="preview-path" :title="targetFolder ?? ''">
               {{ targetFolder ? displayPath(targetFolder, projects.home) : '—' }}
@@ -772,8 +844,34 @@ const {
   letter-spacing: 0.06em;
   font-size: var(--fs-100);
 }
+/* A button wearing the preview's clothes: same mono, same accent, same size —
+   the affordance lives in the cursor and the hover underline, not in a border
+   that would fight the hairline this row sits under. */
 .preview-name {
   font-family: var(--font-mono);
+  font-size: var(--fs-400);
+  font-weight: var(--fw-semibold);
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: var(--r-sm);
+  cursor: text;
+}
+.preview-name:hover:not(:disabled) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.preview-name:disabled {
+  cursor: default;
+}
+/* The field swaps in at the preview's own scale — its `.text-input` frame,
+   but the name's size and weight, so the swap does not re-set the row. */
+.name-edit {
+  flex: 0 1 auto;
+  width: 20ch;
+  padding: 0 var(--sp-1);
   font-size: var(--fs-400);
   font-weight: var(--fw-semibold);
   color: var(--accent);

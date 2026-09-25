@@ -37,6 +37,7 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
   manualRepo: Ref<string>;
   selectedRepo: Ref<string | null>;
   cloneRoot: Ref<string>;
+  customName: Ref<string>;
   derivedName: Ref<string>;
   preparing: Ref<string | null>;
   stepError: Ref<string | null>;
@@ -72,7 +73,21 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
   /** Clone destination root on the host. The helper's own default is `~/git`. */
   const cloneRoot = ref('~/git');
 
-  /** Live preview of the name the create will ask the host for. Never user-entered. */
+  /**
+   * The name typed over the preview, or '' to keep the folder-derived one.
+   *
+   * The footer previews a name the user was never allowed to touch — the
+   * folder derives it and that was that — until the user pointed at `main`
+   * and asked to change it. The override is the whole of the mechanism: the
+   * preview re-derives THROUGH the host's own rule with the label in hand
+   * (see the watch below), so what the footer shows is what `startSession`
+   * will resolve, and a blank field means "derive" again. It is kept on a
+   * folder change rather than cleared — the user typed it, and naming before
+   * browsing should work as well as browsing before naming; `unique` still
+   * guards the collision a kept label can meet on the next create.
+   */
+  const customName = ref('');
+  /** Live preview of the name the create will ask the host for. */
   const derivedName = ref('');
   /** Set while a route's own slow step (mkdir, clone) is running. */
   const preparing = ref<string | null>(null);
@@ -213,16 +228,20 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
   });
 
   // The preview is the whole point of the derivation being visible, so it
-  // re-resolves on every change of target. `deriveName` reads the cached $HOME
-  // and does no host round-trip of its own.
+  // re-resolves on every change of target — and of label. An override does not
+  // bypass the derivation, it FEEDS it: `deriveName` runs the same backend rule
+  // the create will (`resolveAplexerTag` on an aplexer host,
+  // `resolveSessionName` on tmux), so the preview shows the sanitised name the
+  // host will actually answer to, not the raw typing. `deriveName` reads the
+  // cached $HOME and does no host round-trip of its own.
   watch(
-    [targetFolder, connId],
-    async ([folder, id]) => {
+    [targetFolder, connId, customName],
+    async ([folder, id, custom]) => {
       if (!folder || !id) {
         derivedName.value = '';
         return;
       }
-      derivedName.value = await projects.deriveName(id, folder);
+      derivedName.value = await projects.deriveName(id, folder, custom.trim() || undefined);
     },
     { immediate: true },
   );
@@ -337,7 +356,10 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
       }
     }
 
-    const result = await projects.start(id, folder, undefined, 'unique');
+    // The override rides along when set; blank means "derive from the folder",
+    // which the store spells by leaving `customName` out of the request. The
+    // host still owns uniqueness: `unique` walks `-2`, `-3`… past either name.
+    const result = await projects.start(id, folder, customName.value.trim() || undefined, 'unique');
 
     if (!result.ok) {
       outcome.value = result;
@@ -448,6 +470,7 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
     manualRepo,
     selectedRepo,
     cloneRoot,
+    customName,
     derivedName,
     preparing,
     stepError,
