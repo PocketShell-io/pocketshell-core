@@ -233,6 +233,22 @@ export interface PocketShellApi {
     "open": (url: string) => Promise<void>;
     };
 
+    // Optional capability: the platform's LOCAL host source, the thing the
+    // host picker's group label, empty state and load-failure copy name.
+    // Desktop reads ~/.ssh/config and provides the file's name; a browser has
+    // no config file and words the same surfaces around the synced account
+    // list. Omitting the group gets neutral wording and no source chip.
+    "hosts"?: {
+    /** Eyebrow over the local host group in the picker. */
+    "groupLabel": string;
+    /** The source's name; the picker renders it as code where it cites it. */
+    "sourceName": string;
+    /** Copy for an empty local list; embedding sourceName keeps the chip. */
+    "emptyHint": string;
+    /** The platform's way out of an empty list, on its own route. */
+    "emptyAction"?: { label: string; route: string };
+    };
+
     "editors": {
     "openVsCode": (req: { hostToken: string; path: string }) => Promise<boolean>;
     };

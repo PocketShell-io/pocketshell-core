@@ -57,6 +57,29 @@ const settingsOpen = ref(false);
 const reloadingHosts = ref(false);
 const hostReloadError = ref<string | null>(null);
 
+/**
+ * The platform's local host source, or null when it declares none. Every
+ * config-file sentence here used to be hardcoded to ~/.ssh/config — wrong
+ * the moment this view mounted in a browser, whose host list is the synced
+ * account and which has no config file to name. Desktop provides the file's
+ * name; the web words the same surfaces around its account list.
+ */
+const hostSource = api.hosts ?? null;
+/** The platform's noun for its host source, for load-failure copy. */
+const sourceName = hostSource?.sourceName ?? 'the host list';
+
+/**
+ * The empty list's copy, split on the source's name so the name keeps the
+ * code-chip treatment the hardcoded desktop template gave it.
+ */
+const emptyHint = computed(() => {
+  const hint = hostSource?.emptyHint ?? 'No hosts yet.';
+  const source = hostSource?.sourceName ?? null;
+  const at = source === null ? -1 : hint.indexOf(source);
+  if (source === null || at < 0) return { before: hint, source: null, after: '' };
+  return { before: hint.slice(0, at), source, after: hint.slice(at + source.length) };
+});
+
 /** True while the in-flight dial was started by the app, not by a click.
  *  Only the banner's wording reads it now — "(your default host)" is the one
  *  thing an automatic dial says that a clicked one does not. */
@@ -128,7 +151,7 @@ const hostGroups = computed<HostGroup[]>(() => {
   if (accountOnlyHosts.value.length > 0) {
     groups.push({ kind: 'account', label: 'From your account', hosts: accountOnlyHosts.value });
   }
-  groups.push({ kind: 'config', label: 'From ~/.ssh/config', hosts: connection.hosts });
+  groups.push({ kind: 'config', label: hostSource?.groupLabel ?? '', hosts: connection.hosts });
   return groups;
 });
 
@@ -170,14 +193,15 @@ onMounted(async () => {
   window.addEventListener('focus', refreshAccountStatus);
   try {
     await connection.loadHosts();
-  } catch {
+  } catch (error) {
     // A mount-time failure must not take auto-connect down with it: a
-    // rejected read of ~/.ssh/config used to abort this handler before
+    // rejected read of the host source used to abort this handler before
     // `decideAutoConnect` ran, and the picker then rendered its "no hosts
     // found" empty state for what is really a load failure. Report it in the
-    // same slot the reload path uses and let the decision run on whatever
-    // loaded.
-    hostReloadError.value = 'Could not read ~/.ssh/config';
+    // same slot the reload path uses (with the same detail) and let the
+    // decision run on whatever loaded.
+    const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+    hostReloadError.value = `Could not read ${sourceName}${detail}`;
   }
   const decision = decideAutoConnect({
     defaultHost: settings.defaultHost,
@@ -221,7 +245,7 @@ async function onReloadHosts(): Promise<void> {
     await connection.loadHosts();
   } catch (error) {
     const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
-    hostReloadError.value = `Could not reload ~/.ssh/config${detail}`;
+    hostReloadError.value = `Could not reload ${sourceName}${detail}`;
   } finally {
     reloadingHosts.value = false;
   }
@@ -372,9 +396,13 @@ function onToggleDefault(host: HostEntry): void {
            this one, so the two strips can never stack. -->
       <p v-if="defaultMissing && connectingTo === null" class="auto-banner stale">
         <AppIcon name="alert-triangle" :size="14" />
-        <span>
+        <span v-if="hostSource">
           Your default host <strong>{{ settings.defaultHost }}</strong> is not in
-          <code>~/.ssh/config</code> any more.
+          <code>{{ hostSource.sourceName }}</code> any more.
+        </span>
+        <span v-else>
+          Your default host <strong>{{ settings.defaultHost }}</strong> is no longer
+          in the host list.
         </span>
         <button class="btn-ghost" @click="settings.set('defaultHost', null)">Clear</button>
       </p>
@@ -451,7 +479,19 @@ function onToggleDefault(host: HostEntry): void {
           v-if="group.kind === 'config' && !connection.hosts.length && !connection.error && !hostReloadError"
           class="muted"
         >
-          No hosts found in <code>~/.ssh/config</code>. Add one there to get started.
+          <span>{{ emptyHint.before }}</span><code v-if="emptyHint.source">{{ emptyHint.source }}</code><span>{{ emptyHint.after }}</span>
+          <!-- The explicit space survives: Vue's whitespace condensing drops
+               the newline between these elements, and the action would butt
+               against the sentence. -->
+          {{ ' ' }}
+          <!-- The platform's way out of an empty list — the web routes to its
+               add/import surface, which nothing else links to since this view
+               became the home. -->
+          <router-link
+            v-if="hostSource?.emptyAction"
+            class="btn-ghost"
+            :to="hostSource.emptyAction.route"
+          >{{ hostSource.emptyAction.label }}</router-link>
         </p>
       </template>
       <p v-if="connectError" class="error">{{ connectError }}</p>
@@ -711,6 +751,11 @@ h1 {
 }
 .error {
   font-size: var(--fs-300);
+}
+/* The empty-state action is an anchor (router-link) wearing .btn-ghost, a
+   button recipe: strip the link look the class does not anticipate. */
+a.btn-ghost {
+  text-decoration: none;
 }
 code {
   background: var(--surface-2);
