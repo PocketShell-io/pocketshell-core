@@ -238,9 +238,10 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
                  folder is labelled by its session name, which is the only
                  label it has. -->
             <span class="label" :class="{ mono: dir.untracked }">{{ dir.label }}</span>
-            <!-- Counted only from 2 up. The `1` is the dead field the original measurement ruled out — see
-                 SESSIONLIST measured: every folder row stands for at least
-                 one session, so saying so on most of them is noise.
+            <!-- Counted only from 2 up. Every folder row stands for at least
+                 one session, so a bare `1` says nothing the row has not
+                 already said — the dead field the original count measurement
+                 ruled out.
                  IMMEDIATELY AFTER THE LABEL, ahead of the badges, for the
                  same reason the root's count moved: a reader scans ONE column
                  of rows, and a count that hugs its label on the header row
