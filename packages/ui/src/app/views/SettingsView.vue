@@ -116,7 +116,9 @@ function onDefaultHostChange(event: Event): void {
 const sortOptions = FOLDER_SORT_KEYS.map((key) => ({ key, label: FOLDER_SORT_LABELS[key] }));
 
 function onSortChange(event: Event): void {
-  settings.set('sessionTreeSort', (event.target as HTMLSelectElement).value as FolderSortKey);
+  // The action, not a bare write: picking a sort clears the dragged
+  // arrangements (one per host) — see setSessionTreeSort.
+  settings.setSessionTreeSort((event.target as HTMLSelectElement).value as FolderSortKey);
 }
 
 /* --- Session roots -------------------------------------------------------
@@ -380,14 +382,15 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 
       <!-- The folder-row sort, in the seat every other preference holds. The
            panel's own sort menu (the summoned search row) writes the same
-           setting — the zoom pair's shape: one stored value, two doors in. -->
+           setting through the same action. -->
       <div class="row">
         <div class="row-text">
           <label class="row-label" for="session-tree-sort">Sort folders</label>
           <p class="row-hint">
             The order of the folder rows in the session tree. <em>Host order</em> is the
-            order the host's listing reports. Folders you have dragged keep their place
-            under every sort.
+            order the host's listing reports, and it is the mode your dragged arrangement
+            belongs to: picking a sort clears dragged places, and dragging rows switches
+            you back under <em>Host order</em>.
           </p>
         </div>
         <select

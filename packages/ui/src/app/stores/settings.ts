@@ -199,11 +199,10 @@ export interface AppSettings {
    * `folderSort.ts`; this store only persists the choice.
    *
    * Two doors in, one stored value — the zoom pair's shape: the panel's own
-   * sort menu (in the summoned search row) for in-context access, and a
-   * select in Settings' "Session panel" section for whoever looks there
-   * first. The rules the keys obey (within roots only, stable, manual
-   * arrangement still wins on top) live in `folderSort.ts`; this store only
-   * persists the choice.
+   * sort menu (in the summoned search row) and a select in Settings' "Session
+   * panel" section. Both go through {@link setSessionTreeSort}, never through
+   * a bare write, because the sort and the manual arrangement are mutually
+   * exclusive — see that action.
    */
   sessionTreeSort: FolderSortKey;
   /**
@@ -744,6 +743,33 @@ export const useSettingsStore = defineStore('settings', () => {
     values.folderOrder = next;
   }
 
+  /**
+   * Pick the panel's folder sort, and clear every host's manual arrangement.
+   *
+   * ONE action rather than a bare write, because the two settings interact
+   * and the interaction was measured in the wild: a user with a dragged
+   * arrangement picked "Name" and nothing moved — the ranking
+   * (`applyFolderOrder`, applied after the sort) silently vetoed the sort
+   * folder by folder, and there was nothing on screen to say so. From the
+   * seat, that is the sort being broken.
+   *
+   * So the two are now mutually exclusive, and this action is where the
+   * exclusivity lives: an arrangement is a ranking made against a particular
+   * order, and a picked sort is a NEW statement about order — keeping stale
+   * ranks across it means keeping silent vetoes. Drags rebuild the
+   * arrangement under `host`, and drags are refused while a non-default sort
+   * is active (SessionTreeRows), so ranks only ever exist under `host` and a
+   * picked sort is never second-guessed.
+   *
+   * EVERY host's arrangement clears, not just the active one: the sort is a
+   * global statement, and an arrangement kept for a host the user is not
+   * looking at is a veto waiting to be rediscovered there.
+   */
+  function setSessionTreeSort(key: FolderSortKey): void {
+    values.sessionTreeSort = key;
+    values.folderOrder = {};
+  }
+
   /* --- Keyboard ----------------------------------------------------------
    * The bindings IN FORCE, and the three moves that change them.
    *
@@ -829,6 +855,7 @@ export const useSettingsStore = defineStore('settings', () => {
     removeSessionRoot,
     folderOrderFor,
     setFolderOrder,
+    setSessionTreeSort,
     shortcutBindings,
     hasShortcutOverrides,
     rebindShortcut,

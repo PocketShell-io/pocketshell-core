@@ -116,7 +116,14 @@ export function useFolderDrag(deps: FolderDragDeps): {
     dropTarget.value = null;
     if (from === null || target === null) return;
     const next = reorderFolders(deps.roots.value, from, target.gap);
-    if (next) deps.settings.setFolderOrder(deps.host.value, next);
+    if (!next) return;
+    // A drag IS the manual arrangement speaking, so it switches the panel
+    // back under `host` first: with a sort active, a kept sort would veto the
+    // freshly written ranks folder by folder — the exact silent-noop that
+    // made "I picked Name" read as broken. Sorting and arranging are one
+    // mode at a time, and the mode the hands chose wins.
+    if (deps.settings.sessionTreeSort !== 'host') deps.settings.setSessionTreeSort('host');
+    deps.settings.setFolderOrder(deps.host.value, next);
   }
 
   function onRowDragEnd(): void {

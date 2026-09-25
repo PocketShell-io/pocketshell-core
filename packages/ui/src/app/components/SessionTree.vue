@@ -218,7 +218,10 @@ function openSortMenu(): void {
 const sortOptions = FOLDER_SORT_KEYS.map((key) => ({ key, label: FOLDER_SORT_LABELS[key] }));
 
 function setSort(key: FolderSortKey): void {
-  settings.sessionTreeSort = key;
+  // The action, not a bare write: picking a sort clears every host's dragged
+  // arrangement — the store action's comment holds the story of the sort the
+  // user picked and never saw applied.
+  settings.setSessionTreeSort(key);
   sortMenu.value = null;
 }
 
@@ -570,16 +573,23 @@ function onSessionStarted(summary: SessionSummary): void {
       >
         <ul>
           <!-- One key per item, the active one ticked — a radio in menu
-               clothing. The labels are folderSort.ts's (one source, so the
-               menu and the tests read the same words). -->
+               clothing. The tick is rendered only on the active key inside a
+               fixed-width slot, so the labels align and the tick cannot be
+               misread as one-per-item. The slot spans are THIS component's
+               markup, so their scoped styles follow them through the menu's
+               teleport — the earlier `visibility` attempt hung off
+               `.popup-menu :deep(...)`, which needs the menu root to carry
+               this component's scope id; a teleported root does not, and all
+               four ticks showed at once. -->
           <li v-for="opt in sortOptions" :key="opt.key">
             <button class="menu-item" @click="setSort(opt.key)">
-              <AppIcon
-                name="check"
-                :size="14"
-                class="sort-check"
-                :class="{ on: settings.sessionTreeSort === opt.key }"
-              />
+              <span class="sort-tick">
+                <AppIcon
+                  v-if="settings.sessionTreeSort === opt.key"
+                  name="check"
+                  :size="14"
+                />
+              </span>
               {{ opt.label }}
             </button>
           </li>
@@ -860,17 +870,16 @@ function onSessionStarted(summary: SessionSummary): void {
 .tree-filter .text-input::placeholder {
   color: var(--fg-muted);
 }
-/* The sort menu's tick column: always laid out, visible only on the active
-   key, so the items align and the tick reads as a radio rather than as an
-   action icon. `:deep` because the items arrive through PopupMenu's slot and
-   carry THIS component's scope id — the same reason the danger-item rules
-   below use it. */
-.popup-menu :deep(.sort-check) {
-  visibility: hidden;
+/* The sort menu's tick slot: always laid out so the labels align across items,
+   holding the check only on the active key. Direct scoped rule on this
+   component's own markup — see the template comment for why it must not hang
+   off `.popup-menu :deep(...)`. */
+.sort-tick {
+  flex: none;
+  display: inline-flex;
+  justify-content: center;
+  width: 14px;
   color: var(--accent);
-}
-.popup-menu :deep(.sort-check.on) {
-  visibility: visible;
 }
 .error {
   padding: 0 var(--sp-3) var(--sp-2);
