@@ -73,11 +73,11 @@ import { ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from './OverlayPanel.vue';
 import LaunchSessionDialog from './LaunchSessionDialog.vue';
+import NewSessionOutcome from './NewSessionOutcome.vue';
 import PopupMenu from './PopupMenu.vue';
 import { useConnectionStore } from '../stores/connection';
 import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
-import { KIND_LABELS } from '@pocketshell/core';
 import type { SessionSummary } from '@pocketshell/core';
 import { displayPath } from '../stores/projects';
 import { useNewSessionCommit, type SessionRoute } from '../useNewSessionCommit';
@@ -202,66 +202,16 @@ const {
       <!-- ================= outcome =================
            Only the answers that are not simply "yes" get this far: a plain
            success has already emitted `started` and this dialog is unmounting.
-           What is left is a failure, or the raw-`tmux` create whose warning is
-           the reason it holds. `reused` is not among them and never was from
-           here — this dialog asks for `unique`, which walks `-2`, `-3`… rather
-           than handing back an open session (see the note beside
-           `derivedName`), so the host's `reused` flag is always false on this
-           path and the banner does not offer to explain a state it cannot
-           produce. -->
-      <section v-if="outcome" class="result">
-        <div :class="['result-banner', outcome.ok ? 'ok' : 'bad']">
-          <AppIcon :name="outcome.ok ? 'check' : 'alert-triangle'" />
-          <div class="result-text">
-            <p class="result-title">
-              <template v-if="outcome.ok">
-                Started <code>{{ outcome.sessionName }}</code>
-              </template>
-              <template v-else-if="outcome.code === 'folder-missing'">
-                That folder is not on the host
-              </template>
-              <template v-else>Could not start the session</template>
-            </p>
-            <p v-if="outcome.ok" class="result-sub muted">
-              in <code>{{ displayPath(outcome.folder ?? '', projects.home) }}</code>
-            </p>
-            <p v-else-if="outcome.code === 'folder-missing'" class="result-sub muted">
-              {{ outcome.error }}. Nothing was created — a session started in a missing
-              directory would silently land in <code>$HOME</code> instead.
-            </p>
-            <p v-else class="result-sub muted">{{ outcome.error }}</p>
-          </div>
-        </div>
-
-        <!-- The agent is armed, not started. Saying so here is what keeps the
-             banner honest about a launch that happens after a navigation the
-             user has not made yet — "I picked Claude and got a shell" is not a
-             bug anyone can report usefully. It reads as true as it ever did,
-             because the only successful create that still shows this panel is
-             the one the user must press Open on: everywhere else the
-             navigation happens on its own and there is no instruction to
-             give. -->
-        <p v-if="outcome.ok && parkedKind" class="launch-note">
-          <AppIcon name="terminal" :size="12" />
-          {{ KIND_LABELS[parkedKind] }} starts when this session's terminal opens — press
-          <strong>Open session</strong>.
-        </p>
-
-        <!-- Said plainly rather than hidden: the raw-tmux path cannot apply the
-             helper's systemd memory cap, so this session has no limit on it. -->
-        <p v-if="outcome.ok && outcome.via === 'tmux-fallback'" class="fallback-note">
-          <AppIcon name="alert-triangle" :size="12" />
-          Created with raw <code>tmux</code> — the <code>pocketshell</code> helper was
-          not usable here, so this session has <strong>no memory cap</strong>.
-        </p>
-
-        <div class="result-actions">
-          <button class="btn-secondary" @click="onStartAnother">Start another</button>
-          <button v-if="outcome.ok" class="btn-primary" autofocus @click="onOpen">
-            Open session
-          </button>
-        </div>
-      </section>
+           The panel itself is NewSessionOutcome — extracted under CLEAN_CODE
+           rule 12 when this file neared the component gate — and reads the
+           one result this dialog's commit left in `outcome`. -->
+      <NewSessionOutcome
+        v-if="outcome"
+        :outcome="outcome"
+        :parked-kind="parkedKind"
+        @open="onOpen"
+        @again="onStartAnother"
+      />
 
       <!-- ================= picker ================= -->
       <template v-else>
@@ -836,8 +786,7 @@ const {
   white-space: nowrap;
   min-width: 0;
 }
-.commit-actions,
-.result-actions {
+.commit-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -925,74 +874,6 @@ const {
   }
 }
 
-/* ---- outcome --------------------------------------------------------- */
-.result {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.result-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  border-radius: var(--r-md);
-  border: 1px solid var(--border);
-}
-.result-banner.ok {
-  background: var(--success-soft);
-  border-color: transparent;
-  color: var(--success);
-}
-.result-banner.bad {
-  background: var(--error-soft);
-  border-color: transparent;
-  color: var(--error);
-}
-.result-text {
-  min-width: 0;
-}
-.result-title {
-  margin: 0;
-  font-size: var(--fs-400);
-  line-height: var(--lh-400);
-  font-weight: var(--fw-semibold);
-  color: var(--fg);
-}
-.result-sub {
-  margin: var(--sp-1) 0 0;
-  font-size: var(--fs-200);
-}
-/* Accent-toned, not warning-toned: nothing has gone wrong, this is the next
-   step of what the user asked for. */
-.launch-note {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: var(--fs-200);
-}
-.launch-note .app-icon {
-  margin-top: 3px;
-}
-.fallback-note {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--warning-soft);
-  color: var(--warning);
-  font-size: var(--fs-200);
-}
-.fallback-note .app-icon {
-  margin-top: 3px;
-}
 code {
   font-family: var(--font-mono);
 }
