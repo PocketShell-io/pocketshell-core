@@ -49,6 +49,8 @@ import CommandPalette from '../components/CommandPalette.vue';
 import HostPanelButtons from '../components/HostPanelButtons.vue';
 import { type HostPanel } from '../hostPanels';
 import { useQuickActions } from '../useQuickActions';
+import { directoryKey } from '../sessionRoots';
+import { useProjectsStore } from '../stores/projects';
 import { type Box } from '@pocketshell/core/shared/popupPlacement';
 import { requestWorkspaceFocus } from '../workspaceFocus';
 import { useFolderTree } from '../folderTree';
@@ -71,6 +73,7 @@ const forwards = useForwardsStore();
 // Read for the chord table only; see the panel comment below for why settings
 // is otherwise not this view's business.
 const settings = useSettingsStore();
+const projects = useProjectsStore();
 
 /**
  * The host's identity, projected into the OS title bar. Watched rather than
@@ -443,6 +446,19 @@ function onConnectHost(host: HostEntry): void {
   });
 }
 
+/**
+ * Landing for a folder the palette just started a session in: the folder
+ * route, keyed the way the panel spells keys — home-relative via
+ * `directoryKey`, the conversion that keeps one directory from rendering as
+ * two spellings anywhere else in this feature.
+ */
+function goToFolderPath(absPath: string): void {
+  void router.push({
+    name: 'folder',
+    params: { name: String(route.params['name']), folder: directoryKey(absPath, projects.home) },
+  });
+}
+
 const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   allFolders,
   roots,
@@ -451,6 +467,7 @@ const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   sessionTree: sessionTreeEl,
   onSelectFolder,
   onConnectHost,
+  goToFolderPath,
   onBack,
 });
 
