@@ -436,24 +436,37 @@ defineExpose({ openCreate, openSearch });
     <!-- The `SESSIONS` word is gone, and its width is what paid for the host
          actions arriving here. See the header strip below. -->
     <div class="tree-header">
-      <!-- ORDER: `+`, ports, usage, refresh, settings, hide, back.
-           The run is the whole header: the back arrow held the left end alone
-           until the user's screenshot circled it and hide with an arrow
-           between, and it now closes the run's far end. The middle four keep
-           that user's earlier dictate ("here have ... then refresh then
-           settings then hide"; the `⋯` became its two contents at the same
-           ask), and the `+` leads because it is the panel's primary action —
-           first in the run, not least reachable.
+      <button class="icon-btn" title="Hide session panel" @click="emit('collapse')">
+        <!-- VS Code's "toggle sidebar" mark: truer to the action than a
+             hamburger, which promises a menu. -->
+        <AppIcon name="panel-left" :size="14" />
+      </button>
+      <!-- ORDER: hide, then — across the stretch of empty panel the
+           right-aligned run keeps — back, `+`, ports, usage, refresh,
+           settings.
 
-           WIDTH, at the 232px drag floor: seven --control-h squares
-           (7×28 = 196) plus six --sp-1 gaps (24) is 220px, in a content box
-           of 232 − 4 − 4 = 224. Four to spare, no shrink, nothing clipped —
-           the right padding is --sp-1 because the run's ghost squares each
-           carry their own optical inset (see .tree-header). There is still no
+           The user's screenshot circled the back arrow and hide with an arrow
+           between: hide takes the left end the back arrow used to hold alone,
+           and back lands at the run's head, immediately left of the `+`. The
+           rest of the run keeps that user's earlier dictate ("here have ...
+           then refresh then settings"; the `⋯` became its two contents at the
+           same ask, and "then hide" — the dictate's last word — is what this
+           screenshot undid, lifting hide out of the run entirely). The `+`
+           follows back because it is the panel's primary action, first of the
+           chrome proper.
+
+           WIDTH, at the 232px drag floor, because this strip is again full:
+           seven --control-h squares (7×28 = 196) plus six --sp-1 gaps (24) is
+           220px, in a content box of 232 − 8 − 4 = 220. It fits EXACTLY, with
+           no shrink and nothing clipped, and that is why the right padding is
+           --sp-1 against the left's --sp-2 (see .tree-header). There is no
            room for an eighth: the next control added here has to displace one
            or move the floor again — MIN_PANEL_WIDTH in HostWorkspaceView.vue
            and .tree's min-width below pin it together. -->
       <div class="header-actions">
+        <button class="icon-btn" title="Back to hosts" @click="emit('back')">
+          <AppIcon name="arrow-left" :size="14" />
+        </button>
         <!-- The general `+`: a session starting in the panel's first root
              (defaultStartIn), still free to browse anywhere from there. It is
              what replaced the panel's full-width foot button, and it is the
@@ -487,14 +500,6 @@ defineExpose({ openCreate, openSearch });
              remembered. -->
         <button class="icon-btn" title="Settings" @click="openPanel('settings')">
           <AppIcon name="settings" :size="14" />
-        </button>
-        <button class="icon-btn" title="Hide session panel" @click="emit('collapse')">
-          <!-- VS Code's "toggle sidebar" mark: truer to the action than a
-               hamburger, which promises a menu. -->
-          <AppIcon name="panel-left" :size="14" />
-        </button>
-        <button class="icon-btn" title="Back to hosts" @click="emit('back')">
-          <AppIcon name="arrow-left" :size="14" />
         </button>
       </div>
     </div>
@@ -764,22 +769,28 @@ defineExpose({ openCreate, openSearch });
   container-type: inline-size;
 }
 /* The workspace's top-left row, same --topbar-h as the session bar across the
-   splitter, so the two headers read as one line. Every control lives in
-   `.header-actions`, pressed against the right edge — the back arrow held the
-   left end alone until the strip's order moved it into the run, and nothing
-   has claimed the space since (the list below is welcome to the width).
+   splitter, so the two headers read as one line. A lone square on the left —
+   hide, since the user's screenshot traded it for the back arrow that held
+   this end before it — and, right-aligned, the run holding everything else.
 
-   Padding is --sp-1 on both sides. The right end is a RUN of seven ghost
-   squares, each already carrying ~7px of its own optical inset, so a further
-   8px there would be inset on top of inset; the left pads empty space and
-   keeps the same --sp-1 rather than an asymmetry with no work left to do. */
+   The LEFT padding is --sp-2, not --sp-3: ghost icon buttons carry their own
+   inner inset, and the old padding plus theirs pushed the lone left square
+   visibly off the panel's left rhythm.
+
+   The RIGHT padding is --sp-1, and the asymmetry is doing work rather than
+   drifting. The right end is a RUN of seven ghost squares, each already
+   carrying ~7px of its own optical inset, so a further 8px there is inset on
+   top of inset. Halving it is also exactly what makes the strip fit the 232px
+   drag floor with nothing shrunk — the arithmetic is in the template, above
+   `.header-actions`. The alignment argument and the width arithmetic want the
+   same thing, which is the only reason to spend an asymmetry on it. */
 .tree-header {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
   height: var(--topbar-h);
   flex: 0 0 auto;
-  padding: 0 var(--sp-1);
+  padding: 0 var(--sp-1) 0 var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
 .header-actions {
