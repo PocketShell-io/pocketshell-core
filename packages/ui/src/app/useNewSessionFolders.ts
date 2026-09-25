@@ -93,6 +93,13 @@ export function useNewSessionFolders(deps: NewSessionFoldersDeps): {
    * goes there after all. Landing it after every browse — entering a folder, up,
    * a crumb — keeps that same flow intact one level deeper: filter, descend,
    * filter again, with the caret never dropped on the floor.
+   *
+   * That post-browse landing must wait a tick. The watcher below is pre-flush:
+   * it runs BEFORE the template has cleared `:disabled`, and Chromium refuses
+   * `focus()` on a disabled element outright (jsdom does not, which is why the
+   * unit suite stayed green while the real app dropped the caret on every
+   * `startIn` open). By the time the deferred attempt runs, the re-render that
+   * re-enables the field has flushed and the focus is taken for real.
    */
   function focusSearch(): void {
     if (projects.browsing) return;
@@ -102,7 +109,7 @@ export function useNewSessionFolders(deps: NewSessionFoldersDeps): {
   watch(
     () => projects.browsing,
     (browsing, was) => {
-      if (was && !browsing) focusSearch();
+      if (was && !browsing) void nextTick(focusSearch);
     },
   );
   onMounted(focusSearch);
