@@ -3,6 +3,7 @@ import { adjacentIndex } from '@pocketshell/core/shared/listNavigation';
 import type { LaunchChoice } from '@pocketshell/core';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { editingTarget } from './editingTarget';
+import { KEEPS_DEFAULT_MENU } from './defaultMenu';
 import type { WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import type { useSettingsStore } from './stores/settings';
 
@@ -16,13 +17,16 @@ export interface WorkspaceChordsDeps {
   goToTab: (id: string) => void;
   /** The `+`'s create, which the quick chord shares rather than re-implements. */
   createSession: (choice: LaunchChoice | null) => Promise<void>;
+  /** The tab menu's "Rename…", which the rename chord opens on the active tab. */
+  beginRename: (tab: WorkspaceTab) => void;
 }
 
 /**
  * The folder workspace's window chords: `Ctrl+[` / `Ctrl+]` to step one tab
- * left or right, and `Ctrl+N` for a plain shell in this folder. Extracted from
- * FolderWorkspaceView.vue with its reasoning; the listener registers itself for
- * the mount's lifetime, exactly where the view's used to.
+ * left or right, `Ctrl+Shift+R` to rename the active tab, and `Ctrl+N` for a
+ * plain shell in this folder. Extracted from FolderWorkspaceView.vue with its
+ * reasoning; the listener registers itself for the mount's lifetime, exactly
+ * where the view's used to.
  */
 export function useWorkspaceChords(deps: WorkspaceChordsDeps): void {
   /**
@@ -138,6 +142,30 @@ export function useWorkspaceChords(deps: WorkspaceChordsDeps): void {
       );
       const target = index === null ? null : (deps.tabs.value[index]?.id ?? null);
       if (target !== null) deps.goToTab(target);
+      return;
+    }
+
+    // `Ctrl+Shift+R`: rename the ACTIVE session tab — the tab bar's "Rename…"
+    // menu item, on the keyboard, at the user's ask. The registry entry is the
+    // record of what the chord costs and why it is fixed; the two stand-downs
+    // this branch lives by are the darwin one and the editable one.
+    //
+    // DARWIN first: where the default menu survives, Ctrl+Shift+R is its
+    // Force Reload, a cancelled keydown cannot stop that role, and a live
+    // handler would run the rename AND throw every terminal away with it.
+    // defaultMenu.ts carries the argument; here it is one early return.
+    //
+    // Only a session tab in front claims the key. A Files tab has no name the
+    // host knows, so there is nothing to rename and the chord stands down
+    // entirely rather than swallowing a keystroke for nothing.
+    if (isShortcut(bindings, 'tabs.rename', e)) {
+      if (KEEPS_DEFAULT_MENU) return;
+      if (editingTarget(e.target)) return;
+      const active = deps.activeTab.value;
+      if (!active || active.kind !== 'session') return;
+      e.preventDefault();
+      e.stopPropagation();
+      deps.beginRename(active);
       return;
     }
 

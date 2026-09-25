@@ -388,11 +388,13 @@ const { launching, createError, openLaunchDialog, cancelPendingLaunch, createSes
   });
 
 /**
- * The window chords — `Ctrl+[` / `Ctrl+]` and `Ctrl+N` — moved whole, comments
- * and all, to ../useWorkspaceChords.ts; the listener registers itself here for
- * the mount's lifetime, exactly where the view's handler used to.
+ * The window chords — `Ctrl+[` / `Ctrl+]`, `Ctrl+Shift+R` and `Ctrl+N` — moved
+ * whole, comments and all, to ../useWorkspaceChords.ts; the listener registers
+ * itself here for the mount's lifetime, exactly where the view's handler used
+ * to. The rename chord shares the tab menu's `beginRename` rather than
+ * re-opening the field by another path.
  */
-useWorkspaceChords({ renaming, tabs, activeTab, settings, goToTab, createSession });
+useWorkspaceChords({ renaming, tabs, activeTab, settings, goToTab, createSession, beginRename });
 
 /**
  * What the strip under the tab bar shows: the rename's refusal when there is

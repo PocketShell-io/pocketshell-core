@@ -171,6 +171,16 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     note: 'Moved here from Ctrl+ArrowLeft/ArrowRight, which collided with word-jump in every text field: "ctrl+left and right conflicts with jumping over words". A PAIR of chords, so it is fixed for the same reason a pair always is here: an override replaces a binding’s chords outright and would lose one. It CLAMPS at both ends. What it costs is real and stated rather than assumed: through xterm, Ctrl+[ IS Escape (C0 0x1B — the physical escape of older keyboards and the meta-prefix for readline’s ESC-chords) and Ctrl+] is GS. Esc does not reach the pane from anywhere this chord is live; Alt+B / Alt+F-style meta sequences should use Alt instead. Shifted ghosts (Ctrl+{ and Ctrl+}) match nothing and fall through. It stands down inside a real text field, where prose is being typed — but NOT inside the terminal, whose xterm-helper-textarea would otherwise exempt the one surface this is for.',
   },
   {
+    id: 'tabs.rename',
+    surface: 'workspace',
+    label: 'Rename the current tab',
+    defaults: ['Ctrl+Shift+R'],
+    owner: 'app',
+    rebindable: false,
+    note:
+      'The tab bar\'s "Rename…" menu item, on the keyboard, at the user\'s words ("ctrl+shift+R - rename the current tab"): it opens the same inline field on the ACTIVE tab, pre-filled with the name the host knows. The shifted letter encodes nothing at a terminal, so the shell is owed nothing — but the chord is Electron\'s Force Reload wherever the default menu survives. Windows and Linux run with that menu nulled (169cf60), so the chord is free there; macOS keeps the menu, a cancelled renderer keydown cannot stop a window role, and claiming it would run the rename AND the reload — so the handler stands down on darwin (defaultMenu.ts), the same call text.deleteWordBackward makes. Fixed rather than rebindable because the validator refuses this chord outright (the menu list), so a user who moved it away could never move it back. Stands down in a text field, over a Files tab (nothing the host names to relabel), and while a rename is open — the field owns the keyboard until Enter or Escape.',
+  },
+  {
     id: 'workspaces.stepUpDown',
     surface: 'global',
     label: 'The workspace above, the workspace below',
