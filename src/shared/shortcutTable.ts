@@ -224,7 +224,7 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     defaults: ['Ctrl+Shift+F'],
     owner: 'app',
     rebindable: true,
-    note: 'Focuses the session panel\'s filter box, which cuts the tree to the folders and sessions whose names match — the Files pane\'s Ctrl+F, one panel over. The SHIFTED letter is the whole choice: on this surface the terminal is live underneath, and bare Ctrl+F is ^F — readline forward-char, one of the most-pressed keys at a prompt — so the unshifted reflex is deliberately NOT taken (the opposite outcome from files.filterTree, which can claim bare Ctrl+F only because the Files pane has no terminal behind it; the same reasoning that gives the create pair above its Shift). Shifted letters encode nothing at the shell, so nothing is taken from programs that bind it. Stands down inside a text field.',
+    note: 'Summons the session panel\'s filter row — hidden until called, Escape clears and dismisses it — which cuts the tree to the folders and sessions whose names match; the Files pane\'s Ctrl+F, one panel over. The SHIFTED letter is the whole choice: on this surface the terminal is live underneath, and bare Ctrl+F is ^F — readline forward-char, one of the most-pressed keys at a prompt — so the unshifted reflex is deliberately NOT taken (the opposite outcome from files.filterTree, which can claim bare Ctrl+F only because the Files pane has no terminal behind it; the same reasoning that gives the create pair above its Shift). Shifted letters encode nothing at the shell, so nothing is taken from programs that bind it. Stands down inside a text field.',
   },
 
   // --- Terminal -----------------------------------------------------------

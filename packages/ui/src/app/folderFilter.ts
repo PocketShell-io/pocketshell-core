@@ -1,6 +1,7 @@
 /**
- * The session panel's quick search — the filter box in the tool strip, and
- * the one way to cut a long tree down to the folder you have half a name for.
+ * The session panel's quick search — the summoned filter row
+ * (Ctrl+Shift+F, dismissed with Escape), and the one way to cut a long tree
+ * down to the folder you have half a name for.
  *
  * ## What it is, and is not
  *

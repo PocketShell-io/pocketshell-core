@@ -198,8 +198,12 @@ export interface AppSettings {
    * (within roots only, stable, manual arrangement still wins on top) live in
    * `folderSort.ts`; this store only persists the choice.
    *
-   * No Settings screen control, by `folderOrder`'s precedent: it is written by
-   * the panel's own sort menu, next to the rows it orders.
+   * Two doors in, one stored value — the zoom pair's shape: the panel's own
+   * sort menu (in the summoned search row) for in-context access, and a
+   * select in Settings' "Session panel" section for whoever looks there
+   * first. The rules the keys obey (within roots only, stable, manual
+   * arrangement still wins on top) live in `folderSort.ts`; this store only
+   * persists the choice.
    */
   sessionTreeSort: FolderSortKey;
   /**

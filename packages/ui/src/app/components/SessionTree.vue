@@ -63,7 +63,7 @@
 // moved the same way: the timers to useSessionTreePoll, the row drag to
 // useFolderDrag, the row menu to useFolderMenu, the folder stop to
 // useFolderStop, and the row text (tooltips, badges, ages) to sessionTreeText.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import NewSessionDialog from './NewSessionDialog.vue';
 import HostPanelButtons from './HostPanelButtons.vue';
@@ -223,34 +223,61 @@ function setSort(key: FolderSortKey): void {
 }
 
 // ---------------------------------------------------------------------------
-// The quick search — the filter box in the strip, and its chord
+// The quick search — a summoned filter row, and its chord
 // ---------------------------------------------------------------------------
 
 /**
- * The filter box. The text lives in the SHARED derivation (folderTree.ts's
+ * The filter row exists ONLY while summoned — `sessions.filterTree`
+ * (Ctrl+Shift+F) opens it focused, Escape clears and closes it, Enter takes
+ * the first match and closes. The Files pane's Ctrl+F is the pattern being
+ * copied whole, and the reason is the same one that killed the permanent
+ * strip this row replaced: the panel is the app's front door and 36px of
+ * always-on chrome for a tool used in bursts was space the rows were paying
+ * for. A filter you summon is where you are looking RIGHT NOW; when the look
+ * ends, the row leaves with it.
+ *
+ * The text itself lives in the SHARED derivation (folderTree.ts's
  * `filterQuery`), not here: `Ctrl+↑`/`Ctrl+↓` and the collapsed rail's
  * switcher must see exactly the rows this panel draws, and a second copy of
  * the query they cannot read would put the chord on hidden rows — the
- * two-derivations bug that file exists to prevent, one level up.
- *
- * The rules the match itself obeys (label, path, and the session names the
- * rows no longer show; a query that names a root keeps the root whole) live
- * in ../folderFilter.ts.
+ * two-derivations bug that file exists to prevent, one level up. The rules
+ * the match itself obeys (label, path, and the session names the rows no
+ * longer show; a query that names a root keeps the root whole) live in
+ * ../folderFilter.ts.
  */
+const searchOpen = ref(false);
 const filterEl = ref<HTMLInputElement | null>(null);
 
-/** Enter opens the first visible folder — the filter doubling as a quick open. */
+/** Summon the row and put the keyboard in it, previous query selected. */
+function openSearch(): void {
+  searchOpen.value = true;
+  void nextTick(() => {
+    filterEl.value?.focus();
+    filterEl.value?.select();
+  });
+}
+
+/**
+ * Dismiss: the query goes WITH the row — a closed search keeping its text is
+ * a filter the panel still applies with nothing on screen to say so, which is
+ * how a tree ends up quietly missing folders.
+ */
+function closeSearch(): void {
+  searchOpen.value = false;
+  filterQuery.value = '';
+}
+
+/** Enter takes the first visible folder and ends the search. */
 function onFilterEnter(): void {
   const first = folders.value[0];
   if (first) {
-    filterEl.value?.blur();
+    closeSearch();
     emit('select', first);
   }
 }
 
 function onFilterEscape(): void {
-  filterQuery.value = '';
-  filterEl.value?.blur();
+  closeSearch();
 }
 
 /**
@@ -317,15 +344,18 @@ function onWindowKeydown(e: KeyboardEvent): void {
     creating.value = { startIn: defaultStartIn.value };
     return;
   }
-  // The quick search's chord: same window-capture door, same stand-down rule,
-  // pointing at the strip's filter box. `select()` so a second press replaces
-  // the previous query rather than extending it — the chord is "find afresh",
-  // not "type at whatever I was filtering by".
+  // The quick search's chord: SUMMONS the row (and re-selects in it when the
+  // row is already open but the keyboard has moved on — the chord is "find
+  // afresh", not "type at whatever I was filtering by").
   if (isShortcut(settings.shortcutBindings, 'sessions.filterTree', e)) {
     e.preventDefault();
     e.stopPropagation();
-    filterEl.value?.focus();
-    filterEl.value?.select();
+    if (searchOpen.value) {
+      filterEl.value?.focus();
+      filterEl.value?.select();
+    } else {
+      openSearch();
+    }
   }
 }
 
@@ -412,12 +442,12 @@ async function onRefresh(): Promise<void> {
  */
 function onSessionStarted(summary: SessionSummary): void {
   creating.value = null;
-  // A filter that stays active across a create can hide the folder the user
-  // just chose — the row below then misses, and the workspace the dialog
-  // promised never opens, which reads as the create having done nothing.
-  // Creating is a commitment; revealing its result outranks a search the user
-  // made before they decided to make anything.
-  filterQuery.value = '';
+  // A search left open across a create can hide the folder the user just
+  // chose — the row below then misses, and the workspace the dialog promised
+  // never opens, which reads as the create having done nothing. Creating is a
+  // commitment; revealing its result outranks a search the user made before
+  // they decided to make anything.
+  closeSearch();
   sessions.addPending(summary);
   const dir = directoryForSession(roots.value, summary);
   if (dir) {
@@ -492,22 +522,16 @@ function onSessionStarted(summary: SessionSummary): void {
       </div>
     </div>
 
-    <!-- The panel's tool strip, under the header. The header row above is at
-         its exact 232px capacity (the arithmetic beside `.header-actions`), so
-         the panel's second control surface lives on a second row: the quick
-         search first — it is the one that answers "where is it" — and the
-         sort beside it.
-
-         PERMANENT, unlike the Files pane's summoned Ctrl+F box, and the
-         reasoning is that pane's own, inverted: the Files pane summons its
-         filter because a file tree is browsed with the eyes and filtered only
-         on demand; this panel's rows are the app's front door, and a search
-         field permanently on screen is what makes it answer "the session I
-         was just in" without a chord first. One 28px row is what the always-
-         visible form costs, and the crash banner below already established
-         that the tree can be pushed down by panel chrome when the chrome is
-         earning its place. -->
-    <div class="tree-filter">
+    <!-- The panel's tool row, summoned (Ctrl+Shift+F) and dismissed (Escape)
+         — NEVER permanent. The header row above is at its exact 232px
+         capacity (the arithmetic beside `.header-actions`), and a permanent
+         second row cost the tree 36px of vertical for tools used in bursts;
+         the Files pane's summoned Ctrl+F box is the pattern, copied whole.
+         While it stands, it carries both tools: the quick search — the one
+         that answers "where is it" — and the sort menu beside it (the same
+         menu Settings' "Session panel" section holds, for whoever looks
+         there first). -->
+    <div v-if="searchOpen" class="tree-filter">
       <div class="filter-field">
         <AppIcon name="search" :size="12" class="filter-mark" />
         <input

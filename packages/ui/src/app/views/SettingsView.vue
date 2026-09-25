@@ -34,6 +34,7 @@ import { useSettingsStore } from '../stores/settings';
 import { useUpdateStore } from '../stores/update';
 import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
+import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from '../folderSort';
 import { canonicalisePath } from '../sessionGrouping';
 import {
   inferHome,
@@ -109,6 +110,13 @@ function onDefaultHostChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value;
   // '' is the "no default" option; the store's parser normalises it to null.
   settings.set('defaultHost', value === '' ? null : value);
+}
+
+/** The panel's folder-row sort — the select writes the key straight in. */
+const sortOptions = FOLDER_SORT_KEYS.map((key) => ({ key, label: FOLDER_SORT_LABELS[key] }));
+
+function onSortChange(event: Event): void {
+  settings.set('sessionTreeSort', (event.target as HTMLSelectElement).value as FolderSortKey);
 }
 
 /* --- Session roots -------------------------------------------------------
@@ -368,6 +376,30 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
           </span>
           <span v-else>Connect to an instance to configure its roots.</span>
         </p>
+      </div>
+
+      <!-- The folder-row sort, in the seat every other preference holds. The
+           panel's own sort menu (the summoned search row) writes the same
+           setting — the zoom pair's shape: one stored value, two doors in. -->
+      <div class="row">
+        <div class="row-text">
+          <label class="row-label" for="session-tree-sort">Sort folders</label>
+          <p class="row-hint">
+            The order of the folder rows in the session tree. <em>Host order</em> is the
+            order the host's listing reports. Folders you have dragged keep their place
+            under every sort.
+          </p>
+        </div>
+        <select
+          id="session-tree-sort"
+          class="control"
+          :value="settings.sessionTreeSort"
+          @change="onSortChange"
+        >
+          <option v-for="opt in sortOptions" :key="opt.key" :value="opt.key">
+            {{ opt.label }}
+          </option>
+        </select>
       </div>
     </section>
 
