@@ -22,6 +22,19 @@ export interface PaletteCommand {
   hint?: string;
   /** Extra match text that is never rendered — synonyms, path spellings. */
   keywords?: string;
+  /**
+   * The section the row belongs to, rendered as a muted head (the collapsed
+   * rail's switcher spells its root heads the same way). Rows sharing a group
+   * draw under one head, in first-appearance order; rows with no group draw
+   * in a leading section with no head.
+   */
+  group?: string;
+  /**
+   * The panel's attachment dot — the same mark the switcher's rows carry, so
+   * a palette row reads exactly like the panel row it stands in for.
+   * Undefined draws nothing; `false` draws the quiet dot; `true` the live one.
+   */
+  dot?: boolean;
   /** The thing that happens. Runs after the palette has closed itself. */
   run: () => void;
 }

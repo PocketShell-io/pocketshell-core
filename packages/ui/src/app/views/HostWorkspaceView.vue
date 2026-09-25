@@ -57,6 +57,7 @@ import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
 import UsageView from './UsageView.vue';
+import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
 
@@ -429,6 +430,19 @@ const switcherTitle = computed(() =>
  * the view hands it the handlers and refs above and renders the surface.
  */
 const sessionTreeEl = ref<{ openCreate: () => void; openSearch: () => void } | null>(null);
+
+/**
+ * Host switching from the palette: the picker's own connect, minus its
+ * dialogs — `connect` claims `activeHost`, and the route push is the same
+ * `host-sessions` landing every fresh connection gets. A refusal leaves the
+ * user where they are; the connection store's own error surface reports it.
+ */
+function onConnectHost(host: HostEntry): void {
+  void connection.connect(host).then((ok) => {
+    if (ok) void router.push({ name: 'host-sessions', params: { name: host.name } });
+  });
+}
+
 const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   allFolders,
   roots,
@@ -436,6 +450,7 @@ const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   panelCollapsed,
   sessionTree: sessionTreeEl,
   onSelectFolder,
+  onConnectHost,
   onBack,
 });
 

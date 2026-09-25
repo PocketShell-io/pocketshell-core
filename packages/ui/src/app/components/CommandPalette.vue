@@ -6,6 +6,12 @@
 // that matches the moment a character lands, arrow keys that never touch the
 // mouse, and a first item that is always one Enter away.
 //
+// It LOOKS like the rest of the app rather than like VS Code: the surface is
+// PopupMenu's (surface-3, hairline, popover shadow), the rows are the
+// collapsed rail's switch rows (dot, label, muted right hint), the section
+// heads are the switcher's root heads. The palette is a switcher that also
+// speaks verbs — it should not introduce a second visual language to do it.
+//
 // The palette is deliberately dumb about its commands (see commandPalette.ts):
 // it renders and runs a list it is handed. WHAT the list holds is the host
 // workspace's decision (HostWorkspaceView builds it from the same stores the
@@ -50,6 +56,26 @@ const filtered = computed<PaletteCommand[]>(() => {
       (command.hint ?? '').toLowerCase().includes(needle) ||
       (command.keywords ?? '').toLowerCase().includes(needle),
   );
+});
+
+/**
+ * The filtered rows folded into sections, first appearance first. Grouped
+ * commands draw under one muted head per group — the switcher's root heads —
+ * and an empty group disappears with its last row, exactly as a root in the
+ * panel does. Ungrouped commands form the leading section, with no head.
+ */
+const sections = computed<{ group?: string; commands: PaletteCommand[] }[]>(() => {
+  const byGroup = new Map<string, { group?: string; commands: PaletteCommand[] }>();
+  for (const command of filtered.value) {
+    const key = command.group ?? '\u0000';
+    let section = byGroup.get(key);
+    if (!section) {
+      section = { group: command.group, commands: [] };
+      byGroup.set(key, section);
+    }
+    section.commands.push(command);
+  }
+  return [...byGroup.values()];
 });
 
 /** The highlighted row. Resets to the top whenever the filter moves — an
@@ -157,32 +183,41 @@ onBeforeUnmount(() => {
       />
       <ul id="command-palette-list" ref="listEl" class="palette-list" role="listbox">
         <li v-if="!filtered.length" class="palette-empty muted">no matching commands</li>
-        <li v-for="(command, i) in filtered" v-else :key="command.id" role="option">
-          <button
-            :id="`command-palette-item-${command.id}`"
-            class="palette-item"
-            :class="{ active: i === activeIndex }"
-            :aria-selected="i === activeIndex"
-            @mouseenter="activeIndex = i"
-            @click="run(command)"
-          >
-            <span class="palette-label">{{ command.label }}</span>
-            <span v-if="command.hint" class="palette-hint muted">{{ command.hint }}</span>
-          </button>
-        </li>
+        <template v-for="section in sections" :key="section.group ?? '\u0000'">
+          <li v-if="section.group" class="palette-head">{{ section.group }}</li>
+          <li v-for="command in section.commands" :key="command.id" role="option">
+            <button
+              :id="`command-palette-item-${command.id}`"
+              class="palette-item"
+              :class="{ active: command === activeCommand }"
+              :aria-selected="command === activeCommand"
+              @mouseenter="activeIndex = filtered.indexOf(command)"
+              @click="run(command)"
+            >
+              <!-- The panel row's attachment mark, same meanings: the dot
+                   says something live is in what this row opens. -->
+              <span v-if="command.dot !== undefined" class="dot" :class="{ active: command.dot }" />
+              <span class="palette-label">{{ command.label }}</span>
+              <span v-if="command.hint" class="palette-hint muted">{{ command.hint }}</span>
+            </button>
+          </li>
+        </template>
       </ul>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+/* PopupMenu's surface, unmoored from its anchor: the same fill, hairline,
+   radius and popover shadow, parked top-centre. `z-index` sits above the
+   menu (60): a palette opened over a menu wins. */
 .command-palette {
   position: fixed;
-  top: 12vh;
+  top: 10vh;
   left: 50%;
   transform: translateX(-50%);
-  width: min(560px, 92vw);
-  z-index: 70; /* Above PopupMenu (60): a palette opened over a menu wins. */
+  width: min(520px, 92vw);
+  z-index: 70;
   display: flex;
   flex-direction: column;
   background: var(--surface-3);
@@ -191,6 +226,8 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-popover);
   overflow: hidden;
 }
+/* The dialog picker's field (.text-input there): surface-2, the strong
+   hairline a control needs for WCAG 1.4.11, the UI face at row size. */
 .palette-input {
   flex: none;
   height: var(--control-h);
@@ -213,20 +250,33 @@ onBeforeUnmount(() => {
   max-height: 46vh;
   overflow-y: auto;
 }
+/* The switcher's root heads: small, muted, spaced-out capitals — the app's
+   one vocabulary for "a label over rows". */
+.palette-head {
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-100);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
 .palette-empty {
   padding: var(--sp-2) var(--sp-3);
   font-size: var(--fs-200);
   font-style: italic;
 }
+/* The switch row: dot, label, muted right hint, hairline radius, the
+   selection fill a highlighted row gets everywhere. */
 .palette-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  padding: 0 var(--sp-3);
+  padding: 0 var(--sp-2);
   height: var(--row-h);
   background: transparent;
   border: none;
+  border-radius: var(--r-sm);
   color: var(--fg);
   text-align: left;
   cursor: pointer;
@@ -235,6 +285,16 @@ onBeforeUnmount(() => {
 }
 .palette-item.active {
   background: var(--state-selected);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex-shrink: 0;
+}
+.dot.active {
+  background: var(--success);
 }
 .palette-label {
   flex: 0 1 auto;
