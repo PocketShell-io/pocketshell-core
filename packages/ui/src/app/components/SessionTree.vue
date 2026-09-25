@@ -436,14 +436,14 @@ defineExpose({ openCreate, openSearch });
     <!-- The `SESSIONS` word is gone, and its width is what paid for the host
          actions arriving here. See the header strip below. -->
     <div class="tree-header">
-      <!-- ORDER: `+`, ports, usage, refresh, settings, back, hide.
+      <!-- ORDER: `+`, ports, usage, refresh, settings, hide, back.
            The run is the whole header: the back arrow held the left end alone
            until the user's screenshot circled it and hide with an arrow
-           between, and it now sits with the chrome it had sat apart from. The
-           middle four keep that user's earlier dictate ("here have ... then
-           refresh then settings then hide"; the `⋯` became its two contents
-           at the same ask), and the `+` leads because it is the panel's
-           primary action — first in the run, not least reachable.
+           between, and it now closes the run's far end. The middle four keep
+           that user's earlier dictate ("here have ... then refresh then
+           settings then hide"; the `⋯` became its two contents at the same
+           ask), and the `+` leads because it is the panel's primary action —
+           first in the run, not least reachable.
 
            WIDTH, at the 232px drag floor: seven --control-h squares
            (7×28 = 196) plus six --sp-1 gaps (24) is 220px, in a content box
@@ -488,13 +488,13 @@ defineExpose({ openCreate, openSearch });
         <button class="icon-btn" title="Settings" @click="openPanel('settings')">
           <AppIcon name="settings" :size="14" />
         </button>
-        <button class="icon-btn" title="Back to hosts" @click="emit('back')">
-          <AppIcon name="arrow-left" :size="14" />
-        </button>
         <button class="icon-btn" title="Hide session panel" @click="emit('collapse')">
           <!-- VS Code's "toggle sidebar" mark: truer to the action than a
                hamburger, which promises a menu. -->
           <AppIcon name="panel-left" :size="14" />
+        </button>
+        <button class="icon-btn" title="Back to hosts" @click="emit('back')">
+          <AppIcon name="arrow-left" :size="14" />
         </button>
       </div>
     </div>
