@@ -319,10 +319,13 @@ const activeFolder = computed(() => (route.params['folder'] as string | undefine
 
 /**
  * The panel's folder rows, flat and in draw order, for the `Ctrl+↑`/`Ctrl+↓`
- * chords below. The SAME derivation `SessionTree` renders from — see
+ * chords below, plus the switcher's root sections. `allFolders` is the same
+ * walk BEFORE the quick search cuts it — the chord and the switcher walk what
+ * the panel draws, but a count of "how much is running" describes the HOST,
+ * not the filter. The SAME derivation `SessionTree` renders from — see
  * `folderTree.ts` for why deriving it twice is the bug this avoids.
  */
-const { folders, roots } = useFolderTree();
+const { folders, allFolders, roots } = useFolderTree();
 
 /**
  * Open a folder's workspace. [session] names a tab to arrive on, which the
@@ -400,8 +403,12 @@ function pickFolder(dir: SessionDirectory): void {
  * Live sessions on the host, for the button's tooltip — the one place the
  * collapsed state can still answer "how much is running" without opening
  * anything, worded the way HostPanelButtons words its own ("…, 2 ports").
+ * Counted over `allFolders`, not the drawn rows: the panel may be filtered
+ * (the query outlives the collapse — it is panel state, not view chrome), and
+ * a tooltip that shrinks because of a box the collapsed panel is not even
+ * showing describes the filter rather than the host.
  */
-const sessionTotal = computed(() => folders.value.reduce((n, dir) => n + dir.rows.length, 0));
+const sessionTotal = computed(() => allFolders.value.reduce((n, dir) => n + dir.rows.length, 0));
 
 /** The rail button's word, extended while there is something to switch to. */
 const switcherTitle = computed(() =>

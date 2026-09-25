@@ -85,8 +85,8 @@ export function normaliseFolderSort(raw: unknown): FolderSortKey | undefined {
  *
  * A folder is "created" when its first session was — a second session arriving
  * later does not move it, which is what makes `created` the key that answers
- * "the order I had when creating" (the sentence the host-order default came
- * from, SESSIONLIST §6.0). The `activity` fallback mirrors
+ * "the order I had when creating" — the sentence the host-order default came
+ * from. The `activity` fallback mirrors
  * `sessionActivity`'s, for a listing that reported neither.
  */
 export function folderCreatedAt(dir: SessionDirectory): number {

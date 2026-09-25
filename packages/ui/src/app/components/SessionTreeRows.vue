@@ -49,8 +49,10 @@ const emit = defineEmits<{
 
 // The same derivation the parent renders from — one code path, two component
 // instances reading it. See ../folderTree.ts for why this is not private to
-// either of them.
-const { home, host, roots } = useFolderTree();
+// either of them. `filtering` and `filterQuery` come with it: the rows are the
+// filter's output, and both the drag refusal and the no-match empty state are
+// statements ABOUT that output.
+const { home, host, roots, filtering, filterQuery } = useFolderTree();
 
 /**
  * The roots, each paired with its header text already split for the muted `~/`.
@@ -201,7 +203,14 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
           <!-- `draggable` for the "pull them up and down" drag. It changes
                nothing about the click, the context menu or the keyboard —
                see the drag section in the script for why each of those is
-               safe rather than merely untested. -->
+               safe rather than merely untested.
+
+               NOT while a filter is up: a drag writes the WHOLE panel's keys
+               in draw order (reorderFolders), and under a filter that
+               draw order is the SURVIVORS' — dropping a row mid-search would
+               silently erase every hidden folder's rank. A gesture that
+               cannot say what it would destroy is refused at the source, and
+               the rows say so by not even offering the grip. -->
           <button
             class="dir-header"
             :class="{
@@ -211,7 +220,7 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
               dragging: dragging === dir.key,
             }"
             :title="dirTooltip(dir)"
-            draggable="true"
+            :draggable="filtering ? 'false' : 'true'"
             @click="emit('select', dir)"
             @contextmenu.prevent="emit('menu', dir, $event)"
             @dragstart="onRowDragStart(dir, $event)"
@@ -275,12 +284,23 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
          "Start a session here" button, FolderWorkspaceView.vue): say what is
          empty AND offer the one useful action. The button opens the same
          dialog the header `+` does, nothing pre-filled — a second door into
-         the ONE creation flow, not a second flow. -->
+         the ONE creation flow, not a second flow.
+
+         A filter that matches nothing gets its OWN sentence, naming the
+         query, because "no sessions" while a filter is up is a lie the user
+         can see through only by remembering the box they typed into: an
+         empty filtered tree must never read as a host with nothing running
+         (folderFilter.ts). And it offers no create — the create is not the
+         next step of a search, and a row born under an active filter would
+         be a row the filter immediately hides. -->
     <div v-if="!roots.length && !sessions.loading" class="empty">
-      <p class="muted">no sessions</p>
-      <button class="btn-ghost" @click="emit('create', defaultStartIn)">
-        New session…
-      </button>
+      <p v-if="filtering" class="muted">no folders match “{{ filterQuery.trim() }}”</p>
+      <template v-else>
+        <p class="muted">no sessions</p>
+        <button class="btn-ghost" @click="emit('create', defaultStartIn)">
+          New session…
+        </button>
+      </template>
     </div>
   </div>
 </template>

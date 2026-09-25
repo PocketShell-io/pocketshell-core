@@ -217,6 +217,15 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     rebindable: true,
     note: 'The quick half of the Ctrl+N pair, on the user\'s request: one press starts a plain shell in the folder workspace in front — the same create the workspace + makes, minus the agent dialog — and puts the keyboard in the new pane. Live only while a folder workspace is mounted. WHAT IT COSTS, stated rather than assumed: bare Ctrl+N is ^N at the shell — readline next-history, next-line in emacs and vi — so a real key is taken from programs that bind it. It is the first bare Ctrl+letter the app claims against a key the shell uses, claimed because the quick create is the whole point of the pair and Shift is what makes the twin a dialog. Stands down inside a text field and while a tab rename is open, and one press per press — key repeat is refused, or a held chord mints sessions.',
   },
+  {
+    id: 'sessions.filterTree',
+    surface: 'workspace',
+    label: 'Quick search the session panel',
+    defaults: ['Ctrl+Shift+F'],
+    owner: 'app',
+    rebindable: true,
+    note: 'Focuses the session panel\'s filter box, which cuts the tree to the folders and sessions whose names match — the Files pane\'s Ctrl+F, one panel over. The SHIFTED letter is the whole choice: on this surface the terminal is live underneath, and bare Ctrl+F is ^F — readline forward-char, one of the most-pressed keys at a prompt — so the unshifted reflex is deliberately NOT taken (the opposite outcome from files.filterTree, which can claim bare Ctrl+F only because the Files pane has no terminal behind it; the same reasoning that gives the create pair above its Shift). Shifted letters encode nothing at the shell, so nothing is taken from programs that bind it. Stands down inside a text field.',
+  },
 
   // --- Terminal -----------------------------------------------------------
   {

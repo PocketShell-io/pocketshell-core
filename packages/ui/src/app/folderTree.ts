@@ -30,8 +30,22 @@
  * the same keys. So the ranking is applied in this file, on top of the
  * projection and below both readers, exactly as `$HOME` is: one derivation, two
  * consumers, no chance of disagreement.
+ *
+ * ## The pipeline, and the quick search at its end
+ *
+ * The full derivation is four pure stages: the host's order
+ * (`groupSessionsIntoRoots`), the user's picked sort (`applyFolderSort`),
+ * the user's dragged arrangement (`applyFolderOrder`), and the quick search
+ * (`filterFolderRoots`) — the only stage that REMOVES rows rather than
+ * ordering them. It runs last so that everything downstream — the rows, the
+ * chord, the collapsed rail's switcher — sees exactly the tree the panel
+ * draws: a `Ctrl+↓` that opened a workspace whose row the filter is hiding
+ * would be this file's two-derivations bug, one level up. The one reader that
+ * must NOT see the filter is a count that describes the host, which is why
+ * `allFolders` is published beside `folders`.
  */
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
+import { filterFolderRoots } from './folderFilter';
 import { applyFolderOrder } from './folderOrder';
 import { applyFolderSort } from './folderSort';
 import { inferHome } from './sessionRoots';
@@ -58,17 +72,43 @@ export interface FolderTree {
    * for `hostname` or `connectionId` instead.
    */
   host: ComputedRef<string>;
-  /** Root sections, in panel order — the host's order, the picked sort, then the user's drags. */
+  /** Root sections, in panel order — sorted, arranged, then quick-searched. */
   roots: ComputedRef<SessionRootFolder[]>;
   /**
-   * Every folder row, flattened in the order they are
-   * drawn — root by root,
-   * folders inside each. This is the list an arrow key walks, and it is
+   * Every folder row, flattened in the order they are DRAWN — root by root,
+   * folders inside each, the quick search's survivors included. This is the
+   * list an arrow key walks, and it is
    * flattened rather than nested because a `Ctrl+↓` at the last folder of `git`
    * means the first folder of the next root: the user is stepping down the
    * PANEL, and the root headers they pass are not stops, they are labels.
    */
   folders: ComputedRef<SessionDirectory[]>;
+  /**
+   * The same walk over the tree BEFORE the quick search cut it — what the
+   * panel would draw with an empty query. The one honest source for counts
+   * that describe the HOST ("how much is running") rather than the view: a
+   * number that shrinks because a filter is active is a number about the
+   * filter, and the collapsed rail's tooltip is not the place to learn that.
+   */
+  allFolders: ComputedRef<SessionDirectory[]>;
+  /**
+   * The quick search's text, shared by every reader of the derivation.
+   *
+   * Module state rather than component state because the panel's input WRITES
+   * it and two other readers consume the result: the rows that draw it, and
+   * `Ctrl+↑`/`Ctrl+↓`, which must walk the rows the panel DRAWS — a chord that
+   * opened a workspace whose row the filter is hiding would be the exact
+   * two-derivations bug this file exists to prevent, one level up.
+   *
+   * Not persisted on purpose: a filter is where the user is looking right now,
+   * not a preference (folderSort's setting comment draws that line). It clears
+   * when the panel unmounts with the route and when a session the user just
+   * created needs revealing (SessionTree's create path) — both deliberate
+   * forgettings.
+   */
+  filterQuery: Ref<string>;
+  /** True while the quick search holds a non-blank query. */
+  filtering: ComputedRef<boolean>;
 }
 
 export function useFolderTree(): FolderTree {
@@ -124,9 +164,21 @@ export function useFolderTree(): FolderTree {
     applyFolderOrder(grouped.value, settings.folderOrderFor(host.value)),
   );
 
-  const roots = arranged;
+  /**
+   * The quick search's text. One module-scope ref, shared by every component
+   * that calls this composable — see `filterQuery` on the returned shape for
+   * why it is shared and why it is deliberately ephemeral.
+   */
+  const filterQuery = ref('');
+
+  // The filter is the LAST stage and the only one that removes rows rather
+  // than reordering them: what survives is what the panel draws, and both
+  // readers below (`Ctrl+↑`/`Ctrl+↓`, the switcher) must see exactly that.
+  const roots = computed(() => filterFolderRoots(arranged.value, filterQuery.value));
 
   const folders = computed(() => roots.value.flatMap((root) => root.directories));
+  const allFolders = computed(() => arranged.value.flatMap((root) => root.directories));
+  const filtering = computed(() => filterQuery.value.trim() !== '');
 
-  return { home, host, roots, folders };
+  return { home, host, roots, folders, allFolders, filterQuery, filtering };
 }

@@ -222,6 +222,37 @@ function setSort(key: FolderSortKey): void {
   sortMenu.value = null;
 }
 
+// ---------------------------------------------------------------------------
+// The quick search — the filter box in the strip, and its chord
+// ---------------------------------------------------------------------------
+
+/**
+ * The filter box. The text lives in the SHARED derivation (folderTree.ts's
+ * `filterQuery`), not here: `Ctrl+↑`/`Ctrl+↓` and the collapsed rail's
+ * switcher must see exactly the rows this panel draws, and a second copy of
+ * the query they cannot read would put the chord on hidden rows — the
+ * two-derivations bug that file exists to prevent, one level up.
+ *
+ * The rules the match itself obeys (label, path, and the session names the
+ * rows no longer show; a query that names a root keeps the root whole) live
+ * in ../folderFilter.ts.
+ */
+const filterEl = ref<HTMLInputElement | null>(null);
+
+/** Enter opens the first visible folder — the filter doubling as a quick open. */
+function onFilterEnter(): void {
+  const first = folders.value[0];
+  if (first) {
+    filterEl.value?.blur();
+    emit('select', first);
+  }
+}
+
+function onFilterEscape(): void {
+  filterQuery.value = '';
+  filterEl.value?.blur();
+}
+
 /**
  * `$HOME` and the tree, from the ONE derivation (../folderTree.ts).
  *
@@ -231,7 +262,7 @@ function setSort(key: FolderSortKey): void {
  * the same way. Two derivations of one key is a row that opens a workspace with
  * no tabs in it — see the header of `folderTree.ts` for the whole argument.
  */
-const { home, roots } = useFolderTree();
+const { home, roots, folders, filterQuery, filtering } = useFolderTree();
 
 /**
  * The panel's two timers — the cosmetic minute clock and the five-second poll
@@ -274,16 +305,28 @@ const defaultStartIn = computed<string | null>(() => {
 function onWindowKeydown(e: KeyboardEvent): void {
   if (!e.ctrlKey && !e.metaKey) return;
   if (e.altKey) return;
-  if (!isShortcut(settings.shortcutBindings, 'sessions.new', e)) return;
   // Not while prose is being typed — the picker's own filter included, where
   // Ctrl+Shift+P would otherwise close nothing and re-open the caret elsewhere.
   if (editingTarget(e.target)) return;
   // Already open: the dialog is the palette, and the second press must not
   // reset the browse the user is mid-way through. Escape closes it.
-  if (creating.value) return;
-  e.preventDefault();
-  e.stopPropagation();
-  creating.value = { startIn: defaultStartIn.value };
+  if (isShortcut(settings.shortcutBindings, 'sessions.new', e)) {
+    if (creating.value) return;
+    e.preventDefault();
+    e.stopPropagation();
+    creating.value = { startIn: defaultStartIn.value };
+    return;
+  }
+  // The quick search's chord: same window-capture door, same stand-down rule,
+  // pointing at the strip's filter box. `select()` so a second press replaces
+  // the previous query rather than extending it — the chord is "find afresh",
+  // not "type at whatever I was filtering by".
+  if (isShortcut(settings.shortcutBindings, 'sessions.filterTree', e)) {
+    e.preventDefault();
+    e.stopPropagation();
+    filterEl.value?.focus();
+    filterEl.value?.select();
+  }
 }
 
 onMounted(() => window.addEventListener('keydown', onWindowKeydown, { capture: true }));
@@ -369,6 +412,12 @@ async function onRefresh(): Promise<void> {
  */
 function onSessionStarted(summary: SessionSummary): void {
   creating.value = null;
+  // A filter that stays active across a create can hide the folder the user
+  // just chose — the row below then misses, and the workspace the dialog
+  // promised never opens, which reads as the create having done nothing.
+  // Creating is a commitment; revealing its result outranks a search the user
+  // made before they decided to make anything.
+  filterQuery.value = '';
   sessions.addPending(summary);
   const dir = directoryForSession(roots.value, summary);
   if (dir) {
@@ -445,9 +494,35 @@ function onSessionStarted(summary: SessionSummary): void {
 
     <!-- The panel's tool strip, under the header. The header row above is at
          its exact 232px capacity (the arithmetic beside `.header-actions`), so
-         the panel's second control surface lives on a second row — and the
-         sort is the first thing that moved in. -->
+         the panel's second control surface lives on a second row: the quick
+         search first — it is the one that answers "where is it" — and the
+         sort beside it.
+
+         PERMANENT, unlike the Files pane's summoned Ctrl+F box, and the
+         reasoning is that pane's own, inverted: the Files pane summons its
+         filter because a file tree is browsed with the eyes and filtered only
+         on demand; this panel's rows are the app's front door, and a search
+         field permanently on screen is what makes it answer "the session I
+         was just in" without a chord first. One 28px row is what the always-
+         visible form costs, and the crash banner below already established
+         that the tree can be pushed down by panel chrome when the chrome is
+         earning its place. -->
     <div class="tree-filter">
+      <div class="filter-field">
+        <AppIcon name="search" :size="12" class="filter-mark" />
+        <input
+          ref="filterEl"
+          v-model="filterQuery"
+          class="text-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="filter folders"
+          aria-label="Quick search the session tree"
+          @keydown.enter="onFilterEnter"
+          @keydown.esc="onFilterEscape"
+        />
+      </div>
       <!-- The sort trigger. A chevron, not a glyph that has to be learned: the
            menu it opens names every key in words, and the tooltip doubles as
            the accessible name. Tinted while a non-default sort is in force, so
@@ -727,6 +802,39 @@ function onSessionStarted(summary: SessionSummary): void {
    as decoration. */
 .sort-btn.engaged {
   color: var(--accent);
+}
+/* The filter field: the dialog picker's shape (`.filter` / `.text-input` in
+   NewSessionDialog), at panel scale — the search mark muted, the input taking
+   what the strip has left. The dialog's field rules live in that component
+   (scoped styles do not cross), so this restates the two that matter rather
+   than importing them; the values are copied, and if they ever diverge the
+   symptom is a field that does not match the app's other filter boxes. */
+.filter-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.filter-mark {
+  flex: none;
+  color: var(--fg-muted);
+}
+.tree-filter .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--control-h);
+  background: var(--surface-2);
+  /* WCAG 1.4.11: --border cannot be a control's sole boundary. */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-2);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+}
+.tree-filter .text-input::placeholder {
+  color: var(--fg-muted);
 }
 /* The sort menu's tick column: always laid out, visible only on the active
    key, so the items align and the tick reads as a radio rather than as an
