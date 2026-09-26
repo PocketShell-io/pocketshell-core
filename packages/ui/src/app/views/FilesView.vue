@@ -79,6 +79,7 @@ const {
   onSave,
   onDownload,
   onReloadPreview,
+  downloadTitle,
 } = useFilesPane({
   connection,
   files,
@@ -233,6 +234,18 @@ defineExpose({ focus });
             @click="onSave"
           >
             {{ files.saving ? 'Saving…' : 'Save' }}
+          </button>
+          <!-- Download lives in the BAR, on the open file, so getting a file
+               out never depends on finding it in the tree again — the tree
+               keeps its row menu for files that are not open. It is shown
+               for every open file, editors included: an image or a PDF has
+               no other affordance at all, and for a text file it is the
+               same channel the binary panel's button uses (the store's
+               `download()`), pointed at `openPath`. The tooltip carries the
+               one honest caveat: the transfer reads the host's saved copy,
+               never this buffer. -->
+          <button class="download-btn" :title="downloadTitle" @click="onDownload">
+            Download…
           </button>
           <button class="close-btn" title="Close file" @click="files.closeFile()">Close</button>
         </div>
@@ -647,8 +660,11 @@ defineExpose({ focus });
   opacity: var(--disabled-opacity);
   cursor: default;
 }
-/* Quiet next to Save: closing is never the action being encouraged. */
-.close-btn {
+/* Quiet next to Save: closing and downloading are never the action being
+   encouraged — one ends the session with the file, the other hands a copy
+   to the operating system, and neither deserves the accent. */
+.close-btn,
+.download-btn {
   height: var(--control-h-sm);
   background: transparent;
   color: var(--fg-secondary);
@@ -659,7 +675,8 @@ defineExpose({ focus });
   cursor: pointer;
   font-size: var(--fs-200);
 }
-.close-btn:hover {
+.close-btn:hover,
+.download-btn:hover {
   color: var(--fg);
   background: var(--state-hover);
 }

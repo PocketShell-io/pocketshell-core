@@ -36,6 +36,7 @@ export function useFilesPane(deps: FilesPaneDeps): {
   onSave: () => Promise<void>;
   onDownload: () => Promise<void>;
   onReloadPreview: () => Promise<void>;
+  downloadTitle: ComputedRef<string>;
 } {
   const { files, connection, settings } = deps;
   const connId = computed(() => connection.connectionId);
@@ -175,6 +176,21 @@ export function useFilesPane(deps: FilesPaneDeps): {
     await files.download(connId.value);
   }
 
+  /**
+   * What the editor bar's Download button promises, per open file.
+   *
+   * The transfer always reads the HOST's copy — SFTP cannot see this buffer —
+   * so over a dirty editor the tooltip has to say what the button does NOT
+   * do, the same sentence the preview toolbar carries. Silent would read as
+   * a bug the first time someone downloaded a file they had just edited and
+   * found their edits missing from the copy.
+   */
+  const downloadTitle = computed(() =>
+    files.dirty
+      ? 'Download the saved copy — unsaved edits are not included'
+      : 'Download the file to your machine',
+  );
+
   async function onReloadPreview(): Promise<void> {
     if (!connId.value) return;
     await files.reloadPreview(connId.value);
@@ -294,5 +310,6 @@ export function useFilesPane(deps: FilesPaneDeps): {
     onSave,
     onDownload,
     onReloadPreview,
+    downloadTitle,
   };
 }
