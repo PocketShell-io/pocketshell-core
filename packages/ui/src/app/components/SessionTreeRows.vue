@@ -45,6 +45,7 @@ const emit = defineEmits<{
   select: [folder: SessionDirectory];
   menu: [dir: SessionDirectory, e: MouseEvent];
   create: [startIn: string | null];
+  sort: [trigger: HTMLButtonElement];
 }>();
 
 // The same derivation the parent renders from — one code path, two component
@@ -81,6 +82,17 @@ const rootRows = computed(() =>
  */
 function rootAddPath(root: SessionRootFolder): string | null {
   return rootHostPath(root.key, home.value);
+}
+
+/**
+ * The root rows' door to the panel's sort menu. The menu itself lives in the
+ * parent with the other two doors (the search row's trigger, Settings'
+ * select) — one stored value, `settings.sessionTreeSort`, so the handoff is
+ * the clicked BUTTON, and the menu anchors at the row that asked for it.
+ */
+function onSortClick(e: MouseEvent): void {
+  const el = e.currentTarget;
+  if (el instanceof HTMLButtonElement) emit('sort', el);
 }
 
 const sessions = useSessionsStore();
@@ -139,6 +151,33 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
              back: "move 10 closer to git". The `+` takes over the
              `margin-left: auto` and keeps the right end of the row. -->
         <span class="folder-count muted">{{ root.sessionCount }}</span>
+        <!-- The root rows' door to the panel's sort menu — the same menu the
+             summoned search row and Settings' "Session panel" section open,
+             one stored value, not a per-root one: the sort is a way of
+             READING the list (the settings store's field comment holds that
+             argument), so every root carries the same door to it. Beside the
+             count, because this is where the reorder is VISIBLE — the rows it
+             moves are the ones under this header.
+
+             The mark is `arrow-up-down`, NOT a chevron: the comment on the
+             header element above forbids advertising a disclosure this row
+             does not have, and a chevron is exactly that advertisement on a
+             tree header. `@click.stop` for the same reason the `+` carries
+             it — the row is deliberately inert, and that decision can be
+             revisited.
+
+             ON `other` TOO, where the `+` is not: the bucket's folder rows
+             are re-sorted like any root's, so a sort door that skipped it
+             would promise less than the sort does. -->
+        <button
+          class="icon-btn sm root-sort"
+          :class="{ engaged: settings.sessionTreeSort !== 'host' }"
+          title="Sort folders"
+          aria-label="Sort folders"
+          @click.stop="onSortClick($event)"
+        >
+          <AppIcon name="arrow-up-down" :size="12" />
+        </button>
         <!-- Per-root `+`: create a session UNDER THIS ROOT. It opens the same
              folder picker the header's `+` does, one level in — the root is
              known, the folder is not, and guessing a directory from a root is
@@ -429,6 +468,37 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 }
 @media (hover: none) {
   .root-add {
+    opacity: 1;
+  }
+}
+/* ── The per-root sort door ────────────────────────────────────────────────
+   The `+`'s reveal rules copied whole — opacity never `display` (the count
+   never reflows under the cursor), `:focus-visible` so a keyboard user sees
+   what they tabbed to, `hover: none` for the pointer that cannot hover —
+   with ONE widening: `.engaged`, a non-default sort in force, holds the mark
+   visible without any hover. A list drawn in an order the host did not send
+   must say so where the eye is, not only under the cursor; the tint is
+   `.sort-btn.engaged`'s rule from SessionTree, carried over, because the two
+   marks are doors to the same menu and must read as the same control. */
+.root-sort {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.folder-header:hover .root-sort,
+.root-sort:focus-visible,
+.root-sort.engaged {
+  opacity: 1;
+}
+.root-sort.engaged {
+  color: var(--accent);
+}
+/* Same clipped-ring reason as `.root-add` above. */
+.root-sort:focus-visible {
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .root-sort {
     opacity: 1;
   }
 }

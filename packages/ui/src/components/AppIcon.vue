@@ -21,6 +21,7 @@ export type AppIconName =
   | 'arrow-right'
   | 'arrow-right-left'
   | 'arrow-up'
+  | 'arrow-up-down'
   | 'bar-chart-2'
   | 'check'
   | 'chevron-down'
@@ -109,6 +110,18 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
   // chevron is this app's disclosure/navigate-into mark and is already spoken
   // for by the folder rows underneath it.
   'arrow-up': { paths: ['M12 19V5', 'M5 12l7-7 7 7'] },
+  // Two opposing vertical arrows — `arrow-up` and its mirror side by side,
+  // `arrow-right-left`'s construction turned ninety degrees, the halves
+  // written to mirror each other so the pair cannot drift. Neither Feather
+  // 4.29 nor this registry had a mark for it. The SESSION PANEL's sort
+  // triggers (app/components/SessionTree.vue, SessionTreeRows.vue): the
+  // folder rows can be read in any of four orders, so the mark says
+  // "reorder" without committing to a direction. Not the chevron — the
+  // chevron is this app's disclosure mark, and on a tree header it would
+  // advertise a collapsing that does not exist.
+  'arrow-up-down': {
+    paths: ['M7 4v16', 'M3 16l4 4 4-4', 'M17 20V4', 'M13 8l4-4 4 4'],
+  },
   // Feather's `bar-chart-2`, its three <line>s run upward from the common
   // baseline y=20 as relative paths. The PROVIDER USAGE trigger
   // (renderer/hostPanels.ts): the one register every tool uses for a meter.

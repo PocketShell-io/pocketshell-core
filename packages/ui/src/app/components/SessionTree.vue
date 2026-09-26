@@ -63,12 +63,13 @@
 // moved the same way: the timers to useSessionTreePoll, the row drag to
 // useFolderDrag, the row menu to useFolderMenu, the folder stop to
 // useFolderStop, and the row text (tooltips, badges, ages) to sessionTreeText.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import NewSessionDialog from './NewSessionDialog.vue';
 import HostPanelButtons from './HostPanelButtons.vue';
 import OverlayPanel from './OverlayPanel.vue';
 import PopupMenu from './PopupMenu.vue';
+import FolderSortMenu from './FolderSortMenu.vue';
 import SessionTreeRows from './SessionTreeRows.vue';
 import { type HostPanel } from '../hostPanels';
 import { useComposerStore } from '../stores/composer';
@@ -77,14 +78,8 @@ import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
-import type { Box } from '@pocketshell/core/shared/popupPlacement';
 import { editingTarget } from '../editingTarget';
 import { useFolderTree } from '../folderTree';
-import {
-  FOLDER_SORT_KEYS,
-  FOLDER_SORT_LABELS,
-  type FolderSortKey,
-} from '../folderSort';
 import { rootHostPath } from '../sessionRoots';
 import { directoryForSession, type SessionDirectory } from '../sessionTree';
 import type { SessionSummary } from '@pocketshell/core';
@@ -186,44 +181,25 @@ function openPanel(name: HostPanel): void {
 }
 
 // ---------------------------------------------------------------------------
-// The folder sort — one menu, four keys, `settings.sessionTreeSort`
+// The folder sort — three doors, one menu, `settings.sessionTreeSort`
 // ---------------------------------------------------------------------------
 
-/**
- * The sort menu's state and trigger. The rules the keys obey live in
- * ../folderSort.ts (within roots, stable, the manual drag still wins on top);
- * the choice itself lives in the settings store, global rather than per host —
- * a way of reading a list, not a fact about a box (the store's field comment
- * holds the argument).
- *
- * PopupMenu with a snapshotted anchor box, exactly the collapsed rail's
- * session switcher (HostWorkspaceView `toggleSwitcher`): the menu is
- * teleported past every clipping ancestor and placed from a measured rect, and
- * the button sits in the `ignore` list so the click that toggles it cannot be
- * the click that closes it.
- */
-const sortBtn = ref<HTMLButtonElement | null>(null);
-const sortMenu = ref<{ anchor: Box } | null>(null);
+// The menu's open state, its four keys and its store write live in
+// FolderSortMenu (the rules the keys obey are ../folderSort.ts's); this
+// component holds two of the three doors — the search row's trigger and the
+// root rows' marks, Settings' select being the third — and hands each the
+// button that was clicked. The door logic itself is two lines of routing;
+// keeping it here lets the search row and the rows share it without either
+// reaching into the other.
+const sortMenu = ref<InstanceType<typeof FolderSortMenu> | null>(null);
 
-function openSortMenu(): void {
-  if (sortMenu.value) {
-    sortMenu.value = null;
-    return;
-  }
-  const el = sortBtn.value;
-  sortMenu.value = {
-    anchor: el?.getBoundingClientRect() ?? { left: 0, top: 0, width: 0, height: 0 },
-  };
+function onSortClick(e: MouseEvent): void {
+  const el = e.currentTarget;
+  if (el instanceof HTMLButtonElement) sortMenu.value?.toggle(el);
 }
 
-const sortOptions = FOLDER_SORT_KEYS.map((key) => ({ key, label: FOLDER_SORT_LABELS[key] }));
-
-function setSort(key: FolderSortKey): void {
-  // The action, not a bare write: picking a sort clears every host's dragged
-  // arrangement — the store action's comment holds the story of the sort the
-  // user picked and never saw applied.
-  settings.setSessionTreeSort(key);
-  sortMenu.value = null;
+function onRowSort(trigger: HTMLButtonElement): void {
+  sortMenu.value?.toggle(trigger);
 }
 
 /**
@@ -249,6 +225,14 @@ const { home, roots, folders, filterQuery } = useFolderTree();
 // match rules are ../folderFilter.ts's.
 const { searchOpen, filterEl, openSearch, closeSearch, onFilterEnter, onFilterEscape } =
   useSessionSearch({ folders, filterQuery, onSelect: (dir) => emit('select', dir) });
+
+// The search row's trigger is one of the sort menu's doors, and it unmounts
+// with the row — a menu left open under it would hang anchored to the rect of
+// a button that no longer exists, and with the element gone the toggle could
+// not close it either. Dismissing the row dismisses what it opened.
+watch(searchOpen, (open) => {
+  if (!open) sortMenu.value?.close();
+});
 
 /**
  * The panel's two timers — the cosmetic minute clock and the five-second poll
@@ -532,52 +516,29 @@ defineExpose({ openCreate, openSearch });
           @keydown.esc="onFilterEscape"
         />
       </div>
-      <!-- The sort trigger. A chevron, not a glyph that has to be learned: the
-           menu it opens names every key in words, and the tooltip doubles as
-           the accessible name. Tinted while a non-default sort is in force, so
-           a list that is not in host order says so from the strip. -->
+      <!-- The search row's door to the sort menu — one of three, with the root
+           rows' marks and Settings' select. The mark is the rows'
+           `arrow-up-down`, not this row's old chevron: one menu, one glyph,
+           and the chevron next to a text field read as "more filters" more
+           than "reorder". Tinted while a non-default sort is in force, so a
+           list that is not in host order says so from the strip. -->
       <button
-        ref="sortBtn"
         class="icon-btn sort-btn"
         :class="{ engaged: settings.sessionTreeSort !== 'host' }"
         title="Sort folders"
         aria-label="Sort folders"
-        @click="openSortMenu"
+        @click="onSortClick"
       >
-        <AppIcon name="chevron-down" :size="14" />
+        <AppIcon name="arrow-up-down" :size="14" />
       </button>
-      <PopupMenu
-        v-if="sortMenu"
-        :anchor="sortMenu.anchor"
-        :ignore="[sortBtn]"
-        label="Sort folders"
-        @close="sortMenu = null"
-      >
-        <ul>
-          <!-- One key per item, the active one ticked — a radio in menu
-               clothing. The tick is rendered only on the active key inside a
-               fixed-width slot, so the labels align and the tick cannot be
-               misread as one-per-item. The slot spans are THIS component's
-               markup, so their scoped styles follow them through the menu's
-               teleport — the earlier `visibility` attempt hung off
-               `.popup-menu :deep(...)`, which needs the menu root to carry
-               this component's scope id; a teleported root does not, and all
-               four ticks showed at once. -->
-          <li v-for="opt in sortOptions" :key="opt.key">
-            <button class="menu-item" @click="setSort(opt.key)">
-              <span class="sort-tick">
-                <AppIcon
-                  v-if="settings.sessionTreeSort === opt.key"
-                  name="check"
-                  :size="14"
-                />
-              </span>
-              {{ opt.label }}
-            </button>
-          </li>
-        </ul>
-      </PopupMenu>
     </div>
+
+    <!-- The sort menu itself (FolderSortMenu), OUTSIDE the summoned row
+         above: it has three doors and only the trigger up there is unmounted
+         with the row. Anchored at whichever button opened it; the
+         `searchOpen` watch in the script handles the one door that can be
+         torn down under an open menu. -->
+    <FolderSortMenu ref="sortMenu" />
 
     <!-- The rows — root sections, folder rows, the drag and its indicator,
          the empty state — are SessionTreeRows.vue now, and their styles went
@@ -597,6 +558,7 @@ defineExpose({ openCreate, openSearch });
       @select="emit('select', $event)"
       @menu="openFolderMenu"
       @create="creating = { startIn: $event }"
+      @sort="onRowSort"
     />
 
     <!-- The full-width `New session` button that used to sit here is GONE. It
@@ -852,17 +814,6 @@ defineExpose({ openCreate, openSearch });
 }
 .tree-filter .text-input::placeholder {
   color: var(--fg-muted);
-}
-/* The sort menu's tick slot: always laid out so the labels align across items,
-   holding the check only on the active key. Direct scoped rule on this
-   component's own markup — see the template comment for why it must not hang
-   off `.popup-menu :deep(...)`. */
-.sort-tick {
-  flex: none;
-  display: inline-flex;
-  justify-content: center;
-  width: 14px;
-  color: var(--accent);
 }
 .error {
   padding: 0 var(--sp-3) var(--sp-2);
