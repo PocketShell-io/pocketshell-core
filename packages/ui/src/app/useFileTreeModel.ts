@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, watch, type ComputedRef, type Ref } from 'vue';
 import type { ConnectionId } from '@pocketshell/core';
 import { FILE_ROW_CAP, viewFileRows, type FileListView } from './fileListView';
+import { isEnvName } from './fileKind';
 import { normaliseTypedPath } from './remotePaths';
 import { listStep, type ListStepKey } from '@pocketshell/core/shared/listNavigation';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
@@ -32,6 +33,7 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
   searchOpen: Ref<boolean>;
   searchEl: Ref<HTMLInputElement | null>;
   view: ComputedRef<FileListView<DirEntry>>;
+  envAvailable: ComputedRef<boolean>;
   loadMore: () => void;
   focusSearch: () => Promise<void>;
   closeSearch: () => void;
@@ -83,6 +85,19 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
   const searchEl = ref<HTMLInputElement | null>(null);
 
   const view = computed(() => viewFileRows(files.entries, { query: query.value, cap: cap.value }));
+
+  /**
+   * The current folder holds an env file the server-side editor can open
+   * (FEATURES.md F16) — the strip's type button is offered only then, and a
+   * row click on one of the two names routes to the same editor.
+   *
+   * Lives here rather than in the component because it is listing-derived
+   * state, which is what this composable owns: read straight off the entries
+   * — `sftp.readdir` returns dot entries and the store filters nothing — so
+   * the visibility costs no extra round trip. The name rule itself is
+   * `isEnvName` in fileKind.ts, beside the rest of the name classification.
+   */
+  const envAvailable = computed(() => files.entries.some((e) => isEnvName(e.name)));
 
   // Entering a directory starts at 100 again, or the cap silently stops meaning
   // anything after a few folders. The query is cleared too: a filter that
@@ -357,6 +372,7 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
     searchOpen,
     searchEl,
     view,
+    envAvailable,
     loadMore,
     focusSearch,
     closeSearch,

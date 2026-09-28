@@ -18,8 +18,8 @@ export interface FilesPaneDeps {
 
 /**
  * The Files pane's model: the tree splitter's width, the tab's open-and-reveal
- * lifecycle, the env-overlay state, the store actions the template binds, and
- * the open document's presentation sentences.
+ * lifecycle, the docked env editor's pinned folder, the store actions the
+ * template binds, and the open document's presentation sentences.
  *
  * Extracted from FilesView.vue; the decision records below travelled with
  * their code.
@@ -27,7 +27,10 @@ export interface FilesPaneDeps {
 export function useFilesPane(deps: FilesPaneDeps): {
   treeStyle: Ref<{ flex: string }>;
   onTreeDragStart: (e: MouseEvent) => void;
-  envOpen: Ref<boolean>;
+  /** The folder the docked env editor is editing, or null when closed. */
+  envDir: Ref<string | null>;
+  openEnv: () => void;
+  closeEnv: () => void;
   openName: ComputedRef<string>;
   sizeLabel: ComputedRef<string>;
   previewSandbox: ComputedRef<string>;
@@ -152,17 +155,37 @@ export function useFilesPane(deps: FilesPaneDeps): {
   // The env editor (FEATURES.md F16)
   // -------------------------------------------------------------------------
   /**
-   * The server-side env panel for the folder being browsed. The TREE decides
-   * when to offer it (it sees the listing, so `.env` / `.envrc` visibility is
-   * free there) and this pane owns the overlay — same division as
-   * `openInNewTab`, where the tree says "somewhere else" and the parent builds
-   * it. The panel edits `files.cwd`'s env: whichever directory this tab is
-   * standing in, which is exactly "the folder being browsed" that F16 names.
+   * The server-side env panel, DOCKED in the pane's editor area rather than
+   * floating over it. The TREE decides when to offer it (it sees the listing,
+   * so `.env` / `.envrc` visibility is free there) and this pane owns the
+   * state — same division as `openInNewTab`, where the tree says "somewhere
+   * else" and the parent builds it.
+   *
+   * The state is the folder the panel is editing, not a boolean, because a
+   * dock has none of an overlay's modal grab: the user can keep browsing the
+   * tree while it is open, and `files.cwd` moves underneath. The panel edits
+   * "the folder the user was standing in when they asked" — the same folder
+   * the old overlay guaranteed by freezing the tab — so the directory is
+   * PINNED at open and the panel keeps that folder until closed. Browsing
+   * elsewhere leaves it alone; asking again (the button, or another env row
+   * click in the new folder) re-pins to the new cwd.
    */
-  const envOpen = ref(false);
+  const envDir = ref<string | null>(null);
+
+  function openEnv(): void {
+    envDir.value = files.cwd;
+  }
+
+  function closeEnv(): void {
+    envDir.value = null;
+  }
 
   async function onOpenFile(name: string): Promise<void> {
     if (!connId.value) return;
+    // One thing at a time in the area the two share: the click asked for the
+    // file, so the env panel steps aside (and `openPath` is untouched by it,
+    // so closing the env view had already handed the area back to the file).
+    envDir.value = null;
     await files.openFile(connId.value, name);
   }
 
@@ -301,7 +324,9 @@ export function useFilesPane(deps: FilesPaneDeps): {
   return {
     treeStyle,
     onTreeDragStart,
-    envOpen,
+    envDir,
+    openEnv,
+    closeEnv,
     openName,
     sizeLabel,
     previewSandbox,

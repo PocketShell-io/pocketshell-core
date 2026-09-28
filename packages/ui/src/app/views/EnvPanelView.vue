@@ -23,7 +23,11 @@ import { errorMessage } from '@pocketshell/core/shared/errors';
 
 const props = defineProps<{
   connectionId: ConnectionId;
-  /** The folder whose env is being edited (the Files tab's current directory). */
+  /**
+   * The folder whose env is being edited — pinned by the host (FilesView)
+   * when the editor was asked for, so browsing the tree underneath the docked
+   * panel does not move its target. Stated in the host's bar, not here.
+   */
   dir: string;
 }>();
 
@@ -153,8 +157,6 @@ onMounted(load);
 
 <template>
   <div class="env-panel">
-    <p class="env-dir muted">{{ props.dir }}</p>
-
     <p v-if="loading" class="muted">listing env keys…</p>
     <p v-else-if="error" class="error">{{ error }}</p>
 
@@ -247,13 +249,11 @@ onMounted(load);
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   min-width: 0;
-}
-.env-dir {
-  margin: 0;
-  font-size: var(--fs-300);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Fills the docked editor area under its bar and scrolls there: a long key
+     list belongs to the panel, not to the pane around it. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .muted {
   color: var(--fg-muted);

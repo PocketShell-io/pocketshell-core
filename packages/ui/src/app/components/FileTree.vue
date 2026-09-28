@@ -16,6 +16,7 @@ import { buildCrumbs, type Crumb } from '../fileListView';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
 import type { DirEntry } from '@pocketshell/core';
 import { errorMessage } from '@pocketshell/core/shared/errors';
+import { isEnvName } from '../fileKind';
 import { useFileTreeModel } from '../useFileTreeModel';
 import { resolveRemotePath } from '../remotePaths';
 
@@ -31,9 +32,10 @@ const emit = defineEmits<{
    */
   openInNewTab: [path: string, kind: 'dir' | 'file'];
   /**
-   * The folder has an env file and the user asked for the env editor
-   * (FEATURES.md F16). Emitted for the same reason as `openInNewTab`: the
-   * overlay lives above the whole Files tab, which is FilesView's to mount.
+   * The user asked for the folder's env editor (FEATURES.md F16) — from the
+   * toolbar's type button or by clicking a `.env`/`.envrc` row. Emitted for
+   * the same reason as `openInNewTab`: the editor is mounted by FilesView,
+   * which owns the pane both live in.
    */
   openEnv: [];
 }>();
@@ -64,6 +66,7 @@ const {
   searchOpen,
   searchEl,
   view,
+  envAvailable,
   loadMore,
   focusSearch,
   closeSearch,
@@ -89,18 +92,6 @@ const {
   cancelEditing,
   onSubmit,
 } = useFileTreeModel({ files, settings, connId, onEntry });
-
-/**
- * The current folder holds an env file the server-side editor can open.
- *
- * Read straight off the listing — `sftp.readdir` returns dot entries and the
- * store filters nothing — so the button's visibility costs no extra round
- * trip. Neither file is REQUIRED: the helper's `env list` merges both, and a
- * folder with only `.envrc` (direnv layouts) is exactly as editable.
- */
-const envAvailable = computed(() =>
-  files.entries.some((e) => e.name === '.env' || e.name === '.envrc'),
-);
 
 /**
  * The path as cells, on ONE line, always — as many whole segments as the
@@ -289,7 +280,13 @@ async function onEntry(entry: DirEntry): Promise<void> {
   if (entry.type === 'dir') {
     await files.cd(connId.value, entry.name);
   } else if (entry.type === 'file' || entry.type === 'symlink') {
-    emit('openFile', entry.name);
+    // An env file opens the folder's env editor — the same view the strip's
+    // type button offers (see isEnvName) — not the raw bytes.
+    if (isEnvName(entry.name)) {
+      emit('openEnv');
+    } else {
+      emit('openFile', entry.name);
+    }
   }
 }
 

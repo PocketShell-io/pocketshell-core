@@ -23,7 +23,6 @@ import { hasPreview, isEditable } from '../fileKind';
 import { useSettingsStore } from '../stores/settings';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import FileTree from '../components/FileTree.vue';
-import OverlayPanel from '../components/OverlayPanel.vue';
 import EnvPanelView from './EnvPanelView.vue';
 import { useFilesPane } from '../useFilesPane';
 import { useImageViewer } from '../useImageViewer';
@@ -70,14 +69,16 @@ const files = useFilesStore();
 const settings = useSettingsStore();
 const connId = computed(() => connection.connectionId);
 
-// The pane's model — tree width, open/reveal lifecycle, env overlay, actions,
-// and the open document's presentation sentences — is useFilesPane.ts; the
-// image viewer's zoom, pan and backdrop are useImageViewer.ts. Both carry
-// their own decision records.
+// The pane's model — tree width, open/reveal lifecycle, the docked env
+// editor's pinned folder, actions, and the open document's presentation
+// sentences — is useFilesPane.ts; the image viewer's zoom, pan and backdrop
+// are useImageViewer.ts. Both carry their own decision records.
 const {
   treeStyle,
   onTreeDragStart,
-  envOpen,
+  envDir,
+  openEnv,
+  closeEnv,
   openName,
   sizeLabel,
   previewSandbox,
@@ -219,7 +220,7 @@ defineExpose({ focus });
       :root-path="rootPath"
       @open-file="onOpenFile"
       @open-in-new-tab="(path, kind) => emit('openInNewTab', path, kind)"
-      @open-env="envOpen = true"
+      @open-env="openEnv"
     />
     <!-- Same sash treatment as the session panel's: transparent at rest,
          because the tree draws its own right hairline, and highlighted only
@@ -232,7 +233,27 @@ defineExpose({ focus });
       @mousedown.prevent="onTreeDragStart"
     />
     <div class="editor-area">
-      <template v-if="files.openPath">
+      <!-- The folder's env editor, docked here rather than floating over the
+           tab (it used to be an OverlayPanel). The editor area is the pane's
+           one "detail" surface — env view, open file, placeholder, in that
+           order — so the env editor takes it over whole, like a file does:
+           the tree beside it stays live, which is the point of docking.
+
+           `envDir` is the folder pinned when the editor was asked for
+           (useFilesPane), and `:key` is what makes a re-pin to a different
+           folder a REMOUNT — the panel loads its keys in `onMounted`, and a
+           reused instance would keep the old folder's rows under a new
+           header. The `connId` guard is the overlay's, kept: the panel's
+           calls name the connection, and a drop while open falls back to the
+           placeholder rather than a panel of errors. -->
+      <template v-if="envDir && connId">
+        <div class="editor-bar">
+          <span class="path" :title="envDir">{{ envDir }}</span>
+          <button class="close-btn" title="Close env editor" @click="closeEnv">Close</button>
+        </div>
+        <EnvPanelView :key="envDir" :connection-id="connId" :dir="envDir" />
+      </template>
+      <template v-else-if="files.openPath">
         <div class="editor-bar">
           <span class="path">{{ files.openPath }}</span>
           <span v-if="files.dirty" class="dirty">
@@ -578,14 +599,6 @@ defineExpose({ focus });
         <p class="muted small">changes save back over SFTP</p>
       </div>
     </div>
-
-    <!-- The folder's env editor. `files.cwd`, not the tab's seed path: the
-         panel edits the folder the user is STANDING in when they press the
-         button, and the overlay's modal grab means the directory cannot move
-         underneath it while it is open. -->
-    <OverlayPanel v-if="envOpen && connId" title="Env" size="md" @close="envOpen = false">
-      <EnvPanelView :connection-id="connId" :dir="files.cwd" />
-    </OverlayPanel>
   </div>
 </template>
 

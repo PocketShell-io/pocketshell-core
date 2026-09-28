@@ -407,3 +407,23 @@ export function describeKind(cls: FileClass): string {
       return 'unknown file type';
   }
 }
+
+/**
+ * The env files the helper's server-side editor edits (FEATURES.md F16).
+ *
+ * A NAME rule, not a {@link classifyByName} kind: `.env` and `.envrc` open as
+ * raw bytes perfectly well (they are text), but the Files tree routes clicks
+ * on them to the folder's env editor instead, because a click on the env file
+ * asks for the same thing the strip's type button asks for — edit this
+ * folder's env. The helper's `env list` merges both files (a folder with only
+ * `.envrc`, a direnv layout, is exactly as editable), so the two names are
+ * also what decides whether the button is offered at all.
+ *
+ * Everything OUTSIDE the tree — "Open in a new tab", a link clicked in the
+ * terminal — keeps riding the reveal channel to the byte editor, so raw text
+ * stays reachable for the edits the structured editor does not model
+ * (comments, ordering, odd spellings).
+ */
+export function isEnvName(name: string): boolean {
+  return name === '.env' || name === '.envrc';
+}
