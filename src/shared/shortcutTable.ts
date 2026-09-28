@@ -454,6 +454,15 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     note: 'Filters the TREE, not the open file — the editor loads no search extension, so nothing else in this pane wants the chord.',
   },
   {
+    id: 'files.goRoot',
+    surface: 'files',
+    label: 'Jump to the workspace root',
+    defaults: ['Ctrl+Shift+H'],
+    owner: 'app',
+    rebindable: true,
+    note: 'One move back to the folder the workspace is about — the tree strip carries the same jump as a home button. H for home, and shifted because Ctrl+H is a binding editors and browsers already own; the Files pane has no terminal, but a chord that survives an editor holding focus has to be free there too.',
+  },
+  {
     id: 'files.editorUndo',
     surface: 'files',
     label: 'Undo in the open file',

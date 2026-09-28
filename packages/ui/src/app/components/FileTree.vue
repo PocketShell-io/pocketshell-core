@@ -17,6 +17,7 @@ import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
 import type { DirEntry } from '@pocketshell/core';
 import { errorMessage } from '@pocketshell/core/shared/errors';
 import { useFileTreeModel } from '../useFileTreeModel';
+import { resolveRemotePath } from '../remotePaths';
 
 const emit = defineEmits<{
   openFile: [path: string];
@@ -35,6 +36,16 @@ const emit = defineEmits<{
    * overlay lives above the whole Files tab, which is FilesView's to mount.
    */
   openEnv: [];
+}>();
+
+const props = defineProps<{
+  /**
+   * The folder this workspace is ABOUT — the home button's destination, and
+   * the `files.goRoot` chord's. Optional because a workspace can have no path
+   * to name (an untracked session's pseudo-folder); the jump then falls back
+   * to the login home, the same default the tab's own seeding uses.
+   */
+  rootPath?: string;
 }>();
 
 const connection = useConnectionStore();
@@ -293,6 +304,22 @@ async function onCrumb(path: string): Promise<void> {
 }
 
 /**
+ * One move back to the workspace root — the strip's home button and the
+ * `files.goRoot` chord (FilesView routes the chord here, the way it routes
+ * Ctrl+L to the path bar).
+ *
+ * The destination goes through `revealPath`, not a bare `goTo`, for the same
+ * reason the path bar does: a workspace's path can arrive as a literal
+ * `~/git/x` straight out of tmux, and an SFTP channel has no shell to expand
+ * the tilde. `revealPath` resolves, navigates, and reports a root that no
+ * longer exists in the footer the tree already renders.
+ */
+async function goRoot(): Promise<void> {
+  if (!connId.value) return;
+  await files.revealPath(connId.value, resolveRemotePath(props.rootPath ?? '~'));
+}
+
+/**
  * The row's icon NAME. It doubles as the row icon's CSS
  * class, which is how the three entry types get their three token colours —
  * something the colour emoji this replaced could never do, because emoji
@@ -344,8 +371,8 @@ function count(n: number): string {
 // The path bar (click-to-edit, Ctrl+L) is the model's too, including why it
 // replaces the crumbs rather than sitting beside them.
 
-/** Lets FilesView put the caret in either field from its keydown handler. */
-defineExpose({ editPath: startEditing, focusSearch });
+/** Lets FilesView put the caret in either field, or jump home, from its keydown handler. */
+defineExpose({ editPath: startEditing, focusSearch, goRoot });
 </script>
 
 <template>
@@ -424,6 +451,16 @@ defineExpose({ editPath: startEditing, focusSearch });
           </button>
           <button ref="plusBtn" class="icon-btn sm" title="New file or folder" @click="toggleCreateMenu">
             <AppIcon name="plus" :size="14" />
+          </button>
+          <!-- The one-jump way back out of a deep tree, which walking `..`
+               row by row never was. Always rendered when a target exists:
+               being AT the root makes the click a re-list, not a lie. -->
+          <button
+            class="icon-btn sm"
+            title="Go to the workspace root (Ctrl+Shift+H)"
+            @click="goRoot"
+          >
+            <AppIcon name="home" :size="14" />
           </button>
           <button class="icon-btn sm" title="Go to path (Ctrl+L)" @click="startEditing">
             <AppIcon name="edit-2" :size="14" />

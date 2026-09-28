@@ -131,9 +131,7 @@ const { selected, mru, tabOrder, writeTabOrder, loadFolderState, persist } = mem
  * been applied. Keeping one computed list for both surfaces prevents the
  * panel from showing a folder whose workspace has a different set of tabs.
  */
-const folder = computed(() => {
-  return folders.value.find((dir) => dir.key === folderKey.value) ?? null;
-});
+const folder = computed(() => folders.value.find((dir) => dir.key === folderKey.value) ?? null);
 
 /** The folder's real path, or null for an untracked session's pseudo-folder. */
 const folderPath = computed(() => {
@@ -743,6 +741,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
           v-if="activeTab?.kind === 'files' && connection.connectionId"
           :key="activeTab.id"
           :start-path="activeTab.path ?? undefined"
+          :root-path="folderPath ?? undefined"
           :session-key="activeTab.id"
           @open-in-new-tab="onOpenInNewTab"
         />

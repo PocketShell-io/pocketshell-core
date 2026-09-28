@@ -50,6 +50,13 @@ const props = defineProps<{
   /** Directory to open first (e.g. the selected session's cwd). Defaults to home. */
   startPath?: string;
   /**
+   * The folder this workspace is about — the `files.goRoot` chord's and the
+   * tree's home button's destination, falling back to the login home when the
+   * workspace has no path to name. A Files tab opened on a subfolder keeps
+   * the WORKSPACE's root here: "go home" from anywhere means the same folder.
+   */
+  rootPath?: string;
+  /**
    * Identity of the session this tab belongs to, so the browsed directory is
    * remembered per session. Optional: when the parent has no name to give,
    * the start directory identifies the session well enough — two sessions
@@ -119,7 +126,9 @@ const {
  * that way: `*.vue` is a `DefineComponent<…, any>` in env.d.ts, so the instance
  * type collapses to `any` and takes the call site with it.
  */
-const treeRef = ref<{ editPath: () => void; focusSearch: () => void } | null>(null);
+const treeRef = ref<{ editPath: () => void; focusSearch: () => void; goRoot: () => Promise<void> } | null>(
+  null,
+);
 
 function onKeydown(e: KeyboardEvent): void {
   const bindings = settings.shortcutBindings;
@@ -148,6 +157,13 @@ function onKeydown(e: KeyboardEvent): void {
   if (isShortcut(bindings, 'files.filterTree', e)) {
     e.preventDefault();
     treeRef.value?.focusSearch();
+  }
+  // One move back to the folder this workspace is about, however deep the
+  // tree has wandered. Routed to the tree, like the path bar above, because
+  // the tree owns the navigation gestures.
+  if (isShortcut(bindings, 'files.goRoot', e)) {
+    e.preventDefault();
+    void treeRef.value?.goRoot();
   }
 }
 
@@ -200,6 +216,7 @@ defineExpose({ focus });
     <FileTree
       ref="treeRef"
       :style="treeStyle"
+      :root-path="rootPath"
       @open-file="onOpenFile"
       @open-in-new-tab="(path, kind) => emit('openInNewTab', path, kind)"
       @open-env="envOpen = true"
