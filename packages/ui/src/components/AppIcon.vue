@@ -34,6 +34,8 @@ export type AppIconName =
   | 'dot'
   | 'edit-2'
   | 'external-link'
+  | 'eye'
+  | 'eye-off'
   | 'file'
   | 'folder'
   | 'folder-plus'
@@ -149,6 +151,26 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
   // asking for is "bring this repo down onto the host", and the branch mark
   // reads as VCS topology rather than as an action.
   download: { paths: ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'M7 10l5 5 5-5', 'M12 15V3'] },
+  // Feather's `eye`. The env panel's value toggle (EnvPanelView.vue): a
+  // fetched secret stays masked until this mark opens it, Windows password
+  // field style. Its <circle cx=12 cy=12 r=3> is an arc pair, the same
+  // conversion `search` and `settings` use; the lid path is verbatim.
+  eye: {
+    paths: [
+      'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z',
+      'M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6',
+    ],
+  },
+  // Feather's `eye-off` — the same toggle's pressed state: the value is on
+  // screen and the button's offer is to put the mask back. The <line> is
+  // written as one l path; the lid is verbatim, its inner <circle> already
+  // an arc in Feather's own hand.
+  'eye-off': {
+    paths: [
+      'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24',
+      'M1 1l22 22',
+    ],
+  },
   // Feather's `edit-2` — the pen. The draw tool. Not `edit-3` (pen + underline,
   // which reads as "edit this field") and not `pen-tool` (bezier authoring).
   'edit-2': { paths: ['M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z'] },

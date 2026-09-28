@@ -9,14 +9,15 @@
 //   - **Values are secrets until asked for.** The helper's write-only default
 //     keeps values off the wire, and the panel honours that: names load
 //     immediately, a value appears only when its row is revealed, and a
-//     revealed-but-unedited row displays through a password field until the
-//     eye icon is pressed. Nothing here re-serves a value that was never
-//     fetched.
+//     fetched value reaches the SCREEN only through the row's eye button —
+//     Windows password-field style, the mask the field wears until the eye
+//     opens it. Nothing here re-serves a value that was never fetched.
 //
 //   - **A write that failed must not look like one that succeeded.** `envSet`
 //     rejects with the host's own message; per-row save state turns that into
 //     a sentence next to the row rather than a silent no-op.
 import { onMounted, ref } from 'vue';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { api } from '../ipc';
 import type { ConnectionId, EnvVarRow } from '@pocketshell/core';
 import { errorMessage } from '@pocketshell/core/shared/errors';
@@ -39,6 +40,8 @@ interface EnvRow {
   hasValue: boolean;
   /** The value has been fetched from the host (`env get`). */
   revealed: boolean;
+  /** The fetched value is on screen — the eye button's state. */
+  visible: boolean;
   /** The field's current text — the fetched value, or the user's edit. */
   value: string;
   /** True when `value` differs from what the host last confirmed. */
@@ -59,7 +62,7 @@ const newValue = ref('');
 const adding = ref(false);
 
 function toRow(r: EnvVarRow): EnvRow {
-  return { key: r.key, file: r.file, hasValue: r.hasValue, revealed: false, value: '', dirty: false, saving: false };
+  return { key: r.key, file: r.file, hasValue: r.hasValue, revealed: false, visible: false, value: '', dirty: false, saving: false };
 }
 
 async function load(): Promise<void> {
@@ -176,19 +179,32 @@ onMounted(load);
           </div>
 
           <div v-if="row.revealed" class="row-edit">
-            <!-- Password-dots while the field holds a fetched value the user
-                 has not touched — the value is already in memory, but it need
-                 not be on the screen of everyone looking at this window.
-                 Editing turns it into text, because there is no editing a
-                 secret you cannot see. -->
+            <!-- Masked while the field holds a fetched value nobody has asked
+                 to see: the value is already in memory, but it need not be on
+                 the screen of everyone looking at this window. The eye is the
+                 ask — it shows and re-hides the fetched value, the way a
+                 Windows password field works. Editing turns the field into
+                 text and retires the eye, because there is no editing a
+                 secret you cannot see and nothing left for the eye to offer. -->
             <input
               v-model="row.value"
               class="value-input"
-              :type="row.dirty ? 'text' : 'password'"
+              :type="row.dirty || row.visible ? 'text' : 'password'"
               :aria-label="`Value of ${row.key}`"
               spellcheck="false"
               @input="row.dirty = true"
             />
+            <button
+              v-if="!row.dirty"
+              type="button"
+              class="icon-btn sm eye-btn"
+              :aria-pressed="row.visible"
+              :title="row.visible ? 'Hide value' : 'Show value'"
+              :aria-label="row.visible ? `Hide the value of ${row.key}` : `Show the value of ${row.key}`"
+              @click="row.visible = !row.visible"
+            >
+              <AppIcon :name="row.visible ? 'eye-off' : 'eye'" :size="14" />
+            </button>
             <button
               class="save-btn"
               :disabled="!row.dirty || row.saving"
