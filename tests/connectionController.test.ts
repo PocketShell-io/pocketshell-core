@@ -93,6 +93,8 @@ class FakeCapability {
   createRequests = 0;
   killRequests = 0;
   createAfterApplyFailure = false;
+  createAppliedName: string | null = null;
+  createAppliedTag: string | null = null;
   killAfterApplyFailure = false;
   nextWriteError: unknown = null;
   private connectionOrdinal = 0;
@@ -156,7 +158,7 @@ class FakeCapability {
         connectionId: options.connectionId,
         generationId: options.generationId,
         exitCode: 0,
-        stdout: JSON.stringify({ schema: 3, sessions: this.sessions.map(({ name, id, workspace, attached }) => ({ name, id, workspace, attached })) }),
+        stdout: JSON.stringify({ schema: 3, sessions: this.sessions.map(({ name, id, workspace, tag, attached }) => ({ name, id, workspace, tag, attached })) }),
         stderr: '',
         timedOut: false,
       };
@@ -166,7 +168,9 @@ class FakeCapability {
       const name = options.command.split(' -- ').at(-1)?.replace(/^'|'$/g, '') ?? 'created';
       if (this.createAfterApplyFailure) {
         this.createAfterApplyFailure = false;
-        this.sessions.push(session(name));
+        const created = session(this.createAppliedName ?? name);
+        created.tag = this.createAppliedTag;
+        this.sessions.push(created);
         throw new HostCliFailed(options.command, null, '', false, 'SSH transport ended after the host applied create.');
       }
       this.sessions.push(session(name));
@@ -652,8 +656,35 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().uncertainMutation).toMatchObject({
       kind: 'kill-session', target: 'alpha', state: 'observed-applied',
     });
+
+    controller.clearUncertainMutation();
+    const qualifiedTagOnly = session('testuser:tag-only-kill');
+    qualifiedTagOnly.tag = 'tag-only-kill';
+    capability.sessions.push(qualifiedTagOnly);
+    capability.killAfterApplyFailure = true;
+    expect((await controller.killSession('tag-only-kill')).ok).toBe(false);
+    expect(controller.getSnapshot().uncertainMutation).toMatchObject({
+      kind: 'kill-session', target: 'tag-only-kill', state: 'observed-applied',
+    });
     expect(capability.execCommands.filter((command) => command.includes('sessions create'))).toHaveLength(1);
-    expect(capability.execCommands.filter((command) => command.includes('sessions kill'))).toHaveLength(1);
+    expect(capability.execCommands.filter((command) => command.includes('sessions kill'))).toHaveLength(2);
+  });
+
+  it('reconciles an uncertain create by its exact tag when the host qualifies the session name', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    capability.createAfterApplyFailure = true;
+    capability.createAppliedName = 'testuser:created-once';
+    capability.createAppliedTag = 'created-once';
+    expect((await controller.createSession('created-once')).ok).toBe(false);
+
+    expect(capability.createRequests).toBe(1);
+    expect(controller.getSnapshot().uncertainMutation).toMatchObject({
+      kind: 'create-session', target: 'created-once', state: 'observed-applied',
+    });
   });
 
   it('does not retry terminal input after an uncertain native send and proves resource closure', async () => {

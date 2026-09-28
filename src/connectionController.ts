@@ -916,8 +916,10 @@ export class ConnectionController {
   private reconcilePendingMutation(listing: SessionsListing): void {
     const mutation = this.snapshot.uncertainMutation;
     if (!mutation || listing.errors.length > 0) return;
-    const exists = listing.sessions.some((session) => session.name === mutation.target);
-    const applied = mutation.kind === 'create-session' ? exists : !exists;
+    const nameExists = listing.sessions.some((session) => session.name === mutation.target);
+    const applied = mutation.kind === 'create-session'
+      ? nameExists || listing.sessions.some((session) => session.tag === mutation.target)
+      : !nameExists;
     if (applied) {
       this.setSnapshot({ uncertainMutation: { ...mutation, state: 'observed-applied' } });
     }
