@@ -37,6 +37,7 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
   state: ComputedRef<ComposerSessionState>;
   mode: ComputedRef<ComposerMode>;
   attachments: ComputedRef<ComposerSessionState['attachments']>;
+  parked: ComputedRef<ComposerSessionState['parked']>;
   hasUnsent: ComputedRef<boolean>;
   isEmpty: ComputedRef<boolean>;
   toggle: ComputedRef<ReturnType<typeof railToggle>>;
@@ -69,6 +70,7 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
   const FALLBACK: ComposerSessionState = {
     draft: '',
     attachments: [],
+    parked: [],
     error: null,
     sendInFlight: false,
     uploadingCount: 0,
@@ -83,9 +85,12 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
   /** App-level, not per session — see the store's header comment. */
   const mode = computed(() => composer.mode);
   const attachments = computed(() => state.value.attachments);
+  const parked = computed(() => state.value.parked);
 
   /** Is there work in here the user would lose track of? Drives the toggle's pip. */
-  const hasUnsent = computed(() => state.value.draft.length > 0 || attachments.value.length > 0);
+  const hasUnsent = computed(
+    () => state.value.draft.length > 0 || attachments.value.length > 0 || parked.value.length > 0,
+  );
 
   /**
    * Nothing in here worth keeping — the gate on click-outside dismissal
@@ -101,6 +106,10 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
    * NOT empty. The banner case is already covered by the restored payload sitting
    * in the draft, but it is spelled out rather than inferred: silently discarding
    * a prompt that just failed to send is the exact failure this guard exists for.
+   *
+   * Parked attachments do not count: they are off the send path and the dismissal
+   * loses nothing — the offer survives to the next visit, which is its whole
+   * point.
    */
   const isEmpty = computed(() => {
     const st = state.value;
@@ -212,6 +221,7 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
     state,
     mode,
     attachments,
+    parked,
     hasUnsent,
     isEmpty,
     toggle,

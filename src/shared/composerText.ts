@@ -93,6 +93,11 @@ export const COMPOSER_STRINGS = {
     `Attachment upload failed: ${detail}. Your draft was kept; reconnect or choose a smaller/readable file.`,
   /** `PromptComposerSheet.kt:1010` */
   uploading: (n: number): string => `Uploading ${n} attachment(s)...`,
+  // The parked-attachment offer (desktop only — a dismissal with nothing typed
+  // sets staged tiles aside and the next visit is offered them back).
+  parkedCaption: 'from last time',
+  includeParked: 'Include',
+  discardParked: 'Discard',
 } as const;
 
 /**

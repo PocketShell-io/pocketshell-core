@@ -123,6 +123,7 @@ const {
   state,
   mode,
   attachments,
+  parked,
   toggle,
   caret,
   activeCommand,
@@ -135,6 +136,16 @@ const {
   focusDraft,
   draftEl,
 } = draft;
+
+/**
+ * The parked offer's Include: the tile returns to the staged list (a seed — the
+ * bytes are already on the host) and the keyboard goes back to the draft, which
+ * is where a user including an attachment is heading next.
+ */
+function includeParked(remotePath: string): void {
+  composer.includeParked(key.value, remotePath);
+  focusDraft();
+}
 
 /** Hand the keyboard to the terminal — the card's one outward announce. */
 const focusTerminal = (): void => emit('focus-terminal');
@@ -366,6 +377,32 @@ defineExpose({
         <p v-if="state.uploadingCount > 0" class="uploading muted">
           {{ COMPOSER_STRINGS.uploading(state.uploadingCount) }}
         </p>
+
+        <!-- Attachments a past dismissal parked here. Deliberately not tiles:
+             this is a question the composer is asking, not staged state — the
+             tile list below is the only thing Send carries. -->
+        <div v-if="parked.length" class="parked-wrap">
+          <div v-for="a in parked" :key="a.remotePath" class="parked-row">
+            <span class="parked-name" :title="a.remotePath">{{ a.displayName }}</span>
+            <span class="parked-caption">{{ COMPOSER_STRINGS.parkedCaption }}</span>
+            <button
+              class="parked-include"
+              type="button"
+              :aria-label="`${COMPOSER_STRINGS.includeParked} ${a.displayName}`"
+              @click="includeParked(a.remotePath)"
+            >
+              {{ COMPOSER_STRINGS.includeParked }}
+            </button>
+            <button
+              class="parked-discard"
+              type="button"
+              :aria-label="`${COMPOSER_STRINGS.discardParked} ${a.displayName}`"
+              @click="composer.discardParked(key, a.remotePath)"
+            >
+              {{ COMPOSER_STRINGS.discardParked }}
+            </button>
+          </div>
+        </div>
 
         <!-- Own scroller: 20 attachments must not cost Send its slot. -->
         <div v-if="attachments.length" class="tiles-wrap">
@@ -802,6 +839,65 @@ defineExpose({
   margin: 0 0 var(--sp-2);
   padding: 0 var(--sp-3);
   font-size: var(--fs-200);
+}
+
+/* ---- the parked-attachment offer ----------------------------------------
+ * A dismissal with nothing typed sets staged tiles aside; this row is the
+ * offer to take them back. Quiet by design — muted caption, small ghost
+ * buttons — so it reads as a question, not as state: Send carries only the
+ * tile list below, and only Include changes that. */
+.parked-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+.parked-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-200);
+}
+.parked-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.parked-caption {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.parked-include,
+.parked-discard {
+  flex: 0 0 auto;
+  padding: 2px var(--sp-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-100);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.parked-include {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+.parked-include:hover,
+.parked-include:focus-visible {
+  background: var(--accent-dim);
+  color: var(--fg);
+}
+.parked-discard:hover,
+.parked-discard:focus-visible {
+  background: var(--state-active);
+  color: var(--fg);
 }
 
 /* Exactly two rows of tiles (28px each + an 8px gap), then it scrolls. An

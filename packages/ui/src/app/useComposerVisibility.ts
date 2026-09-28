@@ -99,6 +99,12 @@ export function useComposerVisibility(deps: ComposerVisibilityDeps): {
         ? null
         : (text) => void api.shell.input(shellId, text, deps.props.sessionName, deps.props.workspace ?? undefined),
     );
+    // A dismissal with nothing typed unhooks the staged tiles from the send
+    // path — parked for the next visit's Include/Discard offer, never carried
+    // silently into a prompt written later. Runs after the hand-off (which the
+    // attachment gate refuses anyway) and before the dismissal itself, so every
+    // user-close route here parks exactly once.
+    composer.parkAttachments(key.value);
     composer.dismiss();
     deps.focusTerminal();
   }

@@ -64,6 +64,14 @@ export interface StagedAttachment {
 export interface ComposerSessionState {
   draft: string;
   attachments: StagedAttachment[];
+  /**
+   * Attachments a dismissal set aside because nothing had been typed. They are
+   * OFF the send path — `canSend`, `composedPayload` and Send itself never read
+   * this list — and come back only through an explicit Include on the next
+   * visit. The bytes are already on the host (staging is eager), so parking
+   * costs no upload and including is a seed, not a transfer.
+   */
+  parked: StagedAttachment[];
   error: string | null;
   sendInFlight: boolean;
   /** 0 = idle. Mirrors Android's AttachmentUploadState. */
@@ -92,10 +100,14 @@ export interface ComposerSessionState {
 /** How many sent prompts a session remembers. Oldest fall off. */
 export const COMPOSER_HISTORY_LIMIT = 100;
 
+/** How many parked attachments a session keeps on offer. Oldest fall off. */
+export const COMPOSER_PARKED_LIMIT = 10;
+
 /** Per-session fields worth surviving an app restart. */
 interface PersistedState {
   draft: string;
   attachments: Omit<StagedAttachment, 'previewDataUrl'>[];
+  parked: Omit<StagedAttachment, 'previewDataUrl'>[];
   caret: number;
   history: string[];
   /**
@@ -135,6 +147,7 @@ function blankState(): ComposerSessionState {
   return {
     draft: '',
     attachments: [],
+    parked: [],
     error: null,
     sendInFlight: false,
     uploadingCount: 0,
@@ -233,6 +246,7 @@ export const useComposerStore = defineStore('composer', () => {
           ...blankState(),
           draft: saved ?? (value.draft ?? ''),
           attachments: (value.attachments ?? []).map((a) => ({ ...a })),
+          parked: (value.parked ?? []).map((a) => ({ ...a })),
           caret: value.caret ?? 0,
           history: Array.isArray(value.history)
             ? value.history.filter((p): p is string => typeof p === 'string').slice(-COMPOSER_HISTORY_LIMIT)
@@ -286,6 +300,16 @@ export const useComposerStore = defineStore('composer', () => {
 
   /** Drafts debounce their localStorage write; a keystroke storm costs one write. */
 const PERSIST_DEBOUNCE_MS = 250;
+/** Tiles persist without their preview URLs — those can be megabytes of data URL. */
+function persistableTiles(
+  tiles: readonly StagedAttachment[],
+): PersistedState['attachments'] {
+  return tiles.map(({ remotePath, displayName, mimeType }) => ({
+    remotePath,
+    displayName,
+    ...(mimeType === undefined ? {} : { mimeType }),
+  }));
+}
 function persistNow(): void {
     persistTimer = null;
     if (typeof localStorage === 'undefined') return;
@@ -295,14 +319,20 @@ function persistNow(): void {
       // touches a key for every session merely visited, so without this the map
       // grows one empty entry per session, forever. History counts as saying
       // something: prompts the user may want to repeat are the whole point.
-      if (s.draft === '' && s.attachments.length === 0 && s.history.length === 0) continue;
+      // Parked counts too — the "from last time" offer is exactly the thing
+      // that has to outlive the app to be offerable next time.
+      if (
+        s.draft === '' &&
+        s.attachments.length === 0 &&
+        s.parked.length === 0 &&
+        s.history.length === 0
+      ) {
+        continue;
+      }
       out[key] = {
         draft: s.draft,
-        attachments: s.attachments.map(({ remotePath, displayName, mimeType }) => ({
-          remotePath,
-          displayName,
-          ...(mimeType === undefined ? {} : { mimeType }),
-        })),
+        attachments: persistableTiles(s.attachments),
+        parked: persistableTiles(s.parked),
         caret: s.caret,
         history: s.history,
         ...(s.recallSaved === null ? {} : { recallSaved: s.recallSaved }),
@@ -406,6 +436,7 @@ function persistNow(): void {
     const s = ensure(key);
     s.draft = '';
     s.attachments = [];
+    s.parked = [];
     s.error = null;
     s.uploadingCount = 0;
     s.caret = 0;
@@ -513,25 +544,101 @@ function persistNow(): void {
   // Attachments
   // -------------------------------------------------------------------------
 
+  /** Tile an already-uploaded remote path. */
+  function tileFor(path: string, preview?: string): StagedAttachment {
+    return {
+      remotePath: path,
+      displayName: attachmentDisplayName(path),
+      ...(preview === undefined ? {} : { previewDataUrl: preview }),
+    };
+  }
+
+  /**
+   * De-duplicated append of remote paths to a tile list — the one merge rule,
+   * shared by the staged list and the parked list (by remotePath, in order).
+   */
+  function appendTiles(
+    list: readonly StagedAttachment[],
+    paths: readonly string[],
+    previews?: ReadonlyMap<string, string>,
+  ): StagedAttachment[] {
+    const seen = new Set(list.map((a) => a.remotePath));
+    const added: StagedAttachment[] = [];
+    for (const path of paths) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      added.push(tileFor(path, previews?.get(path)));
+    }
+    return added.length ? [...list, ...added] : [...list];
+  }
+
   /** Android: `mergeStagedPaths` (:403-427) — de-dupe by remotePath, append. */
   function mergePaths(
     s: ComposerSessionState,
     paths: readonly string[],
     previews?: ReadonlyMap<string, string>,
   ): void {
-    const seen = new Set(s.attachments.map((a) => a.remotePath));
-    const added: StagedAttachment[] = [];
-    for (const path of paths) {
-      if (seen.has(path)) continue;
-      seen.add(path);
-      const preview = previews?.get(path);
-      added.push({
-        remotePath: path,
-        displayName: attachmentDisplayName(path),
-        ...(preview === undefined ? {} : { previewDataUrl: preview }),
-      });
+    s.attachments = appendTiles(s.attachments, paths, previews);
+  }
+
+  /** The parked list's own append, capped like history is. */
+  function parkPaths(
+    s: ComposerSessionState,
+    paths: readonly string[],
+    previews?: ReadonlyMap<string, string>,
+  ): void {
+    s.parked = appendTiles(s.parked, paths, previews).slice(-COMPOSER_PARKED_LIMIT);
+  }
+
+  /**
+   * A dismissal with nothing typed unhooks the staged tiles from the send path.
+   *
+   * The user's flow: paste a screenshot into the composer, get called away, Esc
+   * — and the next prompt they write a day later must not carry the orphaned
+   * attachment along silently. But the bytes are already on the host and were
+   * not cheap, so this is a PARK, not a destroy: the tiles move aside and the
+   * next visit is offered them ("from last time — Include / Discard"). Nothing
+   * is included by default; Send never reads this list.
+   *
+   * Deliberately refused once the draft holds text: a typed draft with tiles is
+   * work in progress, and the dismissal rules that keep it (§12.2) keep its
+   * attachments with it. Whitespace-only counts as nothing typed — the store's
+   * own blank rule, the same one send and the click-outside gate use.
+   */
+  function parkAttachments(key: string): void {
+    const s = states.value[key];
+    if (!s) return;
+    if (s.draft.trim() !== '' || s.attachments.length === 0) return;
+    const known = new Set(s.parked.map((a) => a.remotePath));
+    const fresh = s.attachments.filter((a) => !known.has(a.remotePath));
+    s.parked = [...s.parked, ...fresh].slice(-COMPOSER_PARKED_LIMIT);
+    s.attachments = [];
+    schedulePersist();
+  }
+
+  /**
+   * Take a parked attachment back onto the send path. A seed, not an upload —
+   * the file landed on the host when it was first staged, so this is a list
+   * move and the attach button's single-flight never comes into it.
+   */
+  function includeParked(key: string, remotePath: string): void {
+    const s = ensure(key);
+    const found = s.parked.find((a) => a.remotePath === remotePath);
+    if (!found) return;
+    s.parked = s.parked.filter((a) => a !== found);
+    // Already staged somehow (a re-attach of the same path while it was
+    // parked): the parked copy just goes, the staged one stays.
+    if (!s.attachments.some((a) => a.remotePath === remotePath)) {
+      s.attachments = [...s.attachments, found];
     }
-    if (added.length) s.attachments = [...s.attachments, ...added];
+    schedulePersist();
+  }
+
+  /** The offer's other button: the parked attachment is gone for good. */
+  function discardParked(key: string, remotePath: string): void {
+    const s = ensure(key);
+    s.parked = s.parked.filter((a) => a.remotePath !== remotePath);
+    schedulePersist();
   }
 
   /**
@@ -631,7 +738,19 @@ function persistNow(): void {
       });
     }
     // #570: a partial batch keeps every survivor AND shows the error.
-    mergePaths(s, result.paths, previews);
+    //
+    // Unless the batch landed while the card was CLOSED and nothing was typed —
+    // the paste-then-close flow: the staging was already on the wire when the
+    // user dismissed, and a dismissal that parks is the one they asked for.
+    // Landing these into `attachments` would light the pip with exactly the
+    // orphaned tile the parking exists to keep out of the next prompt. Reopening
+    // before the batch lands flips the check: the user is looking at the card
+    // again, so the tile stages where they can see it.
+    if (mode.value === 'hidden' && s.draft.trim() === '') {
+      parkPaths(s, result.paths, previews);
+    } else {
+      mergePaths(s, result.paths, previews);
+    }
 
     if (!result.ok) {
       s.error = COMPOSER_STRINGS.attachmentFailed(result.error ?? `${result.failedCount} failed`);
@@ -1044,6 +1163,9 @@ function persistNow(): void {
     stage,
     seedAttachment,
     removeAttachment,
+    parkAttachments,
+    includeParked,
+    discardParked,
     rekey,
     rekeyConnection,
     forget,
