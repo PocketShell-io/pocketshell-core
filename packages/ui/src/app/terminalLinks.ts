@@ -96,18 +96,22 @@
  * ## Web links
  *
  * Everything above reads paths; the same flattening also rejoins the http(s)
- * URLs a remote CLI's wrapper breaks across rows — the shape every comet.com
- * report arrived in: an address cut after `/`, after a hyphen inside a UUID,
- * after its `?`, or mid-hex at a row full to the margin. WebLinksAddon cannot
- * see past the break (it reads one row at a time), so the reconstructed line
- * is scanned by terminalUrls.ts and the one whole-address link is registered
- * BEFORE the addon, which xterm's priority rule lets claim every row of the
- * URL — including the first, whose truncated fragment is exactly what the
- * addon used to underline instead. The rules' URL-specific evidence lives at
- * {@link joinedRowSkip}: `?` in rule 1b's break opportunities, and rule 1's
- * cut guard refusing a tail that already ends extension-shaped, and the
- * hanging-list rule for opencode's full-width cut inside a hostname. A URL on
- * one row is the addon's and stays the addon's.
+ * URLs a remote CLI's wrapper breaks across rows — the shape the comet.com
+ * reports arrived in: an address cut after `/`, after a hyphen inside a UUID,
+ * after its `?`, or mid-hex at a row full to the margin — and the shape the
+ * eleventh report arrived in: GitHub commit URLs cut right BEFORE a segment
+ * (`https://github.com` / `/AI-Shipping-Labs/…`) and mid-segment or mid-hash
+ * at the transcript's inset rows. WebLinksAddon cannot see past the break (it
+ * reads one row at a time), so the reconstructed line is scanned by
+ * terminalUrls.ts and the one whole-address link is registered BEFORE the
+ * addon, which xterm's priority rule lets claim every row of the URL —
+ * including the first, whose truncated fragment is exactly what the addon
+ * used to underline instead. The rules' URL-specific evidence lives at
+ * {@link joinedRowSkip}: `?` in rule 1b's break opportunities, the
+ * finished-address trace reading the PATH's extension — an authority's
+ * `.com` is no filename ({@link webPathOf}) — and rule 1a's head test
+ * admitting only the URL's own continuation. A URL on one row is the addon's
+ * and stays the addon's.
  *
  * ## Appearance
  *
@@ -247,6 +251,33 @@ const HANGING_INDENT = /^ +/;
 
 /** How much leading indentation a continuation row may carry and still join. */
 const INDENT_LIMIT = 16;
+
+/**
+ * The PATH part of a web-URL tail, for the finished-address check the rules
+ * share with {@link HAS_EXTENSION}.
+ *
+ * `HAS_EXTENSION` reads `name.ext` at a token's end, and a URL's authority
+ * sits there whenever the cut fell right after it — but `github.com` is no
+ * more a filename than `com` in prose is, and the eleventh report's
+ * `https://github.com` cut right before `/AI-Shipping-Labs/…` must not be
+ * refused by its own TLD. The extension that says "this address is whole"
+ * lives on the path's last segment (`…/a/b.png`), so the check runs on
+ * everything from the authority's first slash: empty for a bare authority,
+ * `/a/b.png` for the ninth report's finished address.
+ */
+function webPathOf(tail: string): string {
+  const afterScheme = tail.slice(tail.indexOf('://') + 3);
+  const slash = afterScheme.indexOf('/');
+  return slash === -1 ? '' : afterScheme.slice(slash);
+}
+
+/**
+ * A run of hex too long to be a word — what a URL cut mid-hash hands the next
+ * row (`6912cd7dd03802`, the eleventh report's GitHub commit hash). Eight is
+ * the floor because the English words that are pure hex — `added`, `decade`,
+ * `facade` — all live below it, and a line of prose can begin with one.
+ */
+const HEX_FRAGMENT = /^[0-9a-f]{8,}$/i;
 
 /** One flattened logical line, plus the cell each character came from. */
 export interface ScannedLine {
@@ -475,15 +506,21 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
       // glues the next row onto it, because a URL — unlike a path — has no
       // continuesPath-grade content gate standing in front of this rule:
       // `https://…` is as anchored as a token gets whether or not it
-      // continues. So the finished-token traces do the refusing instead.
-      // An extension-shaped tail (`…/a/b.png`) is a whole address one
-      // space-wrap happened to land exactly on the margin — the ninth
+      // continues. So the finished-token trace does the refusing: a tail
+      // whose PATH ends extension-shaped (`…/a/b.png`) is a whole address
+      // one space-wrap happened to land exactly on the margin — the ninth
       // report's `saved https://example.com/a/b.png` + `and cleaned up` —
-      // and a continuation starting `/` is a second address of its own, not
-      // this one's continuation. The cut the reports actually carry has
-      // neither: `…8b64-ab0e95b` ends mid-hex, and the row below starts
-      // with `7d5c6`.
-      if (webSchemeTail && (HAS_EXTENSION.test(tail) || head.startsWith('/'))) return null;
+      // and the extension reads the path part ({@link webPathOf}), because
+      // the authority's `.com` is no extension. A head starting with `/`
+      // refuses nothing here: a FULL row that ends at a token boundary is
+      // cut evidence in itself — a word-wrap leaves the row short of the
+      // margin, so two whole addresses can only land end-to-margin by
+      // coincidence — while a cut right before a segment is the ordinary
+      // shape of a long address, and is what the eleventh report's pane
+      // carries (`https://github.com` / `/AI-Shipping-Labs/…`). The cut the
+      // earlier reports carry has no extension either: `…8b64-ab0e95b` ends
+      // mid-hex, and the row below starts with `7d5c6`.
+      if (webSchemeTail && HAS_EXTENSION.test(webPathOf(tail))) return null;
       return indent;
     }
 
@@ -505,34 +542,37 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
     //     head would have been put on the row above when it fit. `…result.png`
     //     three columns short plus `and cleaned the cache` refuses here, and
     //     the head check is what refuses it — `and` had room.
-    //   - the continuation does not start with `/`. `…` plus `/x` is not a
-    //     path anyone wrote; it is two paths, and the second one is whole
-    //     already — the same refusal rule 1 makes no exception to.
-    //   - the tail does not already end extension-shaped ({@link HAS_EXTENSION}).
-    //     `…name.ext` is what a COMPLETE path looks like; a cut leaves a
-    //     fragment. This is the guard that refuses the misjoin whose head is
-    //     too long for the fit check to catch (`result.png` + `already`),
-    //     at the cost of a true cut that happens to leave a dotted fragment
+    //   - the continuation starts with what a cut leaves. For a path the head
+    //     must NOT start with `/` — `…` plus `/x` is two paths, and the
+    //     second one is whole already. A web tail is the opposite shape: the
+    //     eleventh report's transcript cut its commit addresses right before
+    //     a segment (`https://github.com` / `/AI-Shipping-Labs/…`) and
+    //     mid-segment at its inset rows, so the head must be the URL's OWN
+    //     rest — a new segment, a fragment with more segments behind it, or a
+    //     run of hex ({@link HEX_FRAGMENT}) — and never the bare word a
+    //     space-wrap moves down after a complete, not-quite-full address
+    //     (`docs: https://x.io/guide` two columns short, `available online`
+    //     below: `available` is prose, and the head test is what refuses it,
+    //     since a URL tail has no continuesPath to disprove it — the scheme
+    //     is already anchored).
+    //   - the tail does not already end extension-shaped ({@link
+    //     HAS_EXTENSION}). `…name.ext` is what a COMPLETE path looks like; a
+    //     cut leaves a fragment. For a web tail the extension reads the
+    //     URL's path ({@link webPathOf}) — the authority's `.com` is no
+    //     filename. This is the guard that refuses the misjoin whose head is
+    //     too long for the fit check to catch (`result.png` + `already`), at
+    //     the cost of a true cut that happens to leave a dotted fragment
     //     (`…url.t` + `xt`) — the same trade rule 1b's opportunity
     //     characters make.
-    // A web URL never gets rule 1a, deliberately. Its evidence is a
-    // near-full row plus a head that could not have fitted — but a
-    // SPACE-wrap leaves exactly that shape whenever the word after a
-    // complete, not-quite-full URL is too long for the leftover columns
-    // (`docs: https://x.io/guide` two columns short, `available online`
-    // below), and a URL tail has no continuesPath to disprove it: the
-    // scheme is already anchored. Rule 1's full row is a mid-TOKEN cut, a
-    // different geometry; rule 1b's opportunity characters are cut traces.
-    // Near-full with neither stays a refusal, and the true mid-hex cut at a
-    // near-full row — one cell short of the rule-1 shape — is the price.
     const left = prev.width - 1 - prev.lastCol;
+    const continuesUrl =
+      head.startsWith('/') || head.includes('/') || HEX_FRAGMENT.test(head);
     if (
-      !webSchemeTail &&
       head !== '' &&
-      !head.startsWith('/') &&
       left <= WRAP_SHORTFALL &&
       head.length > left &&
-      !HAS_EXTENSION.test(tail)
+      !(webSchemeTail ? HAS_EXTENSION.test(webPathOf(tail)) : HAS_EXTENSION.test(tail)) &&
+      (webSchemeTail ? continuesUrl : !head.startsWith('/'))
     ) {
       return indent;
     }
