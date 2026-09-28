@@ -75,6 +75,28 @@ function contractAssertions(C) {
   eq(engines[0].availableForCreate, true, 'host CLI engines parser');
   var profiles = C.parseHostProfilesList('{"profiles":[{"name":"Claude","engine":"claude","default":true}]}');
   eq(profiles[0].isDefault, true, 'host CLI profiles parser');
+  var usage = {
+    provider: 'codex',
+    status: 'ok',
+    windows: [{ window: 'weekly', percent_remaining: 5, reset_at: null }],
+    error: null,
+    details: {},
+    resets_available: null,
+    resets_expire_at: null,
+  };
+  eq(C.usageDisplayName(usage.provider), 'Codex', 'usage provider label');
+  eq(C.usageWindowDisplayLabel(usage.windows[0].window), 'Weekly limit', 'usage window label');
+  eq(C.usageThresholdState(usage), 'critical', 'usage quota threshold');
+  eq(C.usageWindowPercent(usage.windows[0]), 95, 'usage percent used');
+  var scan = C.parsePortScanResult([
+    '<<<PS_SS_TLN>>>',
+    'State Recv-Q Send-Q Local Address:Port Peer Address:Port',
+    'LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*',
+  ].join('\n'), { exitCode: 0 });
+  eq(scan.ports[0].port, 8080, 'port listener parser');
+  eq(C.isValidTcpPort(scan.ports[0].port), true, 'TCP port policy');
+  eq(C.planPortForwards({ scan: scan, activeForwards: [] }).openPorts[0], 8080, 'port forward plan');
+  eq(C.PORT_LISTENER_SCAN_COMMAND.includes('ss -tlnp 2>/dev/null'), true, 'port scan command');
   return 'assertions=' + n;
 }
 
