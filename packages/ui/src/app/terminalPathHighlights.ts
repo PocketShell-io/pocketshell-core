@@ -63,7 +63,7 @@
  * repopulates.
  */
 import type { IDecoration, IDisposable, IMarker, Terminal } from '@xterm/xterm';
-import { lastTextColumn, lineLinks, type TerminalPathContext, type UrlOpener } from './terminalLinks';
+import { lineLinks, type TerminalPathContext, type UrlOpener } from './terminalLinks';
 
 interface RowSegment {
   x: number;
@@ -116,11 +116,13 @@ export class PathHighlighter {
     // provider contract does.
     const line = baseY + row + 1;
 
-    // The segment list THIS row carries: one entry per link that spans it.
-    // A row that is neither the link's first nor its last has no endpoint of
-    // its own in the range — the range records two cells — so its segment is
-    // clamped to the row's own text: a reconstructed row stops short of the
-    // pane and the padding after it is not path.
+    // The segment list THIS row carries: one entry per link on it. A provider
+    // answer covers the link's whole LOGICAL line, so it can carry fragments
+    // parked on other rows of that line; the range test keeps only this row's
+    // own. Links are one fragment per row (terminalLinks.ts linksPerRow), so
+    // a range that passes the test is exactly this row's stretch of the path
+    // — first cell to last, the row's leftover columns and leading indent
+    // never inside it.
     const segments: RowSegment[] = [];
     // One flattening, both detectors: paths of every span, and the web links
     // that cross rows (a single-row URL gets no tint — it was never
@@ -129,12 +131,10 @@ export class PathHighlighter {
     const open: UrlOpener = () => undefined;
     for (const link of lineLinks(this.term, line, this.context, open)) {
       if (line < link.range.start.y || line > link.range.end.y) continue;
-      const rowEnd = lastTextColumn(this.term, line);
-      const startX = line === link.range.start.y ? link.range.start.x : 1;
-      const endX = line === link.range.end.y ? link.range.end.x : rowEnd;
-      const width = endX - startX + 1;
-      if (width <= 0) continue;
-      segments.push({ x: startX, width });
+      segments.push({
+        x: link.range.start.x,
+        width: link.range.end.x - link.range.start.x + 1,
+      });
     }
 
     const tint = this.tint();

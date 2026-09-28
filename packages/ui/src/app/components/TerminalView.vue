@@ -608,12 +608,12 @@ onMounted(async () => {
   // opposite of the path provider's ordering, and for the mirror reason. A
   // URL the remote CLI's wrapper broke across rows reaches WebLinksAddon as
   // only its first-row fragment (`https://…/opik/`, underlined, opening a
-  // truncated address); this provider reports the one whole-address link
-  // reconstructed from the flattened line, and xterm's priority rule lets it
-  // claim the fragment's cells. On single-row URLs it answers nothing, so
-  // the addon keeps every line it always handled. (createUrlLinkProvider
-  // documents the overlap arithmetic; terminalLinks.ts the joins that make
-  // the address whole.)
+  // truncated address); this provider reports the reconstructed address, one
+  // link per row it covers (each opening the whole address), and xterm's
+  // priority rule lets this row's link claim the fragment's cells. On
+  // single-row URLs it answers nothing, so the addon keeps every line it
+  // always handled. (createUrlLinkProvider documents the overlap arithmetic;
+  // terminalLinks.ts the joins that make the address whole.)
   termDisposables = [term.registerLinkProvider(createUrlLinkProvider(term, openExternal))];
   // An explicit activation handler, not the addon default.
   //

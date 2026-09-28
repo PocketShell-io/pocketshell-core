@@ -103,15 +103,15 @@
  * (`https://github.com` / `/AI-Shipping-Labs/…`) and mid-segment or mid-hash
  * at the transcript's inset rows. WebLinksAddon cannot see past the break (it
  * reads one row at a time), so the reconstructed line is scanned by
- * terminalUrls.ts and the one whole-address link is registered BEFORE the
- * addon, which xterm's priority rule lets claim every row of the URL —
- * including the first, whose truncated fragment is exactly what the addon
- * used to underline instead. The rules' URL-specific evidence lives at
- * {@link joinedRowSkip}: `?` in rule 1b's break opportunities, the
- * finished-address trace reading the PATH's extension — an authority's
- * `.com` is no filename ({@link webPathOf}) — and rule 1a's head test
- * admitting only the URL's own continuation. A URL on one row is the addon's
- * and stays the addon's.
+ * terminalUrls.ts and the address's links — one per row it spans, see
+ * {@link linksPerRow} — are registered BEFORE the addon, whose priority rule
+ * lets them claim every row of the URL — including the first, whose truncated
+ * fragment is exactly what the addon used to underline instead. The rules'
+ * URL-specific evidence lives at {@link joinedRowSkip}: `?` in rule 1b's
+ * break opportunities, the finished-address trace reading the PATH's
+ * extension — an authority's `.com` is no filename ({@link webPathOf}) — and
+ * rule 1a's head test admitting only the URL's own continuation. A URL on one
+ * row is the addon's and stays the addon's.
  *
  * ## Appearance
  *
@@ -120,6 +120,12 @@
  * vocabulary xterm's link provider API offers. The underline inherits the
  * cell's own foreground, so a path printed green underlines green and the
  * terminal keeps saying what the program said.
+ *
+ * Both detectors hand xterm ONE LINK PER ROW a match touches, never one link
+ * spanning rows ({@link linksPerRow} for why). The practical difference is
+ * the underline: on hover, every row of a wrapped path underlines exactly its
+ * own fragment of it — the row's leftover columns after the cut, and the
+ * continuation row's leading indent, stay bare.
  *
  * Hover is not the layer the user judges by, though. The remote CLI colours
  * and underlines its file references itself, and when ITS wrapper breaks a
@@ -743,27 +749,52 @@ export function scanBufferLine(term: Terminal, bufferLineNumber: number): Scanne
 }
 
 /**
- * 1-based column one past the last non-blank cell of the buffer line [y]
- * (1-based), or 1 for a blank line.
+ * The ILinks for one detector match: one per ROW its cells sit on, every one
+ * opening the whole match.
  *
- * The at-rest highlighter clamps the intermediate rows of a multi-row link
- * with this: a reconstructed row stops short of the pane, the link's range
- * records only its two endpoints, and the cells between a fragment's last
- * character and the margin are padding the tint must not cover.
+ * A match that spans rows cannot be reported as ONE link spanning them.
+ * xterm draws a link's hover underline per row, and for every row that is not
+ * the range's last it underlines from the link's start column to the PANE's
+ * last column (DomRenderer's `_setCellUnderline` passes `cols` as the end
+ * index whenever the row is not `range.end.y`) — a wrapped URL underlined
+ * through the empty space after its cut, the shape the user reported. A link
+ * confined to a single row is underlined exactly from its first cell to its
+ * last, so the match is cut into one fragment link per row: the underline
+ * stops at the cut on the row above and starts at the content (past any
+ * gutter or hanging indent) on the row below. xterm's hit-testing is per
+ * cell, so a fragment activates exactly on its own text — hovering the
+ * padding after the cut is no longer hovering the link at all.
+ *
+ * Each fragment still opens the WHOLE match: `build` receives the fragment's
+ * text and range and closes over the match itself.
  */
-export function lastTextColumn(term: Terminal, y: number): number {
-  const buffer = term.buffer.active;
-  const line = buffer.getLine(y - 1);
-  if (!line) return 1;
-  const scratch = buffer.getNullCell();
-  let end = 1;
-  for (let x = 0; x < line.length; x++) {
-    const cell = line.getCell(x, scratch);
-    if (!cell || cell.getWidth() === 0) continue;
-    const content = cell.getChars();
-    if (content !== '' && content !== ' ') end = x + 1;
+function linksPerRow(
+  scanned: ScannedLine,
+  start: number,
+  end: number,
+  build: (text: string, range: ILink['range']) => ILink,
+): ILink[] {
+  const links: ILink[] = [];
+  let from = start;
+  // `end` is exclusive, as the detectors report it. A row change at `i` (or
+  // reaching `end`) closes the group of cells [from, i) as one fragment. The
+  // cells of one row are contiguous — the flattening walks x within a row —
+  // so a match touches each row in exactly one run.
+  for (let i = start + 1; i <= end; i++) {
+    if (i < end && scanned.cells[i]?.y === scanned.cells[i - 1]?.y) continue;
+    const first = scanned.cells[from];
+    const last = scanned.cells[i - 1];
+    if (first === undefined || last === undefined) continue;
+    links.push(
+      build(scanned.text.slice(from, i), {
+        // xterm's range is 1-based and inclusive at both ends.
+        start: { x: first.x + 1, y: first.y + 1 },
+        end: { x: last.x + 1, y: last.y + 1 },
+      }),
+    );
+    from = i;
   }
-  return end;
+  return links;
 }
 
 /**
@@ -781,24 +812,20 @@ function pathLinksFromScan(scanned: ScannedLine, context: () => TerminalPathCont
   const links: ILink[] = [];
 
   for (const match of findPaths(scanned.text)) {
-    const from = scanned.cells[match.start];
-    const to = scanned.cells[match.end - 1];
-    if (from === undefined || to === undefined) continue;
-
-    // xterm's range is 1-based and inclusive at both ends.
-    links.push({
-      range: {
-        start: { x: from.x + 1, y: from.y + 1 },
-        end: { x: to.x + 1, y: to.y + 1 },
-      },
-      text: scanned.text.slice(match.start, match.end),
-      decorations: { pointerCursor: true, underline: true },
-      // `match.path` deliberately, NOT the `text` xterm hands back: the text is
-      // what is underlined, which still carries the `:12:5` suffix.
-      activate: () => {
-        revealInFiles(context(), match.path);
-      },
-    });
+    // One link per row the path touches ({@link linksPerRow}), every one of
+    // them opening `match.path` — deliberately, NOT the `text` xterm hands
+    // back: that is the fragment underlined, which still carries the `:12:5`
+    // suffix and, on a continuation row, none of the path's head.
+    links.push(
+      ...linksPerRow(scanned, match.start, match.end, (text, range) => ({
+        range,
+        text,
+        decorations: { pointerCursor: true, underline: true },
+        activate: () => {
+          revealInFiles(context(), match.path);
+        },
+      })),
+    );
   }
   return links;
 }
@@ -815,9 +842,8 @@ export type UrlOpener = (url: string) => void;
  * always owned. A URL the remote CLI's wrapper broke across rows is the
  * addon's blind spot — it reads one row at a time — and it is the whole
  * reason these links exist: the flattened line rejoins the fragments, the
- * detector (./terminalUrls.ts) finds the address in it, and the range runs
- * from the `h` of `https` on the first row to the last character of the
- * continuation.
+ * detector (./terminalUrls.ts) finds the address in it, and one link per row
+ * the address covers is registered (each opening the whole address).
  *
  * [open] is injected rather than imported so a click's behaviour stays a
  * TerminalView decision (and a test can observe it without a window).
@@ -836,15 +862,14 @@ function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
     if (from === undefined || to === undefined) continue;
     if (from.y === to.y) continue;
 
-    links.push({
-      range: {
-        start: { x: from.x + 1, y: from.y + 1 },
-        end: { x: to.x + 1, y: to.y + 1 },
-      },
-      text: match.url,
-      decorations: { pointerCursor: true, underline: true },
-      activate: () => open(match.url),
-    });
+    links.push(
+      ...linksPerRow(scanned, match.start, match.end, (text, range) => ({
+        range,
+        text,
+        decorations: { pointerCursor: true, underline: true },
+        activate: () => open(match.url),
+      })),
+    );
   }
   return links;
 }
@@ -856,8 +881,8 @@ function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
  * the highlighter asks about every row the renderer touches; asking both
  * questions of one flattening halves that cost. The links come back in one
  * list because the highlighter does not care who a cell belongs to, only
- * which rows a link spans — and the two detectors can never contest a cell:
- * terminalPaths refuses any `://` token before it peels anything.
+ * which cells each link covers — and the two detectors can never contest a
+ * cell: terminalPaths refuses any `://` token before it peels anything.
  */
 export function lineLinks(
   term: Terminal,
@@ -903,12 +928,12 @@ export function createPathLinkProvider(
  * link where the cells intersect — and on a wrapped URL's FIRST row the addon
  * does report a link: the truncated `https://…/opik/` fragment, the very
  * thing the user complained sat underlined and half-usable. Registered first,
- * the whole-address link claims the fragment's cells out from under it (a
- * link whose range continues onto the next row occupies the rest of this
- * row), and on the continuation rows the addon reports nothing at all, so the
- * one link owns every row of the address. A single-row URL never gets here —
- * {@link urlLinks} returns `[]` and the callback answers `undefined`, which
- * leaves the addon untouched on the lines it always handled.
+ * this row's fragment of the whole address claims those cells out from under
+ * it (the two cover the same cells, ours being the one that opens the whole
+ * address), and on the continuation rows the addon reports nothing at all, so
+ * the address's fragment is the only link there. A single-row URL never gets
+ * here — {@link urlLinks} returns `[]` and the callback answers `undefined`,
+ * which leaves the addon untouched on the lines it always handled.
  */
 export function createUrlLinkProvider(term: Terminal, open: UrlOpener): ILinkProvider {
   return {
