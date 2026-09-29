@@ -205,5 +205,9 @@ img{max-width:100%;height:auto;}
    pane is narrow, and a horizontal scrollbar on the BODY makes every other
    line unreadable. Code blocks and tables scroll inside themselves instead. */
 p,li,h1,h2,h3,h4,h5,h6{overflow-wrap:anywhere;}
+/* The frontmatter table is metadata, not data: a long content id or video URL
+   is every row of it, so the cells wrap like prose does instead of pressing
+   the table's own scroller into service for a two-column key/value list. */
+.md-frontmatter th,.md-frontmatter td{overflow-wrap:anywhere;}
 `.trim();
 }
