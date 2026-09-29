@@ -40,6 +40,7 @@ export * from './remotePathPolicy';
 export * from './filenamePolicy';
 export * from './filePolicy';
 export * from './attachmentPolicy';
+export * from './attachmentUploadProgress';
 export * from './aplexer';
 export * from './aplexerCommands';
 export * from './aplexerParsers';

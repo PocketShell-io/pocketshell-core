@@ -152,6 +152,14 @@ export interface SshSftpOptions extends SshConnectionRef {
 
 export interface SshSftpWriteOptions extends SshSftpOptions {
   dataBase64: string;
+  /** Emit cumulative acknowledged bytes for each completed SFTP write chunk. */
+  reportProgress?: boolean;
+}
+
+/** Cumulative bytes acknowledged by the native SFTP write operation. */
+export interface SshSftpWriteProgressEvent extends SshSftpOptions {
+  bytesWritten: number;
+  totalBytes: number;
 }
 
 export interface SshPortForwardOptions extends SshConnectionRef {
@@ -175,6 +183,10 @@ export interface SshCapability {
   addListener(
     eventName: 'connectionState',
     listenerFunc: (event: SshConnectionStateEvent) => void,
+  ): Promise<SshListenerHandle>;
+  addListener(
+    eventName: 'sftpWriteProgress',
+    listenerFunc: (event: SshSftpWriteProgressEvent) => void,
   ): Promise<SshListenerHandle>;
   connect(options: SshConnectOptions): Promise<SshConnectResult>;
   getConnectionState(ref: SshConnectionRef & { requestId: string }): Promise<SshAck & { state: 'connected' | 'lost' | 'closed' }>;
