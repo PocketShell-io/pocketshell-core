@@ -29,7 +29,7 @@
  * across two rows arrives here as two rows with `isWrapped` false on both — and
  * a path that spans the break is never seen whole by the detector.
  *
- * Five user reports are the shapes the rules below reconstruct:
+ * The reports are the shapes the rules below reconstruct:
  *
  *   - the Codex TUI wrapped mid-token and continued at column 0 of the next
  *     row, i.e. exactly the hard wrap xterm would have flagged had it done the
@@ -86,6 +86,16 @@
  *     the matcher applies — that is why row one was already underlined) and
  *     the gutter rule measures against the inferred render width, like every
  *     rule above it.
+ *   - the Space Bunny transcript paints its message blocks with a left border
+ *     bar (`▏ `, a left partial block) on EVERY row of the block, and the
+ *     block's wrapper broke a long attachment path at an internal hyphen —
+ *     `▏ …/20260929-162110-01-` / `▏ Webpage_3.pdf`, the row full to the
+ *     block's own edge. The bar was no gutter the rules knew, so rule 1b
+ *     joined the rows with the bar still in the stream: the flattened token
+ *     was `…01-▏`, the link opened a path that exists nowhere, and the
+ *     filename fragment stayed bare. The gutter now reads the bar family
+ *     ({@link GUTTER}) and drops it on the join, and rule 2 takes the hyphen
+ *     tail it previously refused.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -231,14 +241,22 @@ const WRAP_SHORTFALL = 4;
 
 /**
  * The gutter a TUI puts in front of the continuation rows of a block it wrapped
- * itself — `  │ ` in the Codex output the user reported.
+ * itself — `  │ ` in the Codex output the user reported, and the left border
+ * bar of the Space Bunny transcript's message blocks: every row of a block
+ * opens with `▏ ` (or a fuller member of the left partial blocks, with a cell
+ * or two of padding before the text column), and the block's own wrapper broke
+ * a long attachment path at an internal hyphen, so the continuation row was
+ * `▏ Webpage_3.pdf`.
  *
- * Box-drawing only, and only with the single trailing space the TUIs actually
- * emit. ASCII `|` is deliberately NOT here: `| ` starts a markdown table row
- * and appears in the middle of shell pipelines, and admitting it would let this
- * rule glue together two rows of a table.
+ * Box-drawing and the left partial blocks only, with the trailing spaces the
+ * TUIs actually emit — one for the box-drawing forms, up to four for the bars,
+ * whose border sits left of the text it decorates. ASCII `|` is deliberately
+ * NOT here: `| ` starts a markdown table row and appears in the middle of
+ * shell pipelines, and admitting it would let this rule glue together two rows
+ * of a table. A bar RUN never matches either — the class must be followed by a
+ * space, so `▌▌▌▌ 40%` stops being a gutter at its own second bar.
  */
-const GUTTER = /^ {0,8}[│┃] /;
+const GUTTER = /^ {0,8}(?:[│┃] |[▏▎▍▌▋▊▉] {1,4})/;
 
 /**
  * The hanging indent a transcript renderer puts in front of the wrapped rows of
@@ -620,10 +638,17 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   //
   // Three conditions, each guarding a different way of being wrong:
   //
-  //   - the tail ends with `/`. A TUI that wraps its own text breaks at a
-  //     boundary it chose, and `…/` is the only break point that leaves the
-  //     path visibly unfinished. Without this, `  │ wrote /tmp/out` followed by
-  //     `  │ done` would join into `/tmp/outdone`.
+  //   - the tail ends with `/` or `-`. A TUI that wraps its own text breaks
+  //     either at a boundary it chose — `…/` is the break point that leaves a
+  //     path visibly unfinished — or mid-token at a hyphen, like every wrapper
+  //     in this file's reports: the Space Bunny transcript's bar-marked block
+  //     carried `▏ …/20260929-162110-01-` with `▏ Webpage_3.pdf` below, and
+  //     until the hyphen was admitted here the join ran past the unrecognised
+  //     bar and glued it into the token (`…01-▏`, a path that opens nothing).
+  //     The hyphen is the same break-opportunity trace rule 1b reads, and the
+  //     head and fit guards below still refuse everything else. Without the
+  //     slash half, `  │ wrote /tmp/out` followed by `  │ done` would join
+  //     into `/tmp/outdone`.
   //   - the continuation does not itself start with `/`. `…/` plus `/x` is not
   //     a path anyone wrote; it is two paths, and the second one is whole
   //     already.
@@ -641,13 +666,14 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   //     row, the estimate falls back to the block itself and this guard stops
   //     constraining — the tail and head checks then carry the rule alone,
   //     the same price rule 1b pays for surviving resizes.
-  if (!tail.endsWith('/')) return null;
+  if (!tail.endsWith('/') && !tail.endsWith('-')) return null;
   const rest = next.text.slice(gutter[0].length);
   const head = /^\S+/.exec(rest)?.[0] ?? '';
   if (head === '' || head.startsWith('/')) return null;
   if (prev.lastCol + 1 + head.length <= wrapWidth) return null;
-  // The gutter is spaces and a narrow box-drawing character, so its string
-  // length is also its cell count — no double-width correction needed.
+  // The gutter is spaces and a narrow bar character — box-drawing or a left
+  // partial block, all ambiguous-width and one cell in xterm — so its string
+  // length is also its cell count; no double-width correction is needed.
   return gutter[0].length;
 }
 
