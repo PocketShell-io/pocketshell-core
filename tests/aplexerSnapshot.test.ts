@@ -61,6 +61,19 @@ describe('parseAplexerSnapshot', () => {
     expect(rows[0]).toMatchObject({ engine: '', created_at_ms: 5 });
     expect('cwd' in rows[0]!).toBe(false);
     expect('last_activity_ms' in rows[0]!).toBe(false);
+    // Old host: no derived `agent` field, and the row stays a valid record.
+    expect('agent' in rows[0]!).toBe(false);
+  });
+
+  it('keeps the live agent: string, null, and absent are three different rows', () => {
+    const rows = parseAplexerSnapshot(
+      JSON.stringify([
+        { ...LIVE_ROW, tag: 'live', agent: 'codex' },
+        { ...LIVE_ROW, tag: 'quiet', agent: null },
+        LIVE_ROW,
+      ]),
+    );
+    expect(rows.map((r) => r.agent)).toEqual(['codex', null, undefined]);
   });
 });
 
@@ -112,5 +125,18 @@ describe('aplexerRecordToSummary', () => {
     });
     expect(summary.path).toBe('/tmp/fallback');
     expect(summary.activity).toBe(1000);
+  });
+
+  it('badges the LIVE agent over the declared engine — the PocketShell session is engine shell, agent codex', () => {
+    const summary = aplexerRecordToSummary({ ...LIVE_ROW, engine: 'shell', agent: 'codex' });
+    expect(summary.agentKind).toBe('codex');
+  });
+
+  it('falls back to the declared engine when no agent is live or the field predates the host', () => {
+    expect(aplexerRecordToSummary({ ...LIVE_ROW, engine: 'claude', agent: null }).agentKind).toBe(
+      'claude',
+    );
+    const { agent: _agent, ...oldHost } = { ...LIVE_ROW, engine: 'grok' };
+    expect(aplexerRecordToSummary(oldHost).agentKind).toBe('grok');
   });
 });

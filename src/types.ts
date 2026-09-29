@@ -169,9 +169,12 @@ export interface SessionSummary {
    */
   aplexerPhase?: string | null;
   /**
-   * Recorded agent kind from the host-side `@ps_agent_kind` tmux user option,
-   * or null when the option is absent/unrecognised — a session we did not
-   * launch (the phone surfaces those as "Unknown" plus a kind picker).
+   * Which agent the session runs, when something reports one: on an aplexer
+   * host the snapshot's live `agent` (the workload's process tree, spec §18)
+   * with the declared `engine` as the fallback, and on the legacy tmux path
+   * the host-side `@ps_agent_kind` tmux user option. Null when every source is
+   * absent or unrecognised — a session we did not launch (the phone surfaces
+   * those as "Unknown" plus a kind picker).
    *
    * Optional so a host that yields no companion data at all (tmux missing,
    * probe failed) still produces valid rows.

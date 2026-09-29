@@ -77,6 +77,10 @@ function parseAplexerRecord(row: unknown): AplexerSessionRecord | null {
   const cwd = typeof cwdRaw === 'string' && cwdRaw.length > 0 ? cwdRaw : null;
   const engineRaw = doc['engine'];
   const engine = typeof engineRaw === 'string' ? engineRaw : '';
+  // The live agent (spec §18): a name when aplexer sees one in the workload's
+  // process tree, null when it does not, absent on hosts older than the field.
+  const agentRaw = doc['agent'];
+  const agent = typeof agentRaw === 'string' ? agentRaw : agentRaw === null ? null : undefined;
   const profileRaw = doc['profile'];
   const profile = typeof profileRaw === 'string' ? profileRaw : null;
   return {
@@ -84,6 +88,7 @@ function parseAplexerRecord(row: unknown): AplexerSessionRecord | null {
     workspace,
     tag,
     engine,
+    ...(agent !== undefined ? { agent } : {}),
     ...(profile ? { profile } : {}),
     ...(cwd ? { cwd } : {}),
     phase,
@@ -209,6 +214,14 @@ export function parseSingleAplexerRecord(stdout: string): AplexerSessionRecord |
  * `attached` is always false: the snapshot carries no client count, and a
  * row that never claims attachment is a row whose dot is sometimes missing,
  * while the reverse would mark dead rows live.
+ *
+ * The agent kind is the LIVE agent when aplexer reports one, falling back to
+ * the declared engine (spec §18): every PocketShell-created session is
+ * `engine: "shell"` with the agent launched by hand inside it, so the live
+ * process tree is the only authority on "which agent is in here" — while an
+ * old host without the field, or a moment between an agent's exit and the
+ * next poll, still has the engine to speak from. Both run through
+ * {@link agentKindFromEngine}, so the vocabulary stays the one table.
  */
 export function aplexerRecordToSummary(record: AplexerSessionRecord): SessionSummary {
   return {
@@ -220,7 +233,7 @@ export function aplexerRecordToSummary(record: AplexerSessionRecord): SessionSum
         : Math.floor(record.created_at_ms / 1000),
     attached: false,
     path: record.workspace || record.cwd || null,
-    agentKind: agentKindFromEngine(record.engine),
+    agentKind: agentKindFromEngine(record.agent) ?? agentKindFromEngine(record.engine),
     backend: 'aplexer',
     workspace: record.workspace,
     tag: record.tag,

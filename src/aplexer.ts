@@ -51,6 +51,15 @@ export interface AplexerSessionRecord {
   tag: string;
   /** Declared engine (`shell`, `claude`, `codex`, `opencode`, `grok`, …). */
   engine: string;
+  /**
+   * Which agent is LIVE in the workload right now (`claude`, `codex`,
+   * `opencode`, `grok`), or null when none is. Derived at query time from the
+   * workload's process tree and never persisted (spec §18), so it cannot go
+   * stale — and it is the only authority on "which agent is in here", because
+   * every PocketShell-created session is `engine: "shell"` with the agent
+   * launched by hand inside it. Absent on hosts older than the field.
+   */
+  agent?: string | null;
   /** Profile id, when the session was started with one. Often absent. */
   profile?: string | null;
   /** The directory the workload runs in. Falls back to `workspace`. */
