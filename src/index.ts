@@ -52,6 +52,7 @@ export * from './hostCliCore';
 export * from './agentCommands';
 export * from './agentLaunch';
 export * from './composerSend';
+export * from './dictationController';
 export * from './terminalKeys';
 export * from './sshCapability';
 export * from './connectionController';
