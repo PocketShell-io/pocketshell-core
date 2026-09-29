@@ -9,6 +9,7 @@ import {
 } from './hostKeyTrustCore';
 import type { SessionRow, SessionsListing } from './hostCliSessions';
 import {
+  isValidSshKeyHandleCredential,
   readSshCapabilityError,
   type SshCapability,
   type SshConnectionRef,
@@ -204,6 +205,14 @@ export class ConnectionController {
 
   async connect(host: SshHostTarget): Promise<ConnectionActionResult<SshConnectionRef>> {
     this.assertLive();
+    const credential: unknown = host.credential;
+    if (isKeyHandleCredential(credential) && !isValidSshKeyHandleCredential(credential)) {
+      return {
+        ok: false,
+        reason: 'failed',
+        message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.',
+      };
+    }
     const intent = ++this.connectIntent;
     const requestId = this.createId();
     this.pendingConnectRequestId = requestId;
@@ -224,7 +233,7 @@ export class ConnectionController {
 
       await this.closeCurrentTransport();
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
-      this.host = host;
+      this.host = hostWithoutTransientPassphrase(host);
       this.setSnapshot({
         phase: 'connecting',
         hostId: host.hostId,
@@ -249,13 +258,23 @@ export class ConnectionController {
     }
   }
 
-  async acceptPresentedHostKey(): Promise<ConnectionActionResult<SshConnectionRef>> {
+  async acceptPresentedHostKey(
+    options: { passphrase?: string | null } = {},
+  ): Promise<ConnectionActionResult<SshConnectionRef>> {
     const pending = this.snapshot.trustDecision;
     const host = this.host;
     if (!pending || !host) return { ok: false, reason: 'failed', message: 'There is no pending host-key decision.' };
+    const retryHost = hostWithTransientPassphrase(host, options.passphrase);
+    if (isKeyHandleCredential(retryHost.credential) && !isValidSshKeyHandleCredential(retryHost.credential)) {
+      return {
+        ok: false,
+        reason: 'failed',
+        message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.',
+      };
+    }
     await this.trustStore.record(host.hostId, acceptedHostKeyPin(pending.previouslyTrusted, pending.presented));
     this.setSnapshot({ trustDecision: null, phase: 'connecting', error: null });
-    return this.connect(host);
+    return this.connect(retryHost);
   }
 
   async refreshSessions(): Promise<ConnectionActionResult<SessionsListing>> {
@@ -964,4 +983,26 @@ export class ConnectionController {
   private assertLive(): void {
     if (this.disposed) throw new Error('ConnectionController is closed.');
   }
+}
+
+function isKeyHandleCredential(value: unknown): value is { kind: 'key-handle' } {
+  return typeof value === 'object' && value !== null
+    && (value as { kind?: unknown }).kind === 'key-handle';
+}
+
+function hostWithoutTransientPassphrase(host: SshHostTarget): SshHostTarget {
+  const credential = host.credential;
+  if (credential.kind !== 'key-handle' || credential.passphrase == null) return host;
+  return {
+    ...host,
+    credential: { kind: 'key-handle', handleId: credential.handleId },
+  };
+}
+
+function hostWithTransientPassphrase(host: SshHostTarget, passphrase?: string | null): SshHostTarget {
+  if (passphrase === undefined || host.credential.kind !== 'key-handle') return host;
+  return {
+    ...host,
+    credential: { kind: 'key-handle', handleId: host.credential.handleId, passphrase },
+  };
 }

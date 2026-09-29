@@ -1,8 +1,29 @@
 import type { HostKeyTrustPin, PresentedHostKey } from './hostKeyTrustCore';
 
+/** Stable opaque identifier owned by the platform's SSH key storage. */
+export interface SshKeyHandleCredential {
+  kind: 'key-handle';
+  handleId: string;
+  /** A short-lived value supplied for a single connection attempt. */
+  passphrase?: string | null;
+}
+
 export type SshCredential =
   | { kind: 'private-key'; privateKeyPem: string; passphrase?: string | null }
-  | { kind: 'password'; password: string };
+  | { kind: 'password'; password: string }
+  | SshKeyHandleCredential;
+
+/** Validate the portable shape without resolving or normalizing the handle. */
+export function isValidSshKeyHandleCredential(value: unknown): value is SshKeyHandleCredential {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== 'key-handle') return false;
+  if (typeof candidate.handleId !== 'string' || candidate.handleId.trim().length === 0) return false;
+  if (candidate.passphrase !== undefined && candidate.passphrase !== null && typeof candidate.passphrase !== 'string') {
+    return false;
+  }
+  return Object.keys(candidate).every((key) => ['kind', 'handleId', 'passphrase'].includes(key));
+}
 
 export interface SshHostTarget {
   hostId: string;

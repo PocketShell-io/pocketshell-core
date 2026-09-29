@@ -330,6 +330,91 @@ export async function runConnectionControllerContract(Core: any): Promise<string
     return result;
   };
 
+  let malformedTrustReads = 0;
+  const malformedCapability = new FakeCapability();
+  const malformedController = createController(malformedCapability, {
+    store: {
+      get: async () => { malformedTrustReads += 1; return acceptedPin; },
+      record: async () => undefined,
+    },
+    current: () => acceptedPin,
+  });
+  for (const credential of [
+    { kind: 'key-handle', handleId: ' \t', passphrase: 'short-lived-passphrase' },
+    { kind: 'key-handle', handleId: 'native-key-1', passphrase: 7 },
+    { kind: 'key-handle', handleId: 'native-key-1', privateKeyPem: 'must-not-cross-this-contract' },
+  ]) {
+    const result = await malformedController.connect({ ...host, credential });
+    check(!result.ok && result.reason === 'failed', 'malformed key handle is rejected');
+  }
+  equal(malformedCapability.connectCalls.length, 0, 'malformed handles never reach SshCapability');
+  equal(malformedTrustReads, 0, 'malformed handles do not read or change host trust');
+  equal(malformedController.getSnapshot().revision, 0, 'malformed handles leave controller state untouched');
+  equal(malformedController.getSnapshot().hostId, null, 'malformed handles do not replace host identity');
+  await malformedController.close();
+
+  const trustCredential = Object.freeze({ kind: 'key-handle', handleId: 'native-key:trust-11' });
+  const trustHost = { ...host, hostId: 'host-with-untrusted-native-key', credential: trustCredential };
+  const trustCapability = new FakeCapability();
+  const trustController = createController(trustCapability, makeTrustStore());
+  const keyTrustResult = await trustController.connect(trustHost);
+  equal(keyTrustResult.reason, 'trust-required', 'key handles keep the host-key trust prompt');
+  equal(trustController.getSnapshot().trustDecision.hostId, trustHost.hostId, 'key handle trust is scoped to the original host identity');
+  const trustRetryPassphrase = 'fresh-trust-retry-passphrase';
+  check((await trustController.acceptPresentedHostKey({ passphrase: trustRetryPassphrase })).ok, 'accepted key-handle host key reconnects');
+  equal(trustCapability.connectCalls[1].hostId, trustHost.hostId, 'trust acceptance preserves key-handle host identity');
+  equal(trustCapability.connectCalls[1].credential.handleId, trustCredential.handleId, 'trust acceptance forwards the same opaque key handle');
+  equal(trustCapability.connectCalls[1].credential.passphrase, trustRetryPassphrase, 'trust acceptance forwards the fresh transient passphrase');
+  trustCapability.emitLost();
+  await waitFor(() => trustCapability.connectCalls.length === 3, 'trust-accepted key handle reconnect reaches capability');
+  equal(trustCapability.connectCalls[2].hostId, trustHost.hostId, 'post-trust reconnect preserves host identity');
+  check(!('passphrase' in trustCapability.connectCalls[2].credential), 'trust-retry passphrase is not retained for reconnect');
+  await trustController.close();
+
+  const transientCredential = Object.freeze({
+    kind: 'key-handle',
+    handleId: 'native-key:fixture-17',
+    passphrase: 'one-attempt-passphrase',
+  });
+  const transientHost = { ...host, hostId: 'host-with-native-key', credential: transientCredential };
+  const transientCapability = new FakeCapability();
+  const transientController = createController(transientCapability, makeTrustStore(acceptedPin));
+  check((await transientController.connect(transientHost)).ok, 'valid key handle connects');
+  const transientConnect = transientCapability.connectCalls[0];
+  equal(transientConnect.hostId, transientHost.hostId, 'key handle keeps the caller host identity');
+  check(transientConnect.credential === transientCredential, 'key handle and transient passphrase are forwarded unchanged');
+  equal(transientConnect.credential.passphrase, 'one-attempt-passphrase', 'transient passphrase is forwarded');
+  check(!('privateKeyPem' in transientConnect.credential), 'core does not resolve handle into private-key bytes');
+  transientCapability.emitLost();
+  await waitFor(() => transientCapability.connectCalls.length === 2, 'transient key handle reconnect reaches capability');
+  equal(transientCapability.connectCalls[1].hostId, transientHost.hostId, 'transient key reconnect keeps host identity');
+  equal(transientCapability.connectCalls[1].credential.handleId, transientCredential.handleId, 'transient key reconnect retains its opaque handle');
+  check(!('passphrase' in transientCapability.connectCalls[1].credential), 'transient passphrase is cleared after its connection attempt');
+  await transientController.close();
+
+  const reconnectCredential = Object.freeze({ kind: 'key-handle', handleId: 'native-key:reconnect-4' });
+  const reconnectHost = { ...host, hostId: 'stable-native-key-host', credential: reconnectCredential };
+  const reconnectCapability = new FakeCapability();
+  const reconnectController = createController(reconnectCapability, makeTrustStore(acceptedPin));
+  check((await reconnectController.connect(reconnectHost)).ok, 'key handle initial connection');
+  reconnectCapability.emitLost();
+  await waitFor(() => reconnectCapability.connectCalls.length === 2, 'key-handle reconnect reaches capability');
+  equal(reconnectCapability.connectCalls[1].hostId, reconnectHost.hostId, 'reconnect keeps host identity');
+  check(reconnectCapability.connectCalls[1].credential === reconnectCredential, 'reconnect forwards the unchanged opaque handle');
+  await reconnectController.close();
+
+  for (const [label, credential] of [
+    ['PEM', { kind: 'private-key', privateKeyPem: 'existing-private-key' }],
+    ['password', { kind: 'password', password: 'existing-password' }],
+  ] as const) {
+    const legacyCapability = new FakeCapability();
+    const legacyController = createController(legacyCapability, makeTrustStore(acceptedPin));
+    const legacyHost = { ...host, credential };
+    check((await legacyController.connect(legacyHost)).ok, `${label} credential still connects`);
+    check(legacyCapability.connectCalls[0].credential === credential, `${label} credential is forwarded unchanged`);
+    await legacyController.close();
+  }
+
   const unknownCapability = new FakeCapability();
   const unknownTrust = makeTrustStore();
   const unknownController = createController(unknownCapability, unknownTrust);
