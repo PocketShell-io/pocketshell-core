@@ -28,20 +28,24 @@
  * the stroke weight the rest of the bar shares — the same reason `type` is a
  * drawn "T" in AppIcon.vue and not a typed one.
  *
- * ## The marks are arbitrary, and say so
+ * ## The marks are the vendors' own
  *
- * Vendor logos at 12-14px are a licensing and fidelity trap — half of them are
- * trademarks, all of them are drawn for a different stroke weight, and none of
- * them survives being flattened to one `currentColor` outline. So these are
- * four ordinary Feather marks whose only job is to be TOLD APART: a closed
- * angular outline, a symmetric pair of chevrons, an asymmetric chevron-plus-rule,
- * and a jagged bolt. Nothing here claims a mark means Claude in the world; it
- * means Claude on this bar, the tooltip says so on first hover, and that is the
- * same contract a colour swatch has.
+ * Originally four arbitrary Feather marks (`hexagon`, `code`, `terminal`,
+ * `zap`), chosen because vendor logos at 12-14px looked like a licensing and
+ * fidelity trap. That reasoning lost to the thing it was protecting: the
+ * arbitrary shapes never became legible — a user had to hover each one to
+ * learn it, and the tooltip was doing the identifying, not the mark — so the
+ * badges went to the actual product marks (claude's spark, the OpenAI knot,
+ * the Grok loop, opencode's frame), rendered as flat single-colour
+ * silhouettes at the same muted grey the arbitrary marks wore. Monochrome at
+ * the app's own contrast answers the fidelity half of the trap, the marks are
+ * carried at UI sizes to identify the tool the session runs — nominative use,
+ * the way a dependency list names a product — answers the licensing half, and
+ * the geometry sources are recorded in AppIcon.vue's brand register.
  *
- * They are named by SHAPE in AppIcon.vue (`hexagon`, `code`, `terminal`, `zap`)
- * and mapped to kinds here, so the icon registry stays a registry of marks and
- * this file is the only place that knows which product wears which.
+ * They are named `brand-*` in AppIcon.vue so the Feather entries stay a
+ * registry of shape-named MARKS, and this file remains the only place that
+ * knows which product wears which.
  *
  * ## Nothing at all for unknown, and that is the point
  *
@@ -71,7 +75,7 @@ import type { SessionAgentKind } from '../types';
  * mark renamed in the registry fails `vue-tsc` at the call site rather than
  * rendering an empty `<svg>`.
  */
-type AgentMarkName = 'hexagon' | 'code' | 'terminal' | 'zap';
+type AgentMarkName = 'brand-claude' | 'brand-codex' | 'brand-grok' | 'brand-opencode';
 
 /** What a session tab shows for one agent kind. */
 export interface AgentMark {
@@ -99,13 +103,13 @@ export interface AgentMark {
 export function agentMark(kind: SessionAgentKind | null | undefined): AgentMark | null {
   switch (kind) {
     case 'claude':
-      return { icon: 'hexagon', label: 'Claude Code' };
+      return { icon: 'brand-claude', label: 'Claude Code' };
     case 'codex':
-      return { icon: 'code', label: 'Codex' };
+      return { icon: 'brand-codex', label: 'Codex' };
     case 'opencode':
-      return { icon: 'terminal', label: 'OpenCode' };
+      return { icon: 'brand-opencode', label: 'OpenCode' };
     case 'grok':
-      return { icon: 'zap', label: 'Grok' };
+      return { icon: 'brand-grok', label: 'Grok' };
     case 'shell':
     case 'unknown':
     case 'probing':

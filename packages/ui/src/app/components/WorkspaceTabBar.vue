@@ -583,9 +583,9 @@ function onRenameInput(event: Event): void {
  * The agent mark. Muted by default and taking the tab's own colour when the tab
  * is active, so it reads as part of the label rather than as a status light
  * competing with it — the mark says WHICH agent, and the underline already says
- * which tab. It is never tinted per kind: four hues on a 12px outline is a
- * palette nobody can learn, and the mark's shape is the distinguishing feature
- * (src/shared/agentBadge.ts).
+ * which tab. It is never tinted per kind: four hues on a 12px mark is a
+ * palette nobody can learn, and the mark's shape — the vendors' own, worn
+ * monochrome — is the distinguishing feature (src/shared/agentBadge.ts).
  */
 .tab-agent {
   color: var(--fg-muted);

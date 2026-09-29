@@ -75,6 +75,10 @@ export function dirTooltip(dir: SessionDirectory): string {
  * undefined and `unknown` are all the phone's "Unknown" and get NO badge — a
  * foreign session we did not launch should not be labelled as if we had.
  * `shell` gets none either: a shell is the unremarkable case.
+ *
+ * The four engines render as their brand marks (`agentMark`), so this word
+ * form is what the transient detector states fall back to — `probing…` and
+ * `exited` are states, not products, and a logo would claim otherwise.
  */
 export function agentBadge(kind: SessionAgentKind | null | undefined): string | null {
   switch (kind) {
@@ -101,7 +105,10 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
 }
 
 /**
- * The distinct agent kinds running in a folder, in row order, deduped.
+ * The distinct agent KINDS running in a folder, in row order, deduped — the
+ * caller decides how each kind presents (a brand mark for the four engines,
+ * the dim word form for `probing` / `exited`), so the tree does not have to
+ * parse display strings back into kinds.
  *
  * A folder row stands in for several sessions now, so a single badge would
  * have to pick one arbitrarily. Deduping and capping is the honest compromise:
@@ -111,11 +118,15 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
  */
 const FOLDER_BADGE_LIMIT = 2;
 
-export function agentBadges(dir: SessionDirectory): string[] {
-  const out: string[] = [];
+export type AgentBadgeKind = Exclude<SessionAgentKind, 'shell' | 'unknown'>;
+
+export function agentBadges(dir: SessionDirectory): AgentBadgeKind[] {
+  const out: AgentBadgeKind[] = [];
   for (const row of dir.rows) {
-    const badge = agentBadge(row.session.agentKind);
-    if (badge !== null && !out.includes(badge)) out.push(badge);
+    const kind = row.session.agentKind;
+    if (kind !== 'shell' && kind !== 'unknown' && kind !== null && kind !== undefined) {
+      if (!out.includes(kind)) out.push(kind);
+    }
     if (out.length === FOLDER_BADGE_LIMIT) break;
   }
   return out;

@@ -17,7 +17,9 @@ import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import { rootHostPath } from '../sessionRoots';
 import { rootHeaderParts, type SessionDirectory, type SessionRootFolder } from '../sessionTree';
-import { agentBadges, dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
+import { agentBadge, agentBadges, dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
+import type { AgentBadgeKind } from '../sessionTreeText';
+import { agentMark, type AgentMark } from '@pocketshell/core/shared/agentBadge';
 import { useFolderDrag } from '../useFolderDrag';
 
 const props = defineProps<{
@@ -93,6 +95,27 @@ function rootAddPath(root: SessionRootFolder): string | null {
 function onSortClick(e: MouseEvent): void {
   const el = e.currentTarget;
   if (el instanceof HTMLButtonElement) emit('sort', el);
+}
+
+/**
+ * What one folder row's badge slot shows for a kind. The four engines wear
+ * their own brand marks (`agentMark`) at the panel's muted grey — VS Code's
+ * treatment of tree adornments: present, named on hover by the mark's
+ * tooltip, never competing with the label they qualify. `probing…` and
+ * `exited` are detector STATES rather than products, so they keep the word
+ * form, dimmed — a logo on those would claim a product that is not running.
+ */
+interface AgentBadgeView {
+  kind: AgentBadgeKind;
+  mark: AgentMark | null;
+  text: string | null;
+}
+
+function badgeViews(dir: SessionDirectory): AgentBadgeView[] {
+  return agentBadges(dir).map((kind) => {
+    const mark = agentMark(kind);
+    return { kind, mark, text: mark === null ? agentBadge(kind) : null };
+  });
 }
 
 const sessions = useSessionsStore();
@@ -281,23 +304,25 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
                  one session, so a bare `1` says nothing the row has not
                  already said — the dead field the original count measurement
                  ruled out.
-                 IMMEDIATELY AFTER THE LABEL, ahead of the badges, for the
+                 IMMEDIATELY AFTER THE LABEL, ahead of the agent marks, for the
                  same reason the root's count moved: a reader scans ONE column
                  of rows, and a count that hugs its label on the header row
                  and floats to the right edge on the rows underneath would be
-                 two conventions in one list. The badges follow, and the time
+                 two conventions in one list. The marks follow, and the time
                  keeps the right edge. -->
             <span v-if="dir.rows.length > 1" class="folder-count muted">
               {{ dir.rows.length }}
             </span>
-            <span
-              v-for="badge in agentBadges(dir)"
-              :key="badge"
-              class="agent-badge"
-              :class="{ dim: badge === 'probing…' || badge === 'exited' }"
-            >
-              {{ badge }}
-            </span>
+            <template v-for="view in badgeViews(dir)" :key="view.kind">
+              <AppIcon
+                v-if="view.mark"
+                :name="view.mark.icon"
+                :size="12"
+                :title="view.mark.label"
+                class="agent-mark"
+              />
+              <span v-else class="agent-badge">{{ view.text }}</span>
+            </template>
             <!-- The folder's age is its NEWEST session's, and it is
                  INDEPENDENT of where the row sits: the list is in the host's
                  order — or the sort the user picked (folderSort.ts) — plus the
@@ -551,7 +576,7 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 
    Dropping the chevron gives every row 18px back. At the 232px panel floor the
    timestamp is already gone (see the container query at the bottom of this
-   block) and a folder row has 232 - 36 - 10 = 186px for its label, badges and
+   block) and a folder row has 232 - 36 - 10 = 186px for its label, marks and
    count. Truncation is the ordinary end ellipsis; the row tooltip carries the
    full name. */
 /* Sits in the folder slot, but is prose rather than a row: no dot, so
@@ -616,7 +641,7 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 }
 /* The label wins the width fight; everything else shrinks first.
 
-   `flex: 0 1 auto`, not `1 1 auto`: it may still SHRINK before the badges and
+   `flex: 0 1 auto`, not `1 1 auto`: it may still SHRINK before the marks and
    the count do, but it no longer GROWS to eat the free space — growing is what
    pushed the count away from the label it belongs to. The right edge is held
    by `.row-time`'s `auto` margin instead, so the timestamps still line up in a
@@ -640,8 +665,17 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 .dir-header.attached .label {
   font-weight: var(--fw-semibold);
 }
-/* Badge metric, shared by every --r-sm chip in the app:
-   inline-flex, 0 var(--sp-1) padding, --lh-100. */
+/* The engine marks sit at the panel's own muted grey, never a per-kind hue:
+   the SHAPE says which agent (the tooltip names it on first hover), and a
+   row of logos at full contrast would out-shout the labels they qualify —
+   the same call the tab bar's `.tab-agent` made. */
+.agent-mark {
+  flex: none;
+  color: var(--fg-muted);
+}
+/* The transient detector states keep a WORD, not a logo — a state is not a
+   product — in the shared chip metric, dim register only: transparent
+   ground, hairline border, secondary ink. */
 .agent-badge {
   display: inline-flex;
   align-items: center;
@@ -650,18 +684,12 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
   line-height: var(--lh-100);
   font-size: var(--fs-100);
   font-weight: var(--fw-medium);
-  color: var(--agent);
-  background: var(--agent-soft);
-  border: 1px solid transparent;
+  color: var(--fg-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: 0 var(--sp-1);
   white-space: nowrap;
-}
-/* Transient detector states read as "not settled yet", not as a live agent. */
-.agent-badge.dim {
-  color: var(--fg-secondary);
-  background: transparent;
-  border-color: var(--border);
 }
 /* Holds the right edge, which the count used to. It is a column the eye reads
    down — ages only compare against each other — so it is the field that has to
@@ -696,9 +724,9 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
    died with the recency sort. What survives the
    revision is the comparison rather than the absolute: at the 232px floor
    something has to go, and every other field on the row either identifies it
-   (label), locates it (dot) or says what is running in it (badge), and an age
+   (label), locates it (dot) or says what is running in it (mark), and an age
    answers none of those. It is a genuine loss at that width now rather than a
-   redundancy, and it is recorded as one. Dot, label and badge survive to the
+   redundancy, and it is recorded as one. Dot, label and mark survive to the
    232px floor. The
    rule is unscoped on purpose, so a directory header drops its aggregate age
    at the same width its children drop theirs — a header still showing a time

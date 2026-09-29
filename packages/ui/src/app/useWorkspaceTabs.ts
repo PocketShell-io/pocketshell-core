@@ -133,10 +133,10 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     const row = localRow(session);
     const lines = [session];
     const mark = agentMark(row?.agentKind);
-    // The agent is named here as well as on the mark's own `<title>`, because the
-    // marks are arbitrary (src/shared/agentBadge.ts) and this is the tooltip a
-    // user actually lands on — the icon is 12px and hovering it precisely is not
-    // a thing to require of anyone.
+    // The agent is named here as well as on the mark's own `<title>`, because
+    // the marks are 12px vendor logos (src/shared/agentBadge.ts) and this is
+    // the tooltip a user actually lands on — hovering the icon itself
+    // precisely is not a thing to require of anyone.
     if (mark) lines.push(mark.label);
     const path = row?.path ?? null;
     if (path && path !== deps.folderPath.value) lines.push(`running in ${path}`);
