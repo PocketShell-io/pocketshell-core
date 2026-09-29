@@ -96,6 +96,16 @@
  *     filename fragment stayed bare. The gutter now reads the bar family
  *     ({@link GUTTER}) and drops it on the join, and rule 2 takes the hyphen
  *     tail it previously refused.
+ *   - the queued-follow-ups transcript renders its paragraph as markdown, and
+ *     its three `[label](</data/…png>)` links were dead twice over: the angle
+ *     brackets are FORBIDDEN in a path, so the detector refused every
+ *     destination outright, and the gate refused the rows whose tail wore the
+ *     link's own `](<` / `(<` syntax, so the paragraph tore at every link and
+ *     the targets that reached past a break never came whole — the links that
+ *     survived pointed at torn-off RELATIVE fragments resolving nowhere. The
+ *     gate reads past the `(<` to the address-so-far, and terminalPaths reads
+ *     the angle-bracket destination — after its label, or alone where the
+ *     wrapper split the label from its destination.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -456,10 +466,23 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   // assignment carries is FORBIDDEN in a path and the gate refuses, so the
   // gutter continuation the CLI wrapped it into never glued on and the
   // underline stopped at `python3.12/` — the tenth report, verbatim.
+  //
+  // A markdown destination cut mid-address reads the same way, and where the
+  // assignment's peel is decoration in FRONT, the link's is syntax at the
+  // tail's own head: `list](</data/agents/…` — or, the label's `]` left on
+  // the row above, `(</data/agents/…`, which the decoration peel already
+  // strips. Judged raw, the angle brackets are FORBIDDEN in a path and the
+  // gate refused, so the paragraph tore at every link and each destination
+  // stayed torn across the rows it spans. Read past the `(<` to the address
+  // so far, the tail is a path-so-far like any other, and the per-rule guards
+  // below still decide on the raw tail's own break evidence — these wrappers
+  // cut at `/` and `-` like every other in this file.
+  const mdTail = /\]?\(<([^<>()]*)$/.exec(tail);
+  const tailPath = mdTail !== null ? (mdTail[1] ?? '') : tail.slice(leadingDecorationWidth(tail));
   if (
     !webSchemeTail &&
     !tail.endsWith('-') &&
-    !continuesPath(tail.slice(leadingDecorationWidth(tail)))
+    !continuesPath(tailPath)
   ) {
     return null;
   }

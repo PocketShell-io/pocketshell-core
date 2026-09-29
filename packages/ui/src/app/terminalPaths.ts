@@ -209,19 +209,37 @@ function matchToken(token: string, base: number): PathMatch | null {
   const start = leadingDecorationWidth(token);
   const end = token.length;
 
-  // A markdown link `[label](target)`: the label is prose — often itself a
-  // filename-shaped word, which is exactly what the agent transcripts print —
-  // and the target is the address a click can open. Only the target
-  // underlines and opens; a target that is no path (an `#anchor`, a bare
+  // A markdown link's destination, as written at the token's end: after a
+  // `](` — `[label](target)`, the shape agent transcripts print — or, when the
+  // wrapper that broke the line across rows split the link between the label
+  // and its destination, the destination alone: `(<…>)` at the token's start,
+  // the label's `]` left on the row above. CommonMark also lets a destination
+  // wear angle brackets, the form renderers use when the address would
+  // otherwise be misread, and the angles are destination SYNTAX: stripped for
+  // the verdict, which every path rule below would otherwise refuse them for,
+  // but kept in the span — they are what the user reads of the address, as a
+  // `file://` URL keeps its scheme underlined. Only the destination
+  // underlines and opens; a destination that is no path (an `#anchor`, a bare
   // word) falls through to the rules below, which reject the whole token the
   // way they reject any prose. This must come before the punctuation peeling
   // below, whose closer-counting would otherwise keep the `)` and admit a
   // nonsense candidate wearing the label and the brackets.
-  const mdTarget = /\]\(([^)]+)\)(?:[.,;:!?*]+)?$/.exec(token);
+  const mdTarget =
+    /\]\(([^)]+)\)(?:[.,;:!?*]+)?$/.exec(token) ?? /^\(([^)]+)\)(?:[.,;:!?*]+)?$/.exec(token);
   if (mdTarget !== null) {
-    const mdStart = token.length - mdTarget[0].length + 2;
-    const target = matchCandidate(token, base, mdStart, mdStart + (mdTarget[1]?.length ?? 0));
-    if (target !== null) return target;
+    const open = token.length - mdTarget[0].length + (mdTarget[0].startsWith(']') ? 1 : 0);
+    const written = mdTarget[1] ?? '';
+    const wrapped = written.startsWith('<') && written.endsWith('>');
+    const inner = wrapped ? written.slice(1, -1) : written;
+    const innerStart = open + 1 + (wrapped ? 1 : 0);
+    const target = matchCandidate(token, base, innerStart, innerStart + inner.length);
+    if (target !== null) {
+      // The span reads from the `<` when the destination wears one — the `)`
+      // and any sentence punctuation after it stay out, exactly as they do
+      // unwrapped.
+      const spanStart = base + open + 1;
+      return { ...target, start: spanStart, end: spanStart + written.length };
+    }
   }
 
   // Tool output often writes `Write(path)` without a space. Treat the
