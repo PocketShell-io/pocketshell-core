@@ -137,6 +137,25 @@ describe('DictationController', () => {
     },
   );
 
+  it.each(['no-match', 'speech-timeout', 'recognizer-busy'] as const)(
+    'completes after Stop when the recognizer ends with recoverable %s',
+    (reason) => {
+      const state = setup();
+      const requestId = start(state);
+      state.controller.onPartial(requestId, 'unconfirmed preview');
+
+      state.controller.stop();
+      expect(state.stops).toEqual([requestId]);
+
+      expect(state.controller.onRecoverableEnd(requestId, reason)).toBe(true);
+      expect(state.controller.getSnapshot()).toMatchObject({
+        phase: 'completed', requestId: null, partial: '', transcript: '',
+      });
+      expect(state.scheduler.callbacks.size).toBe(0);
+      expect(state.starts).toEqual([requestId]);
+    },
+  );
+
   it('waits for the active turn after Stop and does not rearm after its result', () => {
     const state = setup();
     const requestId = start(state);
