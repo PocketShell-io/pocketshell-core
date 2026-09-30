@@ -130,7 +130,10 @@ class FakeCapability {
     state: this.connections.has(ref.connectionId) ? 'connected' as const : 'closed' as const,
   });
 
+  readonly closedConnectionIds: string[] = [];
+
   closeConnection = async (ref: SshConnectionRef & { requestId: string }) => {
+    this.closedConnectionIds.push(ref.connectionId);
     this.connections.delete(ref.connectionId);
     for (const [channelId, pty] of this.ptys) {
       if (pty.connectionId === ref.connectionId) this.closePtyRef(pty);
@@ -678,6 +681,7 @@ describe('JS connection and session policy', () => {
       error: RECONNECT_DECLINED_MESSAGE,
     });
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    expect(capability.closedConnectionIds).toContain(originalConnection);
 
     await controller.reconnect();
     expect(capability.connectCalls).toHaveLength(2);
@@ -686,6 +690,30 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
     await controller.reconnect();
     expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('releases a connection spent inside grace without dialing when reconnect-on-return is off', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const originalConnection = controller.getSnapshot().connectionId!;
+
+    await controller.enterBackground(60_000);
+    // The transport died while still inside the grace window.
+    capability.connections.delete(originalConnection);
+    now += 5_000;
+    await controller.returnToForeground({ reconnect: false });
+
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', connectionId: null, error: RECONNECT_DECLINED_MESSAGE });
+    expect(capability.closedConnectionIds).toContain(originalConnection);
+    await controller.reconnect();
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
   });
 
   it.each([
