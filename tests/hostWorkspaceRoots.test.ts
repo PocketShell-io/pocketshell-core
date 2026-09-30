@@ -265,9 +265,159 @@ describe('host workspace roots over the host CLI', () => {
     return { cli, release: () => held.splice(0).forEach((reply) => reply()) };
   }
 
-  async function settle(): Promise<void> {
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  /** A CLI whose `add` runs on the host at once but whose REPLY is held. */
+  function heldReplies(host: FakeHost, connectionId: string) {
+    const held: Array<() => void> = [];
+    const cli = workspaceRootsCliForConnection(
+      workspaceRootsApiFromExec(async (id, command) => {
+        const outcome = await host.exec(id, command);
+        if (!command.includes(' add ')) return outcome;
+        return new Promise<HostCliExecOutcome>((resolve) => held.push(() => resolve(outcome)));
+      }),
+      connectionId,
+    );
+    return { cli, release: () => held.splice(0).forEach((reply) => reply()) };
   }
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  }
+
+  it('runs one restore at a time across a reconnect that carries previous roots, as the app does', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', []);
+    const previousRoots = { roots: ['~/git'], rootOrder: ['~/git'] };
+    const roots = model();
+    const first = heldAdds(host, 'conn-1');
+    const firstSelect = roots.select({ hostIdentity: 'h', cli: first.cli, previousRoots });
+    await settle();
+
+    // The app's bind() passes the Settings roots on EVERY select, reconnects included.
+    const second = heldReplies(host, 'conn-2');
+    const secondSelect = roots.select({ hostIdentity: 'h', cli: second.cli, previousRoots });
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+
+    // The old connection's add finally lands. Its late reply must not start a
+    // second restore, unlock the controls, or even list while conn-2's restore
+    // is open — the re-read waits for that restore to finish.
+    const lists = () => host.commands.filter((command) => command.includes(' list ')).length;
+    const listsBefore = lists();
+    first.release();
+    await firstSelect;
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+    expect(lists()).toBe(listsBefore);
+    expect(await roots.removeRoot('/home/me/git')).toBe(false);
+    expect(await roots.addRoot('/srv/x')).toBe(false);
+
+    second.release();
+    await secondSelect;
+    await settle();
+    expect(roots.getState().mutating).toBe(false);
+    expect(host.registry.get('h')).toEqual(['/home/me/git']);
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(host.registry.get('h'));
+    // Only the two restores' adds reached the host — no third from a doubled restore.
+    expect(host.commands.filter((command) => command.includes(' add ')).length).toBe(2);
+    expect(await roots.removeRoot('/home/me/git')).toBe(true);
+    expect(roots.getState().memberships).toEqual([]);
+  });
+
+  it('does not start a second restore when the view refreshes during one', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', []);
+    const roots = model();
+    const conn = heldAdds(host, 'conn-1');
+    const selecting = roots.select({ hostIdentity: 'h', cli: conn.cli, previousRoots: { roots: ['~/git'], rootOrder: [] } });
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+    await roots.refresh();
+    expect(roots.getState().mutating).toBe(true);
+    conn.release();
+    await selecting;
+    await settle();
+    expect(host.commands.filter((command) => command.includes(' add ')).length).toBe(1);
+    expect(roots.getState()).toMatchObject({ mutating: false, status: 'ready' });
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(['/home/me/git']);
+  });
+
+  it('answers a late reply with a listing only, never another registration command', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', []);
+    const previousRoots = { roots: ['~/git'], rootOrder: [] };
+    const roots = model();
+    // conn-1's restore add is lost in transit and eventually FAILS without applying.
+    const late: Array<() => void> = [];
+    const first = workspaceRootsCliForConnection(workspaceRootsApiFromExec(async (id, command) => {
+      if (!command.includes(' add ')) return host.exec(id, command);
+      host.commands.push(command);
+      return new Promise<HostCliExecOutcome>((resolve) => late.push(() => resolve({ exitCode: null, stdout: '', stderr: '', timedOut: true })));
+    }), 'conn-1');
+    const firstSelect = roots.select({ hostIdentity: 'h', cli: first, previousRoots });
+    await settle();
+    // conn-2's own restore fails outright, so nothing holds the lock afterwards.
+    const failing = workspaceRootsCliForConnection(workspaceRootsApiFromExec(async (id, command) => {
+      if (!command.includes(' add ')) return host.exec(id, command);
+      host.commands.push(command);
+      return { exitCode: 1, stdout: '', stderr: 'registry locked' };
+    }), 'conn-2');
+    await roots.select({ hostIdentity: 'h', cli: failing, previousRoots });
+    expect(roots.getState()).toMatchObject({ mutating: false });
+    const adds = () => host.commands.filter((command) => command.includes(' add ')).length;
+    const addsBefore = adds();
+
+    late.splice(0).forEach((reply) => reply());
+    await firstSelect;
+    await settle();
+    expect(adds()).toBe(addsBefore);
+    expect(roots.getState().mutating).toBe(false);
+  });
+
+  it('re-reads once the current operation ends when a late reply arrived during it', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    const first = heldAdds(host, 'conn-1');
+    await roots.select({ hostIdentity: 'h', cli: first.cli });
+    const lateAdd = roots.addRoot('/srv/a');
+    await settle();
+
+    const second = heldReplies(host, 'conn-2');
+    await roots.select({ hostIdentity: 'h', cli: second.cli });
+    const currentAdd = roots.addRoot('/srv/b');
+    await settle();
+
+    // /srv/a lands on the host AFTER conn-2's add answered from its own view.
+    first.release();
+    expect(await lateAdd).toBe(false);
+    second.release();
+    expect(await currentAdd).toBe(true);
+    await settle();
+    expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/a', '/srv/b']);
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(host.registry.get('h'));
+  });
+
+  it('never re-lists another host when a late reply for the previous host arrives', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    host.registry.set('g', ['/srv/g']);
+    const roots = model();
+    const first = heldAdds(host, 'conn-h');
+    await roots.select({ hostIdentity: 'h', cli: first.cli });
+    const pending = roots.addRoot('/srv/late');
+    await settle();
+
+    await roots.select({ hostIdentity: 'g', cli: host.cli('conn-g') });
+    const before = roots.getState();
+    const listsForG = () => host.commands.filter((command) => command.includes("list --host 'g'")).length;
+    const gLists = listsForG();
+
+    first.release();
+    expect(await pending).toBe(false);
+    await settle();
+    expect(listsForG()).toBe(gLists);
+    expect(roots.getState()).toEqual(before);
+  });
 
   it('releases an add superseded by a reconnect to the same host and shows the host state', async () => {
     const host = new FakeHost();
@@ -319,27 +469,37 @@ describe('host workspace roots over the host CLI', () => {
     expect(await roots.addRoot('/srv/d')).toBe(true);
   });
 
-  it('treats an unreadable restore record as already restored and says so', async () => {
+  it('treats an unreadable restore record as already restored, says so once, and repairs it', async () => {
     const host = new FakeHost();
     host.registry.set('h', []);
     const storage = new MemoryStorage();
     storage.setItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY, '[broken');
+    const previousRoots = { roots: ['~/git'], rootOrder: [] };
     const roots = model(storage);
-    await roots.select({ hostIdentity: 'h', cli: host.cli(), previousRoots: { roots: ['~/git'], rootOrder: [] } });
+    await roots.select({ hostIdentity: 'h', cli: host.cli(), previousRoots });
     // A root the user removed must not come back from the previous client.
     expect(host.registry.get('h')).toEqual([]);
     expect(host.commands.some((command) => command.includes(' add '))).toBe(false);
     expect(roots.getState().mutationError).toMatch(/restore record is unreadable/);
-    // The unreadable copy is kept and never overwritten.
-    expect(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)).toBe('[broken');
+    // The unreadable copy is kept; the record itself is rewritten to a valid
+    // "every host already restored" form, so it stays fail-closed.
     expect(storage.getItem(`${WORKSPACE_ROOTS_RESTORED_STORAGE_KEY}.unreadable-42`)).toBe('[broken');
-    const ledger = new RestoredWorkspaceRootsLedger(storage, () => 42);
-    expect(ledger.loadError).toMatch(/unreadable/);
-    // Fail closed at the ledger itself: every host reads as already restored,
-    // and recording one more never overwrites the unreadable value.
+    expect(JSON.parse(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)!)).toEqual(['*']);
+
+    // Said once: the next listing in this process does not repeat it...
+    roots.clearMessages();
+    await roots.refresh();
+    expect(roots.getState().mutationError).toBeNull();
+    // ...and a restart finds a readable record, still closed for every host.
+    const ledger = new RestoredWorkspaceRootsLedger(storage, () => 43);
+    expect(ledger.loadError).toBeNull();
     expect(ledger.has('some-other-host')).toBe(true);
     ledger.add('some-other-host');
-    expect(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)).toBe('[broken');
+    expect(JSON.parse(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)!)).toEqual(['*']);
+    const restarted = model(storage);
+    await restarted.select({ hostIdentity: 'h2', cli: host.cli(), previousRoots });
+    expect(restarted.getState().mutationError).toBeNull();
+    expect(host.commands.some((command) => command.includes(' add '))).toBe(false);
   });
 
   it('clears the deadline timer when the command answers first', async () => {

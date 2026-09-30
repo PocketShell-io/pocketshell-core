@@ -171,14 +171,18 @@ export class WorkspaceRootOrderStore {
   }
 }
 
+/** The ledger entry that marks EVERY host as already restored. */
+const ALL_HOSTS_RESTORED = '*';
+
 /**
  * Host identities whose previous-client roots were already restored once.
  *
  * FAILS CLOSED: a record that cannot be read counts as "every host already
  * restored". Treating it as empty would re-register roots the user removed on
  * purpose, which is the one thing a one-time restore must never do. The
- * unreadable value is preserved beside it, never overwritten, and reported —
- * the same handling the root order gets.
+ * unreadable value is preserved beside it and reported once; the record is
+ * then rewritten to the readable "every host restored" form, so it stays
+ * closed without reporting the same damage on every listing and restart.
  */
 export class RestoredWorkspaceRootsLedger {
   /** Why the record could not be read; the restore is skipped while set. */
@@ -192,6 +196,8 @@ export class RestoredWorkspaceRootsLedger {
         + 'restored again; the unreadable copy was kept.';
       try {
         storage.setItem(`${WORKSPACE_ROOTS_RESTORED_STORAGE_KEY}.unreadable-${now()}`, raw);
+        // Only after the copy is safe: repair to the closed, readable form.
+        storage.setItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY, JSON.stringify([ALL_HOSTS_RESTORED]));
       } catch {
         loadError = 'The workspace roots restore record is unreadable and could not be preserved; '
           + 'roots saved on this device were not restored again.';
@@ -216,12 +222,12 @@ export class RestoredWorkspaceRootsLedger {
 
   has(hostIdentity: string): boolean {
     const current = this.read();
-    return current === null || current.includes(hostIdentity);
+    return current === null || current.includes(ALL_HOSTS_RESTORED) || current.includes(hostIdentity);
   }
 
   add(hostIdentity: string): void {
     const current = this.read();
-    if (current === null || current.includes(hostIdentity)) return;
+    if (current === null || current.includes(ALL_HOSTS_RESTORED) || current.includes(hostIdentity)) return;
     this.storage.setItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY, JSON.stringify([...current, hostIdentity]));
   }
 }
@@ -277,6 +283,12 @@ export class HostWorkspaceRoots {
   private state: WorkspaceRootsState = emptyState(null, []);
   private selection: WorkspaceRootsSelection | null = null;
   private epoch = 0;
+  /** The registration change holding the lock, tagged with its epoch. */
+  private operation: { epoch: number } | null = null;
+  /** A listing arrived (or was owed) while an operation held the lock. */
+  private relistAfterOperation = false;
+  /** An unreadable restore record is reported once per process. */
+  private restoreErrorShown = false;
   private readonly listeners = new Set<(state: WorkspaceRootsState) => void>();
 
   constructor(
@@ -313,6 +325,9 @@ export class HostWorkspaceRoots {
     const previous = this.selection;
     this.selection = selection;
     this.epoch += 1;
+    // Whatever was in flight belongs to the old epoch: it can no longer write
+    // this view, and it no longer holds the lock (see `busy`).
+    this.relistAfterOperation = false;
     if (!selection) {
       this.state = emptyState(null, []);
       this.set({});
@@ -321,13 +336,40 @@ export class HostWorkspaceRoots {
     if (previous?.hostIdentity !== selection.hostIdentity) {
       this.state = emptyState(selection.hostIdentity, this.order.get(selection.hostIdentity).rootOrder);
     } else {
-      // Same host, new connection (a reconnect): the rows stay, but whatever
-      // was in flight belongs to the old epoch and can no longer finish here.
-      // Release it now so the controls do not stay locked, and let the
-      // superseded reply trigger a re-list (see `settleSuperseded`).
+      // Same host, new connection (a reconnect): the rows stay, the controls
+      // unlock unless the new connection starts its own operation.
       this.state = { ...this.state, mutating: false, mutationError: null, notice: null };
     }
     await this.refresh();
+  }
+
+  /**
+   * True while an add, remove or restore started in THIS epoch is running.
+   * It is the one lock: at most one registration change per host connection
+   * at a time, and `mutating` reports exactly this.
+   */
+  private busy(): boolean {
+    return this.operation !== null && this.operation.epoch === this.epoch;
+  }
+
+  /**
+   * Run one registration change under the lock. `body` returns whether it
+   * completed in its own epoch; a superseded body has already routed its
+   * late reply through `settleSuperseded`.
+   */
+  private async locked<T>(body: (epoch: number) => Promise<T>): Promise<T> {
+    const operation = { epoch: this.epoch };
+    this.operation = operation;
+    this.set({ mutating: true });
+    try {
+      return await body(operation.epoch);
+    } finally {
+      if (this.operation === operation) this.operation = null;
+      if (operation.epoch === this.epoch) {
+        this.set({ mutating: false });
+        await this.flushRelist();
+      }
+    }
   }
 
   /** Re-read the host's registrations; a failure keeps last-known rows. */
@@ -339,27 +381,65 @@ export class HostWorkspaceRoots {
     try {
       const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
       if (epoch !== this.epoch) return;
+      if (this.busy()) {
+        // An operation is mid-flight; its own answer is the newer truth.
+        // Re-read once it settles instead of writing a possibly older list.
+        this.relistAfterOperation = true;
+        this.set({ status: 'ready' });
+        return;
+      }
       this.set({ status: 'ready', memberships: listing.workspaces, error: null });
-      await this.restorePrevious(selection, listing.workspaces, epoch);
+      await this.restorePrevious(selection, listing.workspaces);
     } catch (error) {
       if (epoch !== this.epoch) return;
       this.set({ status: 'error', error: `Could not read workspace roots from the host: ${describe(error)}` });
     }
   }
 
+  /** List only — never starts a restore — and never over a running operation. */
+  private async relist(): Promise<void> {
+    const selection = this.selection;
+    if (!selection) return;
+    const epoch = this.epoch;
+    try {
+      const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
+      if (epoch !== this.epoch) return;
+      if (this.busy()) {
+        this.relistAfterOperation = true;
+        return;
+      }
+      this.set({ status: 'ready', memberships: listing.workspaces, error: null });
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      this.set({ status: 'error', error: `Could not read workspace roots from the host: ${describe(error)}` });
+    }
+  }
+
+  private async flushRelist(): Promise<void> {
+    if (!this.relistAfterOperation || this.busy()) return;
+    this.relistAfterOperation = false;
+    await this.relist();
+  }
+
   /**
    * A reply that arrived after its epoch ended. The host may well have applied
-   * the command, so re-list rather than guess — but only while the SAME host
-   * is still selected; another host's view must not hear about it at all.
+   * the command, so re-read rather than guess — but only while the SAME host
+   * is still selected (another host's view must not hear about it at all),
+   * only as a plain listing (never a second restore), and only once the
+   * current connection's own operation, if any, has finished.
    */
   private async settleSuperseded(selection: WorkspaceRootsSelection): Promise<void> {
-    if (this.selection?.hostIdentity === selection.hostIdentity) await this.refresh();
+    if (this.selection?.hostIdentity !== selection.hostIdentity) return;
+    if (this.busy()) {
+      this.relistAfterOperation = true;
+      return;
+    }
+    await this.relist();
   }
 
   private async restorePrevious(
     selection: WorkspaceRootsSelection,
     memberships: readonly WorkspaceMembership[],
-    epoch: number,
   ): Promise<void> {
     const previous = selection.previousRoots;
     if (!previous) return;
@@ -367,7 +447,9 @@ export class HostWorkspaceRoots {
     if (this.order.seed(identity, { rootOrder: previous.rootOrder })) {
       this.set({ rootOrder: this.order.get(identity).rootOrder });
     }
-    if (this.restored.loadError) {
+    if (this.restored.loadError && !this.restoreErrorShown) {
+      // Said once per process; the ledger has already repaired the record.
+      this.restoreErrorShown = true;
       this.set({ mutationError: this.restored.loadError });
       return;
     }
@@ -376,42 +458,43 @@ export class HostWorkspaceRoots {
     const keyOf = (path: string) => directoryKey(normaliseRootPath(path) ?? path, home);
     const registered = new Set(memberships.map((workspace) => keyOf(workspace.path)));
     const missing = previous.roots.filter((root) => !registered.has(keyOf(root)));
-    let latest: WorkspaceMembership[] = [...memberships];
-    if (missing.length > 0) this.set({ mutating: true });
-    try {
-      for (const root of missing) {
-        const listing = await selection.cli.addWorkspace(identity, root);
+    if (missing.length === 0) {
+      this.restored.add(identity);
+      return;
+    }
+    await this.locked(async (epoch) => {
+      let latest: WorkspaceMembership[] = [...memberships];
+      try {
+        for (const root of missing) {
+          const listing = await selection.cli.addWorkspace(identity, root);
+          if (epoch !== this.epoch) {
+            await this.settleSuperseded(selection);
+            return;
+          }
+          latest = listing.workspaces;
+        }
+        this.restored.add(identity);
+        this.set({
+          memberships: latest,
+          notice: `Restored ${missing.length} workspace root${missing.length === 1 ? '' : 's'} saved on this device.`,
+        });
+      } catch (error) {
         if (epoch !== this.epoch) {
           await this.settleSuperseded(selection);
           return;
         }
-        latest = listing.workspaces;
+        this.set({
+          memberships: latest,
+          mutationError: `Could not restore a workspace root saved on this device: ${describe(error)}`,
+        });
       }
-      this.restored.add(identity);
-      this.set({
-        memberships: latest,
-        mutating: false,
-        notice: missing.length > 0
-          ? `Restored ${missing.length} workspace root${missing.length === 1 ? '' : 's'} saved on this device.`
-          : this.state.notice,
-      });
-    } catch (error) {
-      if (epoch !== this.epoch) {
-        await this.settleSuperseded(selection);
-        return;
-      }
-      this.set({
-        memberships: latest,
-        mutating: false,
-        mutationError: `Could not restore a workspace root saved on this device: ${describe(error)}`,
-      });
-    }
+    });
   }
 
   /** Register a root through `workspaces add`; returns true on success. */
   async addRoot(raw: string, home: string | null = null): Promise<boolean> {
     const selection = this.selection;
-    if (!selection || this.state.mutating) return false;
+    if (!selection || this.busy()) return false;
     const memberships = this.state.memberships ?? [];
     const validation = validateWorkspaceRootInput(raw, memberships, home ?? homeFromWorkspaceMemberships(memberships));
     if (!validation.ok) {
@@ -428,7 +511,7 @@ export class HostWorkspaceRoots {
   /** Unregister a root through `workspaces remove`. Files and sessions stay. */
   async removeRoot(path: string): Promise<boolean> {
     const selection = this.selection;
-    if (!selection || this.state.mutating) return false;
+    if (!selection || this.busy()) return false;
     return this.mutate(
       selection,
       (cli) => cli.removeWorkspace(selection.hostIdentity, path),
@@ -441,24 +524,25 @@ export class HostWorkspaceRoots {
     run: (cli: WorkspaceRootsCli) => Promise<WorkspacesListing>,
     success: string,
   ): Promise<boolean> {
-    const epoch = this.epoch;
-    this.set({ mutating: true, mutationError: null, notice: null });
-    try {
-      const listing = await run(selection.cli);
-      if (epoch !== this.epoch) {
-        await this.settleSuperseded(selection);
+    this.set({ mutationError: null, notice: null });
+    return this.locked(async (epoch) => {
+      try {
+        const listing = await run(selection.cli);
+        if (epoch !== this.epoch) {
+          await this.settleSuperseded(selection);
+          return false;
+        }
+        this.set({ memberships: listing.workspaces, status: 'ready', error: null, notice: success });
+        return true;
+      } catch (error) {
+        if (epoch !== this.epoch) {
+          await this.settleSuperseded(selection);
+          return false;
+        }
+        this.set({ mutationError: describe(error) });
         return false;
       }
-      this.set({ memberships: listing.workspaces, mutating: false, status: 'ready', error: null, notice: success });
-      return true;
-    } catch (error) {
-      if (epoch !== this.epoch) {
-        await this.settleSuperseded(selection);
-        return false;
-      }
-      this.set({ mutating: false, mutationError: describe(error) });
-      return false;
-    }
+    });
   }
 
   /** The registered roots in display order. */
