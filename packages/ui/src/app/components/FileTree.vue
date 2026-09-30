@@ -48,6 +48,12 @@ const props = defineProps<{
    * to the login home, the same default the tab's own seeding uses.
    */
   rootPath?: string;
+  /**
+   * The folder the docked env editor is editing, or null when closed. The
+   * tree only wears its env rows as selected while the panel is pinned to
+   * the folder being browsed — see isRowActive.
+   */
+  envDir?: string | null;
 }>();
 
 const connection = useConnectionStore();
@@ -289,6 +295,21 @@ async function onEntry(entry: DirEntry): Promise<void> {
       emit('openFile', entry.name);
     }
   }
+}
+
+/**
+ * The row the editor area is showing. While the env panel is docked for the
+ * folder being browsed, it owns the area: its env rows wear the selection,
+ * and the file they shelved stands down — `openPath` is deliberately left
+ * set (closing the dock hands the area back), but a shelved file is not what
+ * the user is looking at. Otherwise the open file's row does (basename
+ * match: the tree shows names, the open path is absolute).
+ */
+function isRowActive(e: DirEntry): boolean {
+  if (props.envDir != null && props.envDir === files.cwd) {
+    return e.type !== 'dir' && isEnvName(e.name);
+  }
+  return Boolean(files.openPath && files.openPath.endsWith('/' + e.name));
 }
 
 // Keyboard navigation over the entry list (FEATURES.md F18) lives in
@@ -573,8 +594,8 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
         :key="e.name"
         class="entry"
         role="option"
-        :aria-selected="Boolean(files.openPath && files.openPath.endsWith('/' + e.name))"
-        :class="{ active: files.openPath && files.openPath.endsWith('/' + e.name) }"
+        :aria-selected="isRowActive(e)"
+        :class="{ active: isRowActive(e) }"
         :tabindex="rowTabIndex(upRow + i)"
         :data-idx="upRow + i"
         @click="onEntry(e)"

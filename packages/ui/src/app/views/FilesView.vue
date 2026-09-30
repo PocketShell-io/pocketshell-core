@@ -218,6 +218,7 @@ defineExpose({ focus });
       ref="treeRef"
       :style="treeStyle"
       :root-path="rootPath"
+      :env-dir="envDir"
       @open-file="onOpenFile"
       @open-in-new-tab="(path, kind) => emit('openInNewTab', path, kind)"
       @open-env="openEnv"
