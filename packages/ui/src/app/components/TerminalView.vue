@@ -743,6 +743,11 @@ function attachInputAdapters(t: Terminal, element: HTMLElement): void {
   }
 }
 
+/** Bytes into this pane's shell, exactly as typed — the `terminal.dock` route. */
+function sendInput(data: string): void {
+  term?.input(data, true);
+}
+
 function onWindowResize(): void {
   pane.scheduleFit();
 }
@@ -866,7 +871,7 @@ function resyncDisplay(): void {
   pane.resyncDisplay();
 }
 
-defineExpose({ focus: (): void => term?.focus(), resyncDisplay });
+defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput });
 </script>
 
 <template>

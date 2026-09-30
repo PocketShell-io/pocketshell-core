@@ -172,4 +172,15 @@
   --dur-slow: 280ms; /* overlay entrance only */
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1); /* decelerate: things arriving */
+
+  /* ---- Platform insets (app/insets.ts) -------------------------------- */
+  /* What the platform's own chrome covers: system bars, cutouts and the
+     on-screen keyboard. Desktop and web leave them all at 0; a phone platform writes
+     them through `writeAppInsets`. Shared CSS reads these, never
+     `env(safe-area-inset-*)`, so one rule serves every client. */
+  --ps-inset-top: 0px;
+  --ps-inset-bottom: 0px;
+  --ps-inset-left: 0px;
+  --ps-inset-right: 0px;
+  --ps-inset-keyboard: 0px;
 }

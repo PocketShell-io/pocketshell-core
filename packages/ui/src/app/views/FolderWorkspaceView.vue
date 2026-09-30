@@ -68,6 +68,7 @@ import FilesView from './FilesView.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import LaunchSessionDialog from '../components/LaunchSessionDialog.vue';
 import WorkspaceTabBar from '../components/WorkspaceTabBar.vue';
+import ExtensionSlot from '../components/ExtensionSlot.vue';
 import type { Box } from '@pocketshell/core/shared/popupPlacement';
 import type { WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import { composerAgentKind } from '@pocketshell/core';
@@ -161,6 +162,7 @@ const {
   identityFor,
   terminalRefs,
   setTerminalRef,
+  terminalDockContext,
   selectTab,
   goToTab,
   selectAfterClose,
@@ -590,17 +592,11 @@ function onTyped(text: string): void {
 
 /**
  * Ctrl+V at the terminal: the clipboard belongs in the composer, not the shell.
- *
- * The terminal has already cancelled the chord and withheld the bytes; what is
- * on the clipboard, whether it can be staged, and whether it is worth opening
- * the panel for are the composer's questions, because the composer is where the
- * answer is acted on. Routing an EVENT rather than the clipboard's contents is
- * what keeps a second clipboard-to-attachment path out of TerminalView — the
- * composer's own `onPaste` already owns that path.
- *
- * Unlike `interceptTyping` this is deliberately NOT gated on the composer being
- * closed or unsuppressed. An explicit Ctrl+V is a summons, like Ctrl+`, so it
- * lifts a dismissal rather than deferring to one.
+ * The terminal cancelled the chord and withheld the bytes; what the clipboard
+ * holds and whether to stage it are the composer's questions, so an EVENT is
+ * routed rather than the contents — the composer's `onPaste` owns that path.
+ * Deliberately NOT gated on the composer being closed or unsuppressed: an
+ * explicit Ctrl+V is a summons, like Ctrl+`, so it lifts a dismissal.
  */
 function onPasteIntoComposer(): void {
   void composerRef.value?.pasteFromSystemClipboard();
@@ -734,6 +730,8 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               @drop-into-composer="onDropIntoComposer"
             />
           </div>
+          <!-- extensions.ts `terminal.dock`: nothing contributed, nothing drawn. -->
+          <ExtensionSlot v-if="terminalDockContext" name="terminal.dock" :context="terminalDockContext" />
         </div>
 
         <FilesView
@@ -947,17 +945,18 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-direction: column; /* a contributed dock sits under the visible slot */
 }
 /*
- * One of these per live session pane. They are siblings in the same flex row
- * and all but one are `display: none`, so the visible one takes the whole area
- * exactly as the single terminal used to. `min-width: 0` for the usual reason —
- * a flex item defaults to `min-width: auto` and would refuse to shrink below
- * its content, which for an xterm canvas means the pane can grow but not shrink.
+ * One per live session pane; all but one are `display: none`, so the visible
+ * one takes the whole area. `min-width`/`min-height: 0` because a flex item
+ * defaults to its content size, and an xterm canvas could then grow but never
+ * shrink.
  */
 .terminal-slot {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
 }
 .empty {

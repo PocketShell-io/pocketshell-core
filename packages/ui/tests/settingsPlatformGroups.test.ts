@@ -7,7 +7,7 @@ import type { DiagnosticReport } from '@pocketshell/core';
 import { provideApi } from '../src/app/ipc';
 import type { PocketShellApi } from '../src/app/api';
 import { useSettingsStore } from '../src/app/stores/settings';
-import { registerSettingsSection } from '../src/app/settingsSections';
+import { provideExtensions } from '../src/app/extensions';
 import SettingsPlatformGroups from '../src/app/components/settings/SettingsPlatformGroups.vue';
 import SettingsConnectionsGroup from '../src/app/components/settings/SettingsConnectionsGroup.vue';
 import { readFileSync } from 'node:fs';
@@ -123,9 +123,10 @@ describe('Settings platform groups (0.5.x Connections, Advanced, Diagnostics, Ab
 
   it('renders registered platform sections as groups', async () => {
     provideApi(androidTransport());
-    cleanups.push(registerSettingsSection({
+    provideExtensions({ 'settings.sections': [{
       id: 'voice', title: 'Voice', component: defineComponent({ render: () => h('p', { 'data-testid': 'voice-body' }, 'dictation') }),
-    }));
+    }] });
+    cleanups.push(() => provideExtensions({}));
     const wrapper = mount(SettingsPlatformGroups);
     await flushPromises();
     const section = wrapper.find('[data-testid=settings-section-voice]');
