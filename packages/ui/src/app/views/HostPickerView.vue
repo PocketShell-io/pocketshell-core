@@ -455,7 +455,10 @@ function onClearDefault(): void {
               <span
                 class="status-dot"
                 :class="{
-                  connecting: connectingKey === hostEntryId(host),
+                  // No pulse while the dial waits on the user's host-key
+                  // answer: nothing is connecting, and an endless animation
+                  // under the prompt's scrim repaints the whole screen.
+                  connecting: connectingKey === hostEntryId(host) && !connection.pendingTrust,
                   connected: connectedKey === hostEntryId(host),
                 }"
               />
