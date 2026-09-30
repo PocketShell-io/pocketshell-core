@@ -54,6 +54,8 @@ export * from './dictationController';
 export * from './terminalKeys';
 export * from './sshCapability';
 export * from './connectionController';
+export * from './hostBootstrap';
+export * from './sessionRowSummary';
 export * from './hostKeyTrustCore';
 export * from './savedHosts';
 export * from './sessionNameParts';
