@@ -291,6 +291,10 @@ export class HostWorkspaceRoots {
   private generation = 0;
   /** The registration change holding the lock, tagged with its epoch. */
   private operation: { epoch: number } | null = null;
+  /** Every listing's send order; only the latest one sent may be written. */
+  private listSequence = 0;
+  /** The current selection's one-time restore still waits for an accepted listing. */
+  private restoreDue = false;
   /** A listing arrived (or was owed) while an operation held the lock. */
   private relistAfterOperation = false;
   /** An unreadable restore record is reported once per process. */
@@ -334,6 +338,7 @@ export class HostWorkspaceRoots {
     // Whatever was in flight belongs to the old epoch: it can no longer write
     // this view, and it no longer holds the lock (see `busy`).
     this.relistAfterOperation = false;
+    this.restoreDue = false;
     if (!selection) {
       this.state = emptyState(null, []);
       this.set({});
@@ -362,6 +367,13 @@ export class HostWorkspaceRoots {
    * Run one registration change under the lock. `body` returns whether it
    * completed in its own epoch; a superseded body has already routed its
    * late reply through `settleSuperseded`.
+   *
+   * The generation moves when the change STARTS and again when it ENDS —
+   * superseded changes included — so any listing whose send-to-reply window
+   * overlapped a change, in either direction, sees a different generation.
+   * (The start bump is subsumed today — a reply landing mid-change is already
+   * deferred by `busy()` and the end bump follows — but it keeps the rule
+   * true on its own, without leaning on that ordering.)
    */
   private async locked<T>(body: (epoch: number) => Promise<T>): Promise<T> {
     const operation = { epoch: this.epoch };
@@ -371,6 +383,7 @@ export class HostWorkspaceRoots {
     try {
       return await body(operation.epoch);
     } finally {
+      this.generation += 1;
       if (this.operation === operation) this.operation = null;
       if (operation.epoch === this.epoch) {
         this.set({ mutating: false });
@@ -379,62 +392,69 @@ export class HostWorkspaceRoots {
     }
   }
 
-  /** Re-read the host's registrations; a failure keeps last-known rows. */
+  /**
+   * Re-read the host's registrations, and decide the one-time restore on the
+   * first listing this selection accepts. A failure keeps last-known rows.
+   */
   async refresh(): Promise<void> {
+    if (!this.selection) return;
+    this.restoreDue = true;
+    await this.list();
+  }
+
+  /**
+   * Send one listing and apply its reply under the ONE rule every listing
+   * obeys (the invariant this class exists to keep):
+   *
+   *   A listing reply is written only if (1) its epoch is still current,
+   *   (2) it is the LATEST listing sent, (3) the generation is unchanged since
+   *   it was sent — no add, remove, move or restore started or ended in
+   *   between — and (4) no change is running now. Otherwise it is dropped;
+   *   if it was the latest listing, it is re-read (after the running change,
+   *   if any), so the view always converges on a listing no change overlapped.
+   *
+   * The restore decision is made only on an accepted listing; a dropped one
+   * leaves it due for the next accepted listing rather than postponing it.
+   */
+  private async list(): Promise<void> {
     const selection = this.selection;
     if (!selection) return;
     const epoch = this.epoch;
     const generation = this.generation;
+    const sequence = ++this.listSequence;
     this.set({ status: 'loading', error: null });
+    let listing: WorkspacesListing;
     try {
-      const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
-      if (epoch !== this.epoch) return;
-      if (this.busy()) {
-        // An operation is mid-flight; its own answer is the newer truth.
-        // Re-read once it settles instead of writing a possibly older list.
-        this.relistAfterOperation = true;
-        this.set({ status: 'ready' });
-        return;
-      }
-      if (generation !== this.generation) {
-        // A change started (and finished) while this listing was in flight:
-        // the listing may predate it. Re-read; never decide a restore on it.
-        await this.relist();
-        return;
-      }
-      this.set({ status: 'ready', memberships: listing.workspaces, error: null });
-      await this.restorePrevious(selection, listing.workspaces);
+      listing = await selection.cli.listWorkspaces(selection.hostIdentity);
     } catch (error) {
-      if (epoch !== this.epoch) return;
+      if (epoch !== this.epoch || sequence !== this.listSequence) return;
       this.set({ status: 'error', error: `Could not read workspace roots from the host: ${describe(error)}` });
+      return;
+    }
+    if (epoch !== this.epoch) return;
+    // (2) A newer listing is out: it answers for the view, this one is moot.
+    if (sequence !== this.listSequence) return;
+    if (this.busy()) {
+      // (4) Read again once the running change has settled.
+      this.relistAfterOperation = true;
+      this.set({ status: 'ready' });
+      return;
+    }
+    if (generation !== this.generation) {
+      // (3) A change overlapped this listing; it may predate that change.
+      await this.list();
+      return;
+    }
+    this.set({ status: 'ready', memberships: listing.workspaces, error: null });
+    if (this.restoreDue) {
+      this.restoreDue = false;
+      await this.restorePrevious(selection, listing.workspaces);
     }
   }
 
-  /** List only — never starts a restore — and never over a running operation. */
+  /** A plain re-read: it may decide a restore only if one is still due. */
   private async relist(): Promise<void> {
-    const selection = this.selection;
-    if (!selection) return;
-    const epoch = this.epoch;
-    const generation = this.generation;
-    this.set({ status: 'loading' });
-    try {
-      const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
-      if (epoch !== this.epoch) return;
-      if (this.busy()) {
-        this.relistAfterOperation = true;
-        this.set({ status: 'ready' });
-        return;
-      }
-      if (generation !== this.generation) {
-        // Same as `refresh`: a newer change landed meanwhile; read again.
-        await this.relist();
-        return;
-      }
-      this.set({ status: 'ready', memberships: listing.workspaces, error: null });
-    } catch (error) {
-      if (epoch !== this.epoch) return;
-      this.set({ status: 'error', error: `Could not read workspace roots from the host: ${describe(error)}` });
-    }
+    await this.list();
   }
 
   private async flushRelist(): Promise<void> {
@@ -583,6 +603,9 @@ export class HostWorkspaceRoots {
     if (!identity || !this.state.memberships) return false;
     const next = moveWorkspaceRoot(this.ordered(home), path, direction);
     if (!next) return false;
+    // A move is a change too: it starts and ends inside this call, so any
+    // listing in flight across it is re-read (the listing rule in `list`).
+    this.generation += 2;
     try {
       this.order.set(identity, { rootOrder: next });
     } catch (error) {
