@@ -31,7 +31,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
-import { useSettingsStore } from '../stores/settings';
+import { useHostsStore } from '../stores/hosts';
 import { useSyncStore } from '../stores/sync';
 import { api } from '../ipc';
 import { windowTitle } from '@pocketshell/core/shared/windowTitle';
@@ -45,14 +45,17 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
-import type { HostEntry } from '@pocketshell/core';
+import { hostEntryId, type HostEntry } from '@pocketshell/core';
 
 const router = useRouter();
 const connection = useConnectionStore();
-const settings = useSettingsStore();
+const hostList = useHostsStore();
 const sync = useSyncStore();
 const connectError = ref<string | null>(null);
+/** The dialling host's display name, for the banner. */
 const connectingTo = ref<string | null>(null);
+/** The dialling host's identity ({@link hostEntryId}), for the row it marks. */
+const connectingKey = ref<string | null>(null);
 const settingsOpen = ref(false);
 const reloadingHosts = ref(false);
 const hostReloadError = ref<string | null>(null);
@@ -99,7 +102,7 @@ const autoConnecting = ref(false);
 let activeDial: { cancelled: boolean } | null = null;
 
 const defaultMissing = computed(
-  () => defaultHostStatus(settings.defaultHost, connection.hosts) === 'missing',
+  () => defaultHostStatus(hostList.defaultHostKey, connection.hosts) === 'missing',
 );
 
 const accountSignedIn = computed(() => sync.status?.loggedIn === true);
@@ -175,9 +178,9 @@ function refreshAccountStatus(): void {
  * button now sits at its own destination, beside where the connection was
  * opened.
  */
-const connectedName = computed(() =>
-  connection.state === 'connected' && connection.connectionId
-    ? (connection.activeHost?.name ?? null)
+const connectedKey = computed(() =>
+  connection.state === 'connected' && connection.connectionId && connection.activeHost
+    ? hostEntryId(connection.activeHost)
     : null,
 );
 
@@ -204,7 +207,7 @@ onMounted(async () => {
     hostReloadError.value = `Could not read ${sourceName}${detail}`;
   }
   const decision = decideAutoConnect({
-    defaultHost: settings.defaultHost,
+    defaultHost: hostList.defaultHostKey,
     hosts: connection.hosts,
     attempted: autoConnectAttempted(),
     connected: connection.connectionId !== null,
@@ -261,13 +264,14 @@ function onCancelConnect(): void {
   if (activeDial) activeDial.cancelled = true;
   autoConnecting.value = false;
   connectingTo.value = null;
+  connectingKey.value = null;
 }
 
 async function onConnect(host: HostEntry): Promise<void> {
   // Already connected to this host: go back in, don't dial again. A second
   // dial would open a second connection and orphan the first — the session
   // panel, terminal pool and forwards all key off the old id.
-  if (host.name === connectedName.value) {
+  if (hostEntryId(host) === connectedKey.value) {
     enterWorkspace(host);
     return;
   }
@@ -295,6 +299,7 @@ async function onDisconnect(): Promise<void> {
 async function dial(host: HostEntry): Promise<boolean> {
   connectError.value = null;
   connectingTo.value = host.name;
+  connectingKey.value = hostEntryId(host);
   const token = { cancelled: false };
   activeDial = token;
   const ok = await connection.connect(host);
@@ -305,17 +310,20 @@ async function dial(host: HostEntry): Promise<boolean> {
   if (activeDial === token) {
     activeDial = null;
     connectingTo.value = null;
+    connectingKey.value = null;
     if (!ok && !token.cancelled) connectError.value = connection.error ?? 'Connection failed';
   }
   if (token.cancelled) {
     // The dial won the race with the Cancel click. Hang up rather than leaving
     // a connection the user explicitly abandoned — but only if this is still
     // the connection in hand. `connect()` claims `activeHost` synchronously, so
-    // a different name here means the user already started dialling somewhere
+    // a different host here means the user already started dialling somewhere
     // else in the meantime and tearing "the" connection down would tear down
     // theirs. The abandoned link then survives until the app exits, which is
     // the cheaper of the two failures by a wide margin.
-    if (ok && connection.activeHost?.name === host.name) await connection.disconnect();
+    if (ok && connection.activeHost && hostEntryId(connection.activeHost) === hostEntryId(host)) {
+      await connection.disconnect();
+    }
     return false;
   }
   return ok;
@@ -337,9 +345,21 @@ function enterWorkspace(host: HostEntry): void {
   void router.push({ name: 'host-sessions', params: { name: host.name } });
 }
 
-/** The star on a row: make this host the default, or clear it. */
+/**
+ * The star on a row: make this host the default, or clear it — in the store
+ * that owns the default on this platform (the saved-host store when the
+ * platform owns its hosts, the renderer settings otherwise).
+ */
 function onToggleDefault(host: HostEntry): void {
-  settings.set('defaultHost', settings.defaultHost === host.name ? null : host.name);
+  void hostList.toggleDefault(host).catch((error: unknown) => {
+    connectError.value = error instanceof Error && error.message ? error.message : 'Could not change the default host';
+  });
+}
+
+function onClearDefault(): void {
+  void hostList.setDefaultHost(null).catch((error: unknown) => {
+    connectError.value = error instanceof Error && error.message ? error.message : 'Could not clear the default host';
+  });
 }
 </script>
 
@@ -397,14 +417,14 @@ function onToggleDefault(host: HostEntry): void {
       <p v-if="defaultMissing && connectingTo === null" class="auto-banner stale">
         <AppIcon name="alert-triangle" :size="14" />
         <span v-if="hostSource">
-          Your default host <strong>{{ settings.defaultHost }}</strong> is not in
+          Your default host <strong>{{ hostList.defaultHostKey }}</strong> is not in
           <code>{{ hostSource.sourceName }}</code> any more.
         </span>
         <span v-else>
-          Your default host <strong>{{ settings.defaultHost }}</strong> is no longer
+          Your default host <strong>{{ hostList.defaultHostKey }}</strong> is no longer
           in the host list.
         </span>
-        <button class="btn-ghost" @click="settings.set('defaultHost', null)">Clear</button>
+        <button class="btn-ghost" @click="onClearDefault">Clear</button>
       </p>
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:
@@ -424,7 +444,7 @@ function onToggleDefault(host: HostEntry): void {
           <!-- The card is the <li>, not the row button: the "make this the
                default" star is a second control on the same card, and a button
                inside a button is invalid. -->
-          <li v-for="host in group.hosts" :key="host.name" class="host-item">
+          <li v-for="host in group.hosts" :key="hostEntryId(host)" class="host-item">
             <button
               class="host-row"
               :disabled="connectingTo !== null"
@@ -435,22 +455,22 @@ function onToggleDefault(host: HostEntry): void {
               <span
                 class="status-dot"
                 :class="{
-                  connecting: connectingTo === host.name,
-                  connected: connectedName === host.name,
+                  connecting: connectingKey === hostEntryId(host),
+                  connected: connectedKey === hostEntryId(host),
                 }"
               />
               <span class="host-name">{{ host.name }}</span>
               <span class="host-detail">
                 {{ host.user || '(default user)' }}@{{ host.hostname }}:{{ host.port }}
               </span>
-              <span v-if="connectingTo === host.name" class="muted">connecting…</span>
+              <span v-if="connectingKey === hostEntryId(host)" class="muted">connecting…</span>
               <!-- A list row that goes somewhere gets a chevron, not an arrow
                    (VS Code / macOS convention). Kept on the connected row too:
                    it still goes somewhere — back into the workspace. -->
               <AppIcon v-else name="chevron-right" class="chevron" />
             </button>
             <button
-              v-if="connectedName === host.name"
+              v-if="connectedKey === hostEntryId(host)"
               class="btn-ghost disconnect"
               @click="onDisconnect"
             >
@@ -462,16 +482,16 @@ function onToggleDefault(host: HostEntry): void {
             <button
               v-if="group.kind === 'config'"
               class="icon-btn star"
-              :class="{ on: settings.defaultHost === host.name }"
+              :class="{ on: hostList.isDefault(host) }"
               :title="
-                settings.defaultHost === host.name
+                hostList.isDefault(host)
                   ? 'Stop connecting to this host on startup'
                   : 'Connect to this host on startup'
               "
-              :aria-pressed="settings.defaultHost === host.name"
+              :aria-pressed="hostList.isDefault(host)"
               @click="onToggleDefault(host)"
             >
-              <AppIcon :name="settings.defaultHost === host.name ? 'star-filled' : 'star'" />
+              <AppIcon :name="hostList.isDefault(host) ? 'star-filled' : 'star'" />
             </button>
           </li>
         </ul>

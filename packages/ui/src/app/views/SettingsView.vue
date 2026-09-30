@@ -28,12 +28,14 @@
 // `embedded` prop and the duplicated-heading note in OverlayPanel).
 import { computed, onMounted, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
+import { useHostsStore } from '../stores/hosts';
 import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import { useUpdateStore } from '../stores/update';
 import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
+import { hostEntryId } from '@pocketshell/core';
 import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from '../folderSort';
 import { canonicalisePath } from '../sessionGrouping';
 import {
@@ -64,6 +66,7 @@ const connection = useConnectionStore();
 const projects = useProjectsStore();
 const sessions = useSessionsStore();
 const settings = useSettingsStore();
+const hostList = useHostsStore();
 const updates = useUpdateStore();
 // Update checks are a desktop capability (the desktop install replaces itself
 // from GitHub releases); the web deployment is always current, so the whole
@@ -88,12 +91,14 @@ onMounted(async () => {
   // the single source for the default-host choices, so ask for it when the
   // list is empty rather than rendering an empty select.
   if (!connection.hosts.length) await connection.loadHosts();
-  if (
-    !connection.activeHost &&
-    settings.defaultHost &&
-    connection.hosts.some((host) => host.name === settings.defaultHost)
-  ) {
-    selectedRootHost.value = settings.defaultHost;
+  // Session roots are keyed by the host's alias; the default is keyed by its
+  // identity, which is the alias for a config host and the stable id for a
+  // saved one — so resolve the row and take its name.
+  const defaultHostRow = hostList.defaultHostKey
+    ? connection.hosts.find((host) => hostEntryId(host) === hostList.defaultHostKey)
+    : undefined;
+  if (!connection.activeHost && defaultHostRow) {
+    selectedRootHost.value = defaultHostRow.name;
   }
 });
 
@@ -103,13 +108,16 @@ onMounted(async () => {
  * and silently dropping it would hide the fact that their config changed.
  */
 const defaultMissing = computed(
-  () => defaultHostStatus(settings.defaultHost, connection.hosts) === 'missing',
+  () => defaultHostStatus(hostList.defaultHostKey, connection.hosts) === 'missing',
 );
 
 function onDefaultHostChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value;
-  // '' is the "no default" option; the store's parser normalises it to null.
-  settings.set('defaultHost', value === '' ? null : value);
+  // '' is the "no default" option. The value is the host's identity, written
+  // to whichever store owns the default on this platform.
+  // A rejected write leaves the owning store's value as it was, and the
+  // select re-renders from that value, so the control snaps back on its own.
+  void hostList.setDefaultHost(value === '' ? null : value).catch(() => undefined);
 }
 
 /** The panel's folder-row sort — the select writes the key straight in. */
@@ -280,17 +288,17 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
         <select
           id="default-host"
           class="control"
-          :value="settings.defaultHost ?? ''"
+          :value="hostList.defaultHostKey ?? ''"
           @change="onDefaultHostChange"
         >
           <option value="">Always show the host list</option>
           <!-- The stale value keeps its own option so the select can still
                display it; without this the control would silently snap to
                "always show", which is not what is stored. -->
-          <option v-if="defaultMissing" :value="settings.defaultHost ?? ''">
-            {{ settings.defaultHost }} (not in ~/.ssh/config)
+          <option v-if="defaultMissing" :value="hostList.defaultHostKey ?? ''">
+            {{ hostList.defaultHostKey }} (not in ~/.ssh/config)
           </option>
-          <option v-for="host in connection.hosts" :key="host.name" :value="host.name">
+          <option v-for="host in connection.hosts" :key="hostEntryId(host)" :value="hostEntryId(host)">
             {{ host.name }}
           </option>
         </select>
@@ -298,7 +306,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
       <p v-if="defaultMissing" class="notice">
         <AppIcon name="alert-triangle" :size="14" />
         <span>
-          <strong>{{ settings.defaultHost }}</strong> is not in <code>~/.ssh/config</code> any
+          <strong>{{ hostList.defaultHostKey }}</strong> is not in <code>~/.ssh/config</code> any
           more, so PocketShell starts on the host list until you pick a new default.
         </span>
       </p>

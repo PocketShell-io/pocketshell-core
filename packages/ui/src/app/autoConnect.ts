@@ -1,4 +1,4 @@
-import type { HostEntry } from '@pocketshell/core';
+import { hostEntryId, type HostEntry } from '@pocketshell/core';
 
 /**
  * The launch-time "should we dial a host by ourselves?" decision.
@@ -31,7 +31,11 @@ export type AutoConnectDecision =
   | { action: 'skip'; reason: AutoConnectSkipReason };
 
 export interface AutoConnectInput {
-  /** `settings.defaultHost`. */
+  /**
+   * The default host's identity (`hostEntryId`): the saved host's stable id
+   * on a platform that owns its host list, otherwise `settings.defaultHost`,
+   * the `Host` alias.
+   */
   defaultHost: string | null;
   /** Hosts as `listConfigHosts()` reported them — already loaded. */
   hosts: readonly HostEntry[];
@@ -61,7 +65,7 @@ export function decideAutoConnect(input: AutoConnectInput): AutoConnectDecision 
   if (input.connected) return { action: 'skip', reason: 'already-connected' };
   const name = input.defaultHost?.trim();
   if (!name) return { action: 'skip', reason: 'no-default' };
-  const host = input.hosts.find((h) => h.name === name);
+  const host = input.hosts.find((h) => hostEntryId(h) === name);
   if (!host) return { action: 'skip', reason: 'unknown-host' };
   return { action: 'connect', host };
 }
@@ -80,7 +84,7 @@ export function defaultHostStatus(
 ): 'none' | 'present' | 'missing' {
   const name = defaultHost?.trim();
   if (!name) return 'none';
-  return hosts.some((h) => h.name === name) ? 'present' : 'missing';
+  return hosts.some((h) => hostEntryId(h) === name) ? 'present' : 'missing';
 }
 
 /**
