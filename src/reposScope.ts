@@ -81,35 +81,38 @@ function repoKey(entry: RepoEntry): string {
 /**
  * Merge the local and remote scopes into one list.
  *
- * Local rows come first and win on identity, so a GitHub repo that is already
- * cloned renders as one row carrying BOTH blocks — the difference between an
- * "Open" affordance and a "Clone" one. Remote-only rows are appended in the
- * order `gh` returned them.
+ * Every LOCAL row survives as its own entry, joined to its GitHub row by
+ * {@link repoKey} — a GitHub repo that is already cloned renders with BOTH
+ * blocks, the difference between an "Open" affordance and a "Clone" one.
+ * Remote-only rows are appended in the order `gh` returned them.
+ *
+ * The join key is repo identity (`owner/repo`), NOT row identity, so the
+ * merge must be a JOIN and not a dedupe: a linked worktree's `remote.origin.url`
+ * is its main repository's URL, so a checkout and every worktree of it share
+ * one `fullName`. Keying local rows on it kept only the alphabetically last —
+ * on a host with `~/git/dapier` and `~/git/dapier-worktrees/*`, the catalog
+ * offered `oauth-popup-redirect` and `dapier` itself had vanished from the
+ * picker. Each clone is a destination the user can open a session in, so the
+ * remote block enriches every local row whose key matches, and remote rows
+ * still append only when NO local clone claims the key.
  */
 export function mergeRepos(local: RepoEntry[], remote: RepoEntry[]): RepoEntry[] {
-  const byKey = new Map<string, RepoEntry>();
-  const order: string[] = [];
-  for (const entry of local) {
-    const key = repoKey(entry);
-    if (!byKey.has(key)) order.push(key);
-    byKey.set(key, entry);
-  }
+  const rows: RepoEntry[] = local.map((entry) => ({ ...entry }));
   for (const entry of remote) {
     const key = repoKey(entry);
-    const existing = byKey.get(key);
-    if (existing) {
-      byKey.set(key, {
-        ...existing,
-        owner: existing.owner ?? entry.owner,
-        fullName: existing.fullName ?? entry.fullName,
-        remote: existing.remote ?? entry.remote,
-      });
-    } else {
-      order.push(key);
-      byKey.set(key, entry);
-    }
+    let joined = false;
+    rows.forEach((row, index) => {
+      if (repoKey(row) !== key) return;
+      joined = true;
+      rows[index] = {
+        ...row,
+        owner: row.owner ?? entry.owner,
+        remote: row.remote ?? entry.remote,
+      };
+    });
+    if (!joined) rows.push(entry);
   }
-  return order.map((key) => byKey.get(key)!);
+  return rows;
 }
 
 /**
