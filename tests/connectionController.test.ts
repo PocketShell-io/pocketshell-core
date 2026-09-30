@@ -849,3 +849,310 @@ describe('JS connection and session policy', () => {
     expect(capability.connectCalls).toHaveLength(1 + 1 + 1);
   });
 });
+
+describe('one reconnect per lost transport (pocketshell#2943)', () => {
+  const controllers: ConnectionController[] = [];
+
+  afterEach(async () => {
+    await Promise.all(controllers.splice(0).map((controller) => controller.close()));
+  });
+
+  /** Count entries into `reconnecting`, the way the packaged journey's DOM recorder sees them. */
+  function recordReconnectEntries(controller: ConnectionController) {
+    const phases: string[] = [controller.getSnapshot().phase];
+    controller.subscribe((snapshot) => {
+      if (phases.at(-1) !== snapshot.phase) phases.push(snapshot.phase);
+    });
+    return {
+      phases,
+      reconnectEntries: () => phases.filter((phase) => phase === 'reconnecting').length,
+    };
+  }
+
+  async function liveOnAlpha(capability: FakeCapability) {
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    await waitFor(() => capability.pendingReads.length === 1);
+    return controller;
+  }
+
+  /**
+   * Make the next `sessions create` apply on the host, then lose that SSH
+   * transport before its response, as the Docker fixture does: every later
+   * exec on the lost connection also fails, so the controller's reconciling
+   * list observes the loss and starts the reconnect.
+   */
+  function loseNextCreateResponse(capability: FakeCapability) {
+    const exec = capability.exec;
+    const lost = new Set<string>();
+    let armed = true;
+    capability.exec = async (options) => {
+      if (lost.has(options.connectionId)) {
+        throw new SshCapabilityError('SSH transport is closed.', 'CONNECTION_LOST');
+      }
+      if (armed && options.command.includes('sessions create')) {
+        armed = false;
+        lost.add(options.connectionId);
+        capability.createRequests += 1;
+        capability.sessions.push(session('created-once'));
+        throw new SshCapabilityError('SSH transport was lost before the create response.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+  }
+
+  /** Hold the reconnect's teardown of the lost transport until the test releases it. */
+  function holdTransportTeardown(capability: FakeCapability) {
+    const gate = deferred<void>();
+    const started = deferred<void>();
+    const cancelOperation = capability.cancelOperation;
+    capability.cancelOperation = async (options) => {
+      if (options.target.kind === 'connection') {
+        started.resolve();
+        await gate.promise;
+      }
+      return cancelOperation(options);
+    };
+    return { gate, started };
+  }
+
+  it('does not re-enter reconnecting when a PTY resize fails while its close is still in flight', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+
+    const closeGate = deferred<void>();
+    const closeStarted = deferred<void>();
+    const closePty = capability.closePty;
+    capability.closePty = async (options) => {
+      closeStarted.resolve();
+      await closeGate.promise;
+      return closePty(options);
+    };
+    capability.resizePty = async () => {
+      throw new SshCapabilityError('SSH transport closed.', 'CONNECTION_LOST');
+    };
+    const teardown = holdTransportTeardown(capability);
+    loseNextCreateResponse(capability);
+
+    const resize = controller.resizeTerminal(100, 30);
+    await closeStarted.promise;
+    const create = controller.createSession('created-once');
+    await teardown.started.promise;
+    closeGate.resolve();
+    expect(await resize).toMatchObject({ ok: false });
+    teardown.gate.resolve();
+    expect(await create).toMatchObject({ ok: false });
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(recorder.phases.slice(recorder.phases.indexOf('reconnecting'))).not.toContain('error');
+    expect(capability.connectCalls).toHaveLength(2);
+    // The create may be refused as not-connected once the resize has already
+    // started the reconnect; it must never be replayed.
+    expect(capability.createRequests).toBeLessThanOrEqual(1);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+  });
+
+  it('does not re-enter reconnecting when a terminal write fails while its close is still in flight', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+
+    const closeGate = deferred<void>();
+    const closeStarted = deferred<void>();
+    const closePty = capability.closePty;
+    capability.closePty = async (options) => {
+      closeStarted.resolve();
+      await closeGate.promise;
+      return closePty(options);
+    };
+    capability.nextWriteError = new SshCapabilityError('SSH transport closed.', 'CONNECTION_LOST');
+    const teardown = holdTransportTeardown(capability);
+    loseNextCreateResponse(capability);
+
+    const write = controller.writeTerminalBytes(new TextEncoder().encode('\x1b[0n'));
+    await closeStarted.promise;
+    const create = controller.createSession('created-once');
+    await teardown.started.promise;
+    closeGate.resolve();
+    expect(await write).toMatchObject({ ok: false });
+    teardown.gate.resolve();
+    expect(await create).toMatchObject({ ok: false });
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.writeCalls).toHaveLength(1);
+  });
+
+  it('ignores a PTY EOF whose output consumer finishes after the reconnect has started', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const channelId = capability.pendingReads[0]!.options.channelId;
+    const recorder = recordReconnectEntries(controller);
+
+    const consumerGate = deferred<void>();
+    const consumerStarted = deferred<void>();
+    controller.subscribeTerminalOutput(async () => {
+      consumerStarted.resolve();
+      await consumerGate.promise;
+    });
+    const teardown = holdTransportTeardown(capability);
+    loseNextCreateResponse(capability);
+
+    capability.emitOutput(channelId, new TextEncoder().encode('last bytes'), true);
+    await consumerStarted.promise;
+    const create = controller.createSession('created-once');
+    await teardown.started.promise;
+    consumerGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    teardown.gate.resolve();
+    expect(await create).toMatchObject({ ok: false });
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(recorder.phases.slice(recorder.phases.indexOf('reconnecting'))).not.toContain('error');
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('does not start a second reconnect when a lost create response arrives after the reconnect finished', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+
+    const createGate = deferred<void>();
+    const createStarted = deferred<void>();
+    const exec = capability.exec;
+    capability.exec = async (options) => {
+      if (options.command.includes('sessions create')) {
+        capability.createRequests += 1;
+        capability.sessions.push(session('created-once'));
+        createStarted.resolve();
+        await createGate.promise;
+        throw new SshCapabilityError('SSH transport was lost before the create response.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+
+    const create = controller.createSession('created-once');
+    await createStarted.promise;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    createGate.resolve();
+    expect(await create).toMatchObject({ ok: false });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().uncertainMutation).toMatchObject({ kind: 'create-session', target: 'created-once' });
+  });
+
+  it('does not start a second reconnect when a session attach fails after the reconnect replaced its transport', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+
+    const openGate = deferred<void>();
+    const openStarted = deferred<void>();
+    const openPty = capability.openPty;
+    let staleOpenArmed = true;
+    capability.openPty = async (options) => {
+      if (staleOpenArmed) {
+        staleOpenArmed = false;
+        openStarted.resolve();
+        await openGate.promise;
+        throw new SshCapabilityError('SSH transport closed during attach.', 'CONNECTION_LOST');
+      }
+      return openPty(options);
+    };
+
+    const staleSwitch = controller.switchSession(session('beta'));
+    await openStarted.promise;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    openGate.resolve();
+    expect(await staleSwitch).toMatchObject({ ok: false });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+  });
+
+  it('keeps a stale session-list failure from rewriting the phase of a reconnect in progress', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+
+    const listGate = deferred<void>();
+    const listStarted = deferred<void>();
+    const exec = capability.exec;
+    let staleListArmed = true;
+    capability.exec = async (options) => {
+      if (staleListArmed && options.command.includes('sessions list')) {
+        staleListArmed = false;
+        listStarted.resolve();
+        await listGate.promise;
+        throw new SshCapabilityError('SSH transport was lost during list.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+    const connectGate = deferred<void>();
+    const connect = capability.connect;
+    capability.connect = async (options) => {
+      await connectGate.promise;
+      return connect(options);
+    };
+
+    const staleRefresh = controller.refreshSessions();
+    await listStarted.promise;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'connecting');
+    listGate.resolve();
+    expect(await staleRefresh).toMatchObject({ ok: false });
+    expect(controller.getSnapshot().phase).toBe('connecting');
+    connectGate.resolve();
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+  });
+  it('treats a PTY EOF from a dying transport as a lost link and re-attaches the same session (#2954)', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const channelId = capability.pendingReads[0]!.options.channelId;
+    const recorder = recordReconnectEntries(controller);
+    const [connectionId] = [...capability.connections.keys()];
+
+    // The transport dies and closes its channels; the EOF reaches the
+    // controller before (here: instead of) the native lost event.
+    capability.connections.delete(connectionId!);
+    capability.emitOutput(channelId, new Uint8Array(), true);
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    // Never "the session ended" (live -> connected) before the recovery.
+    expect(recorder.phases.slice(0, recorder.phases.indexOf('reconnecting'))).toEqual(['live']);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    expect(controller.getSnapshot().error).toBeNull();
+    expect(capability.openPtyCalls).toHaveLength(2);
+  });
+
+  it('still reports a session that ended on a healthy transport as ended, without reconnecting (#2954)', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const channelId = capability.pendingReads[0]!.options.channelId;
+
+    capability.emitOutput(channelId, new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().phase === 'connected');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(controller.getSnapshot().error).toBe('Session “alpha” ended.');
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+});
