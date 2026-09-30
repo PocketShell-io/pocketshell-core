@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { formatBytes } from '@pocketshell/core';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { api } from '../ipc';
 import type { ConnectionId } from '@pocketshell/core';
 import type { DirEntry } from '@pocketshell/core';
@@ -323,6 +323,59 @@ export const useFilesStore = defineStore('files', () => {
   /** The key `open()` was last called with, so `stash()` knows whose state it is. */
   let currentKey: string | null = null;
 
+  // -------------------------------------------------------------------------
+  // The browsing trail (back / forward)
+  // -------------------------------------------------------------------------
+  /**
+   * The live tab's browsing trail — every directory this tab has stood in, in
+   * order, with `trailIndex` pointing at the one on screen — and the two
+   * answers the tree's Back and Forward buttons render from.
+   *
+   * One array and one index rather than a back stack plus a forward one,
+   * because the pair is the whole design question. The behaviour a back stack
+   * cannot answer on its own is the click AFTER a back: moving from the middle
+   * drops everything ahead of it (the browser's rule — the abandoned forward
+   * positions are not coming back), which with two stacks means re-titling one
+   * and hoping the two never disagree about where the screen is. Here there is
+   * no pair to disagree.
+   *
+   * The trail is per TAB, not per pane: parked by `stash()` under the same key
+   * the remembered position uses and restored by `open()`, so walking to the
+   * terminal and back — or to another Files tab and back — keeps it, and
+   * `clear()` retires it on disconnect with everything else the connection
+   * owns.
+   */
+  const TRAIL_MAX = 100;
+  const trail = ref<string[]>([]);
+  const trailIndex = ref(-1);
+  /** Per-tab trails, parked by `stash()` under the same key `positions` uses. */
+  const trails = new Map<string, { stack: string[]; index: number }>();
+  const canGoBack = computed(() => trailIndex.value > 0);
+  const canGoForward = computed(() => trailIndex.value < trail.value.length - 1);
+
+  /**
+   * Commit `dir` as the trail's newest position: anything ahead of the index
+   * is dropped, and recording the directory already at the index is a no-op —
+   * which is what makes this safe to call from `open()`'s landing, since a
+   * re-mount that restores the remembered position lands on the very directory
+   * the index already points at and must not grow the trail by one every time.
+   *
+   * Stepping back and forward deliberately does NOT come through here. Their
+   * target already sits in the trail, and recording it would truncate the very
+   * forward positions the step is walking into — the bug a lone back button
+   * ships with when its move is wired like any other navigation.
+   */
+  function recordMove(dir: string): void {
+    if (trailIndex.value < trail.value.length - 1) trail.value.splice(trailIndex.value + 1);
+    if (trail.value[trailIndex.value] === dir) return;
+    trail.value.push(dir);
+    // A cap, oldest dropped, so a long session cannot grow it without bound.
+    // The index is recomputed from the length after the push, so the shift
+    // costs no index arithmetic to stay correct.
+    if (trail.value.length > TRAIL_MAX) trail.value.shift();
+    trailIndex.value = trail.value.length - 1;
+  }
+
   /**
    * Request tickets for the two shared async pipelines — directory listing
    * (`navTicket`: cd/goTo/open/refresh all commit into the same `cwd` +
@@ -375,6 +428,10 @@ export const useFilesStore = defineStore('files', () => {
       // pinned there by the act of switching away from it.
       chosen: positions.get(currentKey)?.chosen === true,
     });
+    // Copied rather than referenced: the live refs are about to be handed to
+    // another tab's trail, and two keys holding one array would have each
+    // tab's next move editing the other's past.
+    trails.set(currentKey, { stack: [...trail.value], index: trailIndex.value });
   }
 
   /**
@@ -594,6 +651,15 @@ export const useFilesStore = defineStore('files', () => {
     const remembered = positions.get(key);
     currentKey = key;
 
+    // Take up this tab's own trail, if it has parked one — before the awaits
+    // below, paired with the `currentKey` assignment: a superseded open
+    // commits nothing, so every open() has to have restored for ITS key by the
+    // time it starts, or a rapid tab switch would leave the newest tab reading
+    // the previous one's trail. Copied for the same reason `stash()` copies.
+    const parkedTrail = trails.get(key);
+    trail.value = parkedTrail ? [...parkedTrail.stack] : [];
+    trailIndex.value = parkedTrail ? parkedTrail.index : -1;
+
     // Default to the login home; sftp realPath('.') resolves it. Callers with
     // a better starting point (e.g. a session's working directory) pass one.
     //
@@ -638,6 +704,11 @@ export const useFilesStore = defineStore('files', () => {
     // one: it owns the pane from here — cwd, the restored buffer, the listing.
     if (ticket !== navTicket) return;
     cwd.value = resolved;
+    // The landing joins the trail like any move — see `recordMove` for why a
+    // landing that restores the remembered position is a no-op, and why the
+    // not-chosen landing (a recovered session cwd the tab moved to on its own)
+    // is the one that grows it.
+    recordMove(resolved);
 
     // Restore the file this session was left on. A dirty editable file has its
     // buffer parked locally; every other file is re-read from the host below.
@@ -782,15 +853,52 @@ export const useFilesStore = defineStore('files', () => {
     await refresh(connectionId, ticket);
     if (ticket !== navTicket) return;
     rememberHere();
+    recordMove(cwd.value);
+  }
+
+  /**
+   * Move to `path` and remember it, without touching the trail: the shared
+   * body of the recording `goTo` and the trail's own steps, which must not
+   * record — their target already sits in the trail, and recording it would
+   * truncate the forward half the step is walking into (see `recordMove`).
+   * False means a newer navigation superseded this one and committed nothing.
+   */
+  async function jump(connectionId: ConnectionId, path: string): Promise<boolean> {
+    const ticket = ++navTicket;
+    cwd.value = path;
+    await refresh(connectionId, ticket);
+    if (ticket !== navTicket) return false;
+    rememberHere();
+    return true;
   }
 
   /** Jump straight to an absolute directory (the breadcrumb's move). */
   async function goTo(connectionId: ConnectionId, path: string): Promise<void> {
-    const ticket = ++navTicket;
-    cwd.value = path;
-    await refresh(connectionId, ticket);
-    if (ticket !== navTicket) return;
-    rememberHere();
+    if (await jump(connectionId, path)) recordMove(cwd.value);
+  }
+
+  /**
+   * Walk the recorded trail: Back is delta -1, Forward is +1. The index
+   * commits only after the move does, so a superseded step leaves the trail
+   * pointing where the screen still is — and the step is a `jump`, not a
+   * `goTo`, for the reason `recordMove` records.
+   */
+  async function step(connectionId: ConnectionId, delta: -1 | 1): Promise<void> {
+    const next = trailIndex.value + delta;
+    if (next < 0 || next >= trail.value.length) return;
+    const target = trail.value[next];
+    if (target == null) return;
+    if (await jump(connectionId, target)) trailIndex.value = next;
+  }
+
+  /** The Back button: the directory before this one in the browsing trail. */
+  function goBack(connectionId: ConnectionId): Promise<void> {
+    return step(connectionId, -1);
+  }
+
+  /** The Forward button: the directory the last Back stepped out of. */
+  function goForward(connectionId: ConnectionId): Promise<void> {
+    return step(connectionId, 1);
   }
 
   /**
@@ -1243,17 +1351,25 @@ export const useFilesStore = defineStore('files', () => {
     error.value = null;
     home.value = '';
     currentKey = null;
+    // A trail that outlived its connection names directories on a host that is
+    // gone; the live refs reset with the listing they walk beside.
+    trail.value = [];
+    trailIndex.value = -1;
     // A reveal that has not been taken yet names a path on the connection that
     // just went away; applying it later would ask the NEXT host for it.
     reveal.value = null;
     closeFile();
     if (connectionId == null) {
       positions.clear();
+      trails.clear();
       return;
     }
     const prefix = `${connectionId}\x00`;
     for (const key of [...positions.keys()]) {
       if (key.startsWith(prefix)) positions.delete(key);
+    }
+    for (const key of [...trails.keys()]) {
+      if (key.startsWith(prefix)) trails.delete(key);
     }
   }
 
@@ -1288,6 +1404,10 @@ export const useFilesStore = defineStore('files', () => {
     refresh,
     cd,
     goTo,
+    canGoBack,
+    canGoForward,
+    goBack,
+    goForward,
     openFile,
     setContent,
     save,
