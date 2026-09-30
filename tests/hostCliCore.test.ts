@@ -65,6 +65,23 @@ describe('HostCliCore sessions contract', () => {
     ]);
   });
 
+  it('reports the real CLI\'s errors listing (exit 127) as a visible failure carrying the host detail', async () => {
+    // Published 0.5.8 prints the errors document on stdout but exits 127 with
+    // the same detail on stderr whenever errors[] is non-empty. Like the Kotlin
+    // client it replaces, HostCliCore reports that as a failure rather than an
+    // empty listing; only an exit-0 listing carries errors[] to the caller.
+    const failed = new HostCliCore(new ScriptedTransport({
+      exitCode: 127,
+      stdout: fixture('sessions-list-errors.json'),
+      stderr: fixture('sessions-list-errors.stderr.txt'),
+    })).listSessions();
+    await expect(failed).rejects.toBeInstanceOf(HostCliFailed);
+    await expect(failed).rejects.toMatchObject({
+      exitCode: 127,
+      message: expect.stringContaining('both failed or returned unreadable JSON'),
+    });
+  });
+
   it('rejects an older schema, partial JSON, and a malformed session row', () => {
     expect(() => parseHostSessionsList('{"schema":2,"sessions":[]}')).toThrow(HostCliTooOld);
     expect(() => parseHostSessionsList('{"schema":3,"sessions":[')).toThrow(HostCliMalformed);

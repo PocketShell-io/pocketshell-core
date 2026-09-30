@@ -116,6 +116,18 @@ describeDocker('HostCliCore integration (core-owned image, published pocketshell
     expect(afterKill.sessions.map((session) => session.name)).not.toContain('testuser:main');
   }, 60_000);
 
+  it('reports a real errors listing (unreachable aplexer) as a visible failure, never an empty host', async () => {
+    const broken = new HostCliCore(transport, 'APLEXER_BIN=/does/not/exist pocketshell');
+    await expect(broken.listSessions()).rejects.toMatchObject<Partial<HostCliFailed>>({
+      kind: 'failed',
+      exitCode: 127,
+      message: expect.stringContaining('/does/not/exist --json snapshot'),
+    });
+    const raw = await transport.exec('APLEXER_BIN=/does/not/exist pocketshell sessions list --json', 20_000);
+    expect(raw.exitCode).toBe(127);
+    expect(JSON.parse(raw.stdout)).toMatchObject({ schema: 3, sessions: [], errors: [{ message: expect.any(String) }] });
+  });
+
   it('round-trips workspace identity containing quote, newline, Unicode, and shell syntax', async () => {
     await expectPinnedCliVersion(transport);
     const host = "fixture host ' Ω\n$(touch /tmp/hostcli-shell-injection)";

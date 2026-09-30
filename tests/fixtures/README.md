@@ -19,8 +19,11 @@ suite invokes the same CLI over SSH. Capture setup:
 
 - `sessions-list.json`: the helper entrypoint's seeded `testuser:main` and
   `testuser:build` sessions.
-- `sessions-list-errors.json`: same list with `APLEXER_BIN=/does/not/exist`
-  to preserve the CLI's non-empty `errors` response.
+- `sessions-list-errors.json` and `sessions-list-errors.stderr.txt`: same
+  list with `APLEXER_BIN=/does/not/exist` to preserve the CLI's non-empty
+  `errors` response. The CLI exits **127** whenever `errors` is non-empty and
+  repeats the detail on stderr; tests that feed the stdout with exit 0 are
+  pinning the parser, not the CLI's exit code.
 - `sessions-create-existing.json`: create `main` again, which returns success
   with `created: false`.
 - `sessions-create-error.json`: create in an image without `systemd-run`,
