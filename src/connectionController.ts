@@ -442,6 +442,42 @@ export class ConnectionController {
     }
   }
 
+  /** How many dials one recovery ladder makes before the controller gives up (`lost`). */
+  get maxReconnectAttempts(): number {
+    return this.retryDelaysMs.length;
+  }
+
+  /**
+   * The user's Retry: recover the transport and the selected session through
+   * this controller's own ladder (#2954, D28 — one reconnect owner).
+   *
+   * - A ladder already running is joined, never doubled: a Retry pressed
+   *   while the controller is re-dialling waits for that recovery.
+   * - A healthy transport is left alone.
+   * - After a give-up (`lost`, or a dial that left no transport) it runs ONE
+   *   fresh ladder with the same budget, re-attaching the selected session.
+   *
+   * Background grace is not a Retry target: foreground reconciliation owns
+   * that transport (`returnToForeground`).
+   */
+  async reconnect(): Promise<ConnectionActionResult> {
+    this.assertLive();
+    if (!this.host) {
+      return { ok: false, reason: 'not-connected', message: 'There is no host to reconnect to.' };
+    }
+    const running = this.reconnectTask;
+    if (running) {
+      await running;
+    } else if (this.snapshot.phase === 'background') {
+      return { ok: false, reason: 'failed', message: 'The connection is in background grace; it reconnects on return.' };
+    } else if (!this.connection || this.snapshot.phase === 'lost') {
+      await this.reconnectAndAttach('reconnect requested');
+    }
+    const phase = this.snapshot.phase;
+    if (this.connection && phase !== 'lost' && phase !== 'reconnecting') return { ok: true, value: undefined };
+    return { ok: false, reason: 'failed', message: this.snapshot.error ?? 'Reconnect failed.' };
+  }
+
   async enterBackground(graceMs: number): Promise<void> {
     this.assertLive();
     if (!this.connection) return;
