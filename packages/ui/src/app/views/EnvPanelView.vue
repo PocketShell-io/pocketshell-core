@@ -19,10 +19,10 @@
 //
 // The layout is the Ports panel's table vocabulary (PortPanelView.vue): one
 // line per key, the key alone at the left edge as the row's identity, and the
-// file chip, value field and action clustered at the right edge — shared
-// column widths across rows, hairline `--border-soft` separators. The previous
-// look stacked a key line and a full-width action button per row, which spent
-// the pane's height on chrome and read as a column of buttons rather than an
+// value field and action clustered at the right edge — shared column widths
+// across rows, hairline `--border-soft` separators. The previous look
+// stacked a key line and a full-width action button per row, which spent the
+// pane's height on chrome and read as a column of buttons rather than an
 // editor.
 import { computed, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
@@ -136,7 +136,8 @@ function onHideAll(): void {
 /**
  * "4 keys · 3 in .env · 1 in .envrc" — the list's one quiet summary line,
  * which is also where the panel-level Reveal all / Hide all pair lives,
- * instead of floating between the rows and the add form.
+ * instead of floating between the rows and the add form. It is the one place
+ * a key's file is named — the rows carry no chip.
  */
 const keysSummary = computed(() => {
   const perFile = new Map<string, number>();
@@ -223,10 +224,10 @@ onMounted(load);
         </div>
 
         <!-- One line per key, the Ports table's construction, read from both
-             ends: the key is the row's identity at the left edge, and the file
-             chip, the value field and the action cluster at the right edge —
-             the invisible c-fill span between them takes all the slack, so
-             the secret machinery sits together under the eye instead of
+             ends: the key is the row's identity at the left edge, and the
+             value field and the action cluster at the right edge — the
+             invisible c-fill span between them takes all the slack, so the
+             secret machinery sits together under the eye instead of
              stranding the value mid-row. The columns' shared x comes from the
              fixed bases every row hands its cells (26ch key, 40ch value), a
              flex line rather than a real table: table auto-layout cannot be
@@ -241,11 +242,6 @@ onMounted(load);
           <div v-for="row in rows" :key="row.key" class="env-row">
             <span class="c-key" :title="row.key">{{ row.key }}</span>
             <span class="c-fill" aria-hidden="true"></span>
-            <span class="c-file">
-              <span class="file-badge" :class="{ envrc: row.file === '.envrc' }">{{
-                row.file || 'new'
-              }}</span>
-            </span>
             <div class="c-value">
               <!-- Unfetched: disabled dots — there is a value and the panel
                    is not showing it; the eye fetches it. Unset: an empty
@@ -412,29 +408,11 @@ onMounted(load);
   white-space: nowrap;
 }
 /* Between identity and the value cluster: the row's one growing cell. It
-   holds nothing and takes all the slack, so chip, value and action read as
-   one right-edge group at every panel width — the void between name and
-   secret is the layout, not missing content. */
+   holds nothing and takes all the slack, so value and action read as one
+   right-edge group at every panel width — the void between name and secret
+   is the layout, not missing content. */
 .c-fill {
   flex: 1 1 0;
-}
-.c-file {
-  flex: none;
-  white-space: nowrap;
-}
-/* Badge metrics per the design system's one-badge rule: inline-flex,
-   `padding: 0 var(--sp-1)`, `line-height: var(--lh-100)`. */
-.file-badge {
-  display: inline-flex;
-  font-size: var(--fs-100);
-  line-height: var(--lh-100);
-  padding: 0 var(--sp-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  color: var(--fg-muted);
-}
-.file-badge.envrc {
-  color: var(--accent);
 }
 /* The value field keeps a 40ch home — wide enough for a whole secret — and
    is the first thing to yield on a narrow dock (`min-width: 0`); its text
