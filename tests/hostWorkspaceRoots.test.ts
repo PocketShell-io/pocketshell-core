@@ -3,6 +3,7 @@ import type { HostCliExecOutcome } from '../src/hostCliCommon';
 import {
   HostWorkspaceRoots,
   RestoredWorkspaceRootsLedger,
+  WORKSPACE_ROOTS_RESTORED_STORAGE_KEY,
   WORKSPACE_ROOT_ORDER_STORAGE_KEY,
   WorkspaceRootOrderStore,
   execWithDeadline,
@@ -59,7 +60,7 @@ class MemoryStorage implements WorkspaceStringStorage {
 }
 
 function model(storage = new MemoryStorage()) {
-  return new HostWorkspaceRoots(new WorkspaceRootOrderStore(storage, () => 42), new RestoredWorkspaceRootsLedger(storage));
+  return new HostWorkspaceRoots(new WorkspaceRootOrderStore(storage, () => 42), new RestoredWorkspaceRootsLedger(storage, () => 42));
 }
 
 function deferred<T>() {
@@ -245,6 +246,111 @@ describe('host workspace roots over the host CLI', () => {
     host.override = null;
     await roots.refresh();
     expect(host.registry.get('h')).toEqual(['/home/me/git']);
+  });
+
+  /** A CLI whose `add` replies are held until released; everything else passes through. */
+  function heldAdds(host: FakeHost, connectionId: string) {
+    const held: Array<() => void> = [];
+    const cli = workspaceRootsCliForConnection(
+      workspaceRootsApiFromExec((id, command, timeoutMs) => {
+        if (!command.includes(' add ')) return host.exec(id, command);
+        return new Promise<HostCliExecOutcome>((resolve) => {
+          // The host applies the add when it runs; only the REPLY is held.
+          held.push(() => void host.exec(id, command).then(resolve));
+          void timeoutMs;
+        });
+      }),
+      connectionId,
+    );
+    return { cli, release: () => held.splice(0).forEach((reply) => reply()) };
+  }
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  }
+
+  it('releases an add superseded by a reconnect to the same host and shows the host state', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    const first = heldAdds(host, 'conn-1');
+    await roots.select({ hostIdentity: 'h', cli: first.cli });
+    const pending = roots.addRoot('/srv/b');
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+
+    // Background/foreground or a network change: same host, new connection.
+    await roots.select({ hostIdentity: 'h', cli: host.cli('conn-2') });
+    expect(roots.getState().mutating).toBe(false);
+    first.release();
+    expect(await pending).toBe(false);
+    await settle();
+
+    expect(roots.getState().mutating).toBe(false);
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(['/home/me/git', '/srv/b']);
+    // Mutations work again on the new connection.
+    expect(await roots.removeRoot('/srv/b')).toBe(true);
+    expect(await roots.addRoot('/srv/c')).toBe(true);
+    expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/c']);
+  });
+
+  it('releases a restore superseded by a reconnect to the same host', async () => {
+    const host = new FakeHost();
+    const storage = new MemoryStorage();
+    const previousRoots = { roots: ['~/git'], rootOrder: ['~/git'] };
+    const roots = model(storage);
+    const first = heldAdds(host, 'conn-1');
+    const firstSelect = roots.select({ hostIdentity: 'h', cli: first.cli, previousRoots });
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+
+    // The reconnect carries no previous roots of its own, so nothing on the
+    // new epoch touches `mutating`: only the superseded restore could.
+    await roots.select({ hostIdentity: 'h', cli: host.cli('conn-2') });
+    expect(roots.getState().mutating).toBe(false);
+    first.release();
+    await firstSelect;
+    await settle();
+
+    expect(roots.getState()).toMatchObject({ mutating: false, status: 'ready' });
+    // The host applied the superseded add; the view re-lists and shows it.
+    expect(host.registry.get('h')).toEqual(['/home/me/git']);
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(['/home/me/git']);
+    expect(await roots.addRoot('/srv/d')).toBe(true);
+  });
+
+  it('treats an unreadable restore record as already restored and says so', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', []);
+    const storage = new MemoryStorage();
+    storage.setItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY, '[broken');
+    const roots = model(storage);
+    await roots.select({ hostIdentity: 'h', cli: host.cli(), previousRoots: { roots: ['~/git'], rootOrder: [] } });
+    // A root the user removed must not come back from the previous client.
+    expect(host.registry.get('h')).toEqual([]);
+    expect(host.commands.some((command) => command.includes(' add '))).toBe(false);
+    expect(roots.getState().mutationError).toMatch(/restore record is unreadable/);
+    // The unreadable copy is kept and never overwritten.
+    expect(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)).toBe('[broken');
+    expect(storage.getItem(`${WORKSPACE_ROOTS_RESTORED_STORAGE_KEY}.unreadable-42`)).toBe('[broken');
+    const ledger = new RestoredWorkspaceRootsLedger(storage, () => 42);
+    expect(ledger.loadError).toMatch(/unreadable/);
+    // Fail closed at the ledger itself: every host reads as already restored,
+    // and recording one more never overwrites the unreadable value.
+    expect(ledger.has('some-other-host')).toBe(true);
+    ledger.add('some-other-host');
+    expect(storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY)).toBe('[broken');
+  });
+
+  it('clears the deadline timer when the command answers first', async () => {
+    const cleared: unknown[] = [];
+    const exec = execWithDeadline(
+      async () => ({ exitCode: 0, stdout: 'x', stderr: '' }),
+      () => 'timer-1',
+      (timer) => cleared.push(timer),
+    );
+    await exec('c', 20_000);
+    expect(cleared).toEqual(['timer-1']);
   });
 
   it('preserves an unreadable stored order and says so', () => {

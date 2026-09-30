@@ -154,9 +154,27 @@ function badgeViews(dir: SessionDirectory): AgentBadgeView[] {
   });
 }
 
+/**
+ * The session a folder row stands for by itself in the narrow layout: a
+ * folder holding exactly one session NAMED like the folder (`api` in `api`).
+ * A leaf there would repeat the folder's own label on the next row, so the
+ * folder row IS the leaf — it opens that session and wears its selection.
+ */
+function soleSession(dir: SessionDirectory): string | null {
+  if (!props.showSessions || dir.untracked || dir.rows.length !== 1) return null;
+  const name = dir.rows[0]!.session.name;
+  return name === dir.label ? name : null;
+}
+
 /** An untracked folder is one session with no folder; its row IS the leaf. */
 function drawsLeaves(dir: SessionDirectory): boolean {
-  return props.showSessions && !dir.untracked;
+  return props.showSessions && !dir.untracked && soleSession(dir) === null;
+}
+
+function onFolderClick(dir: SessionDirectory): void {
+  const sole = soleSession(dir);
+  if (sole === null) emit('select', dir);
+  else emit('select', dir, sole);
 }
 </script>
 
@@ -316,7 +334,8 @@ function drawsLeaves(dir: SessionDirectory): boolean {
             }"
             :title="dirTooltip(dir)"
             :draggable="props.filtering ? 'false' : 'true'"
-            @click="emit('select', dir)"
+            :data-session-name="soleSession(dir) ?? undefined"
+            @click="onFolderClick(dir)"
             @contextmenu.prevent="emit('menu', dir, $event)"
             @dragstart="emit('dragStart', dir, $event)"
             @dragover="emit('dragOver', root, i, $event)"
@@ -897,8 +916,8 @@ function drawsLeaves(dir: SessionDirectory): boolean {
   }
   .root-add,
   .root-sort {
-    width: 44px;
-    height: 44px;
+    width: 48px;
+    height: 48px;
   }
 }
 @container (width < 270px) {

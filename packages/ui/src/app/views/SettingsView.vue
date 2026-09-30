@@ -250,7 +250,8 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
             </template>
             <template v-else>Roots are stored separately for each SSH host;</template>
             <template v-if="rootHost">
-              this list belongs to <code>{{ rootHost }}</code>.
+              <!-- Host mode's sentence ends before this one; the local one runs on. -->
+              {{ rootsOnHost ? 'This' : 'this' }} list belongs to <code>{{ rootHost }}</code>.
             </template>
             <template v-else>choose an instance below to edit its list.</template>
           </p>
