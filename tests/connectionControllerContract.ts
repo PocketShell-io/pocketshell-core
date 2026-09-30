@@ -1,7 +1,6 @@
 /**
- * Runtime-neutral connection policy contract. Vitest, the Chromium browser
- * build, and the Node-vm/QuickJS embed verifier run the same assertions
- * against the core, so runtime-specific failures cannot hide behind mocks.
+ * Runtime-neutral connection policy contract. Vitest and the Chromium browser
+ * build run the same assertions against the core, so runtime-specific failures cannot hide behind mocks.
  */
 export async function runConnectionControllerContract(Core: any): Promise<string> {
   let assertions = 0;

@@ -1,7 +1,7 @@
 /**
- * The same pure file-policy assertions run in Chromium and in the Android
- * embed engines (Node vm and QuickJS). Keep assertions synchronous so the
- * verdict crosses each runtime boundary as a plain string.
+ * The same pure file-policy assertions run in Vitest and in Chromium. Keep
+ * assertions synchronous so the verdict crosses each runtime boundary as a
+ * plain string.
  */
 export function runFilePolicyContract(C: typeof import('../src/index')): string {
   let assertions = 0;

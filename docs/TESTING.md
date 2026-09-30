@@ -1,6 +1,6 @@
 # @pocketshell/core — Testing
 
-Three suites, plus the embed check. The guiding rule is inherited from the
+Three suites. The guiding rule is inherited from the
 desktop and Android projects: **only deterministic Docker targets, never
 real hosts or real provider credentials.**
 
@@ -9,7 +9,6 @@ real hosts or real provider credentials.**
 | **Unit** | vitest (node) | none (pure logic) | the ported contract suites: parsers, quoting, sync merge, verdicts | every push |
 | **Browser policy** | Chromium headless | local HTTP fixture page | the shared SSH and composer policy contracts against a browser bundle | every push |
 | **Integration** | vitest + `testcontainers` | ephemeral Docker port per test | `AplexerCore`, `HostCliCore`, SFTP, and known-hosts verdicts — against real sshd/sftp/`a`/`pocketshell` | every push (requires Docker) |
-| **Embed check** | `npm run embed` | Node `vm` + real QuickJS | the IIFE bundle answers connection and composer contract assertions in both engines | every push |
 
 ## Unit
 
@@ -80,16 +79,8 @@ The desktop-only fleet layers (flaky, instance) are deliberately absent:
 forced-disconnect reconnect and the manual demo instance are client
 features, and core's transport is a one-method interface.
 
-## Embed check
-
-`npm run embed` — builds the single-file IIFE and verifies the SAME connection
-and composer contract assertions in Node's `vm` AND a real QuickJS. This is the Android surface
-exercised as code, including `HostCliCore`'s async exec bridge success and
-typed failure paths, attach builder, and pure parsers for sessions,
-workspaces, engines, and profiles. See README ("The Android path").
-
 ## The gate
 
 `npm test` = unit + integration (Docker up, images built). CI runs build,
-unit, browser policy, and embed checks on every push, next to the Docker-backed
+unit and browser policy checks on every push, next to the Docker-backed
 integration job; see `.github/workflows/ci.yml`.
