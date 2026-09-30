@@ -984,7 +984,15 @@ export class ConnectionController {
       }
     }
     if (this.isCurrentConnect(intent)) {
-      this.setSnapshot({ phase: 'lost', error: `Could not reconnect to ${host.hostname} after ${this.retryDelaysMs.length} attempts.` });
+      // Name the dials actually made: a refused login (not retryable) ends
+      // the ladder early, and says why.
+      const attempts = this.snapshot.retryAttempt;
+      const refusal = !this.lastDialRetryable ? this.snapshot.error?.trim() : '';
+      const cause = refusal ? ` ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}` : '';
+      this.setSnapshot({
+        phase: 'lost',
+        error: `Could not reconnect to ${host.hostname} after ${attempts} attempt${attempts === 1 ? '' : 's'}.${cause}`,
+      });
     }
   }
 

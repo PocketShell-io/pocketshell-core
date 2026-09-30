@@ -114,10 +114,13 @@ class FakeCapability {
 
   /** While true every dial fails the way an unreachable host does (retryable). */
   refuseDials = false;
+  /** While set every dial fails with this non-retryable native error. */
+  refuseLogins: { code: string; message: string } | null = null;
 
   connect = async (options: SshConnectOptions): Promise<SshConnectResult> => {
     this.connectCalls.push(options);
     if (this.refuseDials) throw new SshCapabilityError('Connection refused', 'SSH_IO');
+    if (this.refuseLogins) throw new SshCapabilityError(this.refuseLogins.message, this.refuseLogins.code);
     if (verifyHostKeyTrustPin(options.expectedHostKey, HOST_KEY) !== 'trusted') {
       throw new SshCapabilityError('Host key needs a user decision.', 'HOST_KEY_REJECTED', HOST_KEY);
     }
@@ -891,6 +894,33 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().phase).toBe('live');
   });
 
+  it.each([
+    ['AUTH_FAILED', 'Exhausted available authentication methods', 'Exhausted available authentication methods.'],
+    ['INVALID_ARGUMENT', 'The SSH key passphrase is incorrect.', 'The SSH key passphrase is incorrect.'],
+  ])('ends the ladder at a non-retryable %s and names the dials made and its own message (#2954, #2984)', async (code, message, shown) => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0, 0, 0, 0] });
+    controllers.push(controller);
+    await connectAndList(controller);
+    capability.refuseLogins = { code, message };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 1);
+    expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${shown}`);
+  });
+
+  it('counts every dial of a retryable ladder that ran out (#2984)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] });
+    controllers.push(controller);
+    await connectAndList(controller);
+    capability.refuseDials = true;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 2);
+    expect(controller.getSnapshot().error).toBe('Could not reconnect to 127.0.0.1 after 2 attempts.');
+  });
+
   it('reports why a Retry could not recover and needs a host to retry against (#2954)', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0] });
@@ -900,7 +930,7 @@ describe('JS connection and session policy', () => {
     capability.refuseDials = true;
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'lost');
-    expect(await controller.reconnect()).toMatchObject({ ok: false, reason: 'failed', message: expect.stringMatching(/after 1 attempts/) });
+    expect(await controller.reconnect()).toMatchObject({ ok: false, reason: 'failed', message: expect.stringMatching(/after 1 attempt\./) });
     expect(capability.connectCalls).toHaveLength(1 + 1 + 1);
   });
 });
