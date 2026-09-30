@@ -88,6 +88,24 @@ export interface ConnectionControllerOptions {
   delay?: (milliseconds: number) => Promise<void>;
   createId?: () => string;
   retryDelaysMs?: readonly number[];
+  /**
+   * Longest background grace a caller may request. Defaults to
+   * {@link DEFAULT_MAX_BACKGROUND_GRACE_MS}, the longest window the 0.5.x
+   * Android client offered; a longer request is clamped to it.
+   */
+  maxBackgroundGraceMs?: number;
+}
+
+/** How `returnToForeground` treats a connection the grace window spent. */
+export interface ReturnToForegroundOptions {
+  /**
+   * Reconnect and reattach the selected session automatically (the default).
+   * `false` is the user's "Reconnect when I return: off" choice: the spent
+   * connection is released and the controller waits in `lost` for an explicit
+   * {@link ConnectionController.reconnect}. A connection still live inside
+   * grace is reused either way — nothing was lost.
+   */
+  reconnect?: boolean;
 }
 
 export type ConnectionActionResult<T = undefined> =
@@ -95,6 +113,10 @@ export type ConnectionActionResult<T = undefined> =
   | { ok: false; reason: 'trust-required' | 'trust-mismatch' | 'not-connected' | 'not-found' | 'superseded' | 'failed'; message: string };
 
 const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
+/** Ten minutes: the longest background grace any PocketShell client offers. */
+export const DEFAULT_MAX_BACKGROUND_GRACE_MS = 10 * 60_000;
+/** The status line a user sees after declining automatic reconnect on return. */
+export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShell was in the background. Reconnect to resume.';
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 const PTY_READ_WAIT_MS = 250;
 const PTY_READ_MAX_BYTES = 32_768;
@@ -148,6 +170,7 @@ export class ConnectionController {
   private readonly delay: (milliseconds: number) => Promise<void>;
   private readonly createId: () => string;
   private readonly retryDelaysMs: readonly number[];
+  private readonly maxBackgroundGraceMs: number;
   private readonly listeners = new Set<(snapshot: ConnectionSnapshot) => void>();
   private readonly outputListeners = new Set<TerminalOutputHandler>();
   private readonly listenerReady: Promise<SshListenerHandle>;
@@ -190,6 +213,8 @@ export class ConnectionController {
     this.delay = options.delay ?? sleep;
     this.createId = options.createId ?? defaultId;
     this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+    const cap = options.maxBackgroundGraceMs ?? DEFAULT_MAX_BACKGROUND_GRACE_MS;
+    this.maxBackgroundGraceMs = Number.isFinite(cap) && cap >= 0 ? cap : DEFAULT_MAX_BACKGROUND_GRACE_MS;
     this.listenerReady = this.capability.addListener('connectionState', (event) => {
       this.onConnectionState(event);
     });
@@ -415,7 +440,8 @@ export class ConnectionController {
   async enterBackground(graceMs: number): Promise<void> {
     this.assertLive();
     if (!this.connection) return;
-    const grace = Math.max(0, Math.min(graceMs, 5 * 60_000));
+    const requested = Number.isFinite(graceMs) ? graceMs : 0;
+    const grace = Math.max(0, Math.min(requested, this.maxBackgroundGraceMs));
     const deadlineEpochMs = this.now() + grace;
     this.graceDeadlineEpochMs = deadlineEpochMs;
     const requestId = this.createId();
@@ -428,15 +454,17 @@ export class ConnectionController {
     this.setSnapshot({ phase: 'background', error: null });
   }
 
-  async returnToForeground(): Promise<void> {
+  async returnToForeground(options: ReturnToForegroundOptions = {}): Promise<void> {
     this.assertLive();
+    const reconnect = options.reconnect ?? true;
     const connection = this.connection;
     const host = this.host;
     const deadline = this.graceDeadlineEpochMs;
     this.graceDeadlineEpochMs = null;
     if (!host || deadline === null) return;
     if (!connection || this.now() >= deadline) {
-      await this.reconnectAndAttach('background grace expired');
+      if (reconnect) await this.reconnectAndAttach('background grace expired');
+      else await this.releaseSpentConnection();
       return;
     }
 
@@ -455,7 +483,37 @@ export class ConnectionController {
       // A deadline racing resume or a dead connection is handled by the same
       // TypeScript reconnect path below.
     }
-    await this.reconnectAndAttach('connection was spent during background grace');
+    if (reconnect) await this.reconnectAndAttach('connection was spent during background grace');
+    else await this.releaseSpentConnection();
+  }
+
+  /**
+   * Explicitly resume a host connection that was lost (after declined
+   * automatic reconnect or an exhausted retry ladder), reattaching the
+   * previously selected session. A no-op while a connection is still usable.
+   */
+  async reconnect(): Promise<void> {
+    this.assertLive();
+    if (!this.host) return;
+    if (this.connection && ['connected', 'listing', 'attaching', 'live'].includes(this.snapshot.phase)) return;
+    await this.reconnectAndAttach('reconnect requested');
+  }
+
+  /** Release a grace-spent transport without dialing, and wait for {@link reconnect}. */
+  private async releaseSpentConnection(): Promise<void> {
+    const oldPty = this.pty;
+    const oldConnection = this.connection;
+    this.pty = null;
+    this.connection = null;
+    this.hostCli = null;
+    this.ptyPumpToken += 1;
+    this.connectIntent += 1;
+    if (oldPty) await this.capability.closePty({ ...oldPty, requestId: this.createId() }).catch(() => undefined);
+    if (oldConnection) {
+      await this.cancelCapability({ kind: 'connection', ...oldConnection });
+      await this.capability.closeConnection({ ...oldConnection, requestId: this.createId() }).catch(() => undefined);
+    }
+    this.setSnapshot({ phase: 'lost', connectionId: null, generationId: null, retryAttempt: 0, error: RECONNECT_DECLINED_MESSAGE });
   }
 
   async close(): Promise<void> {
