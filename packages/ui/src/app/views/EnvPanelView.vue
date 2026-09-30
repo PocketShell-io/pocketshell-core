@@ -18,10 +18,11 @@
 //     a sentence next to the row rather than a silent no-op.
 //
 // The layout is the Ports panel's table vocabulary (PortPanelView.vue): one
-// line per key — name, file chip, value field, one action — shared column
-// widths across rows, hairline `--border-soft` separators. The previous look
-// stacked a key line and a full-width action button per row, which spent the
-// pane's height on chrome and read as a column of buttons rather than an
+// line per key, the key alone at the left edge as the row's identity, and the
+// file chip, value field and action clustered at the right edge — shared
+// column widths across rows, hairline `--border-soft` separators. The previous
+// look stacked a key line and a full-width action button per row, which spent
+// the pane's height on chrome and read as a column of buttons rather than an
 // editor.
 import { computed, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
@@ -202,75 +203,80 @@ onMounted(load);
           </button>
         </div>
 
-        <!-- One line per key, the Ports table's construction: shared column
-             widths (a real table, so the value column starts at the same x in
-             every row), ghost fields that surface on hover/focus only, and a
-             single right-aligned action cell. The action cell holds the eye
-             and the row's Save in FIXED slots — `v-show` + the ghosted class,
-             never `v-if` — so the column cannot resize under the caret the
-             moment a row goes dirty. -->
-        <table class="env-table">
-          <tbody>
-            <tr v-for="row in rows" :key="row.key">
-              <td class="c-key" :title="row.key">{{ row.key }}</td>
-              <td class="c-file">
-                <span class="file-badge" :class="{ envrc: row.file === '.envrc' }">{{
-                  row.file || 'new'
-                }}</span>
-              </td>
-              <td class="c-value">
-                <!-- Unfetched: disabled dots — there is a value and the panel
-                     is not showing it; the eye fetches it. Unset: an empty
-                     enabled field (absence is not a secret) — typing goes
-                     straight to the save flow. Fetched: masked until the eye
-                     opens it, text while edited. -->
-                <input
-                  v-model="row.value"
-                  class="value-input"
-                  :type="row.hasValue && !(row.visible || row.dirty) ? 'password' : 'text'"
-                  :disabled="row.hasValue && !row.revealed"
-                  :placeholder="row.hasValue && !row.revealed ? '••••••••••' : row.hasValue ? '' : 'not set'"
-                  :aria-label="`Value of ${row.key}`"
-                  spellcheck="false"
-                  @input="row.dirty = true"
-                  @keyup.enter="onSave(row)"
-                />
-              </td>
-              <td class="c-actions">
-                <div class="actions">
-                  <!-- The eye: fetch-and-show the first time, show/hide after.
-                       Retired (slot kept) while the field is edited — there is
-                       no editing a secret you cannot see, and once edited there
-                       is nothing left for the eye to offer. -->
-                  <button
-                    v-if="row.hasValue"
-                    v-show="!row.dirty && !row.saving"
-                    type="button"
-                    class="icon-btn sm eye-btn"
-                    :aria-pressed="row.visible"
-                    :title="row.revealed ? (row.visible ? 'Hide value' : 'Show value') : 'Fetch and show the value'"
-                    :aria-label="row.revealed ? (row.visible ? `Hide the value of ${row.key}` : `Show the value of ${row.key}`) : `Fetch and show the value of ${row.key}`"
-                    @click="onEye(row)"
-                  >
-                    <AppIcon :name="row.visible ? 'eye-off' : 'eye'" :size="14" />
-                  </button>
-                  <!-- Save only ever exists for a change worth writing; clean
-                       it keeps its slot, invisible, so the row's width holds. -->
-                  <button
-                    type="button"
-                    class="row-save"
-                    :class="{ ghosted: !row.dirty && !row.saving }"
-                    :disabled="row.saving"
-                    :title="row.dirty ? 'Write to the host' : 'Unchanged'"
-                    @click="onSave(row)"
-                  >
-                    {{ row.saving ? 'Saving…' : 'Save' }}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <!-- One line per key, the Ports table's construction, read from both
+             ends: the key is the row's identity at the left edge, and the file
+             chip, the value field and the action cluster at the right edge —
+             the invisible c-fill span between them takes all the slack, so
+             the secret machinery sits together under the eye instead of
+             stranding the value mid-row. The columns' shared x comes from the
+             fixed bases every row hands its cells (26ch key, 40ch value), a
+             flex line rather than a real table: table auto-layout cannot be
+             negotiated into "spacer absorbs the slack, value holds its width"
+             — a percentage spacer starves the value cell to its minimum. The
+             value field yields first on a narrow dock (`min-width: 0`), the
+             key ellipsises last. The action cell holds the eye and the row's
+             Save in FIXED slots — `v-show` + the ghosted class, never `v-if`
+             — so the column cannot resize under the caret the moment a row
+             goes dirty. -->
+        <div class="env-rows">
+          <div v-for="row in rows" :key="row.key" class="env-row">
+            <span class="c-key" :title="row.key">{{ row.key }}</span>
+            <span class="c-fill" aria-hidden="true"></span>
+            <span class="c-file">
+              <span class="file-badge" :class="{ envrc: row.file === '.envrc' }">{{
+                row.file || 'new'
+              }}</span>
+            </span>
+            <div class="c-value">
+              <!-- Unfetched: disabled dots — there is a value and the panel
+                   is not showing it; the eye fetches it. Unset: an empty
+                   enabled field (absence is not a secret) — typing goes
+                   straight to the save flow. Fetched: masked until the eye
+                   opens it, text while edited. -->
+              <input
+                v-model="row.value"
+                class="value-input"
+                :type="row.hasValue && !(row.visible || row.dirty) ? 'password' : 'text'"
+                :disabled="row.hasValue && !row.revealed"
+                :placeholder="row.hasValue && !row.revealed ? '••••••••••' : row.hasValue ? '' : 'not set'"
+                :aria-label="`Value of ${row.key}`"
+                spellcheck="false"
+                @input="row.dirty = true"
+                @keyup.enter="onSave(row)"
+              />
+            </div>
+            <div class="c-actions">
+              <!-- The eye: fetch-and-show the first time, show/hide after.
+                   Retired (slot kept) while the field is edited — there is
+                   no editing a secret you cannot see, and once edited there
+                   is nothing left for the eye to offer. -->
+              <button
+                v-if="row.hasValue"
+                v-show="!row.dirty && !row.saving"
+                type="button"
+                class="icon-btn sm eye-btn"
+                :aria-pressed="row.visible"
+                :title="row.revealed ? (row.visible ? 'Hide value' : 'Show value') : 'Fetch and show the value'"
+                :aria-label="row.revealed ? (row.visible ? `Hide the value of ${row.key}` : `Show the value of ${row.key}`) : `Fetch and show the value of ${row.key}`"
+                @click="onEye(row)"
+              >
+                <AppIcon :name="row.visible ? 'eye-off' : 'eye'" :size="14" />
+              </button>
+              <!-- Save only ever exists for a change worth writing; clean
+                   it keeps its slot, invisible, so the row's width holds. -->
+              <button
+                type="button"
+                class="row-save"
+                :class="{ ghosted: !row.dirty && !row.saving }"
+                :disabled="row.saving"
+                :title="row.dirty ? 'Write to the host' : 'Unchanged'"
+                @click="onSave(row)"
+              >
+                {{ row.saving ? 'Saving…' : 'Save' }}
+              </button>
+            </div>
+          </div>
+        </div>
       </template>
 
       <p v-if="saveError" class="error">{{ saveError }}</p>
@@ -346,38 +352,47 @@ onMounted(load);
   font-size: var(--fs-200);
   flex: none;
 }
-/* The rows. A real table so the value column starts at one x for every key;
-   hairlines over full rules, the last one dropped because the add form below
+/* The rows. Flex lines rather than a real table — table auto-layout cannot
+   be negotiated into "spacer absorbs the slack, value holds its width" (a
+   percentage spacer starves the value cell to its minimum) — with the
+   columns' shared x coming from the fixed bases every row hands its cells.
+   Hairlines over full rules; the last one dropped because the add form below
    carries its own top border. */
-.env-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--fs-200);
-}
-.env-table td {
+.env-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   padding: var(--sp-1) var(--sp-2);
   border-bottom: 1px solid var(--border-soft);
-  vertical-align: middle;
+  font-size: var(--fs-200);
 }
-.env-table tbody tr:last-child td {
+.env-rows .env-row:last-child {
   border-bottom: none;
 }
-.env-table tbody tr:hover td {
+.env-row:hover {
   background: var(--state-hover);
 }
-/* The key is the row's identity: mono, capped, ellipsised, full name on the
-   cell's title. Capping is what keeps one 40-character key from squeezing the
-   value column for every row. */
+/* The key is the row's identity: mono, capped (the 26ch basis is the cap),
+   ellipsised, full name on the title. Capping is what keeps one 40-character
+   key from squeezing the value column for every row. */
 .c-key {
+  flex: 0 1 26ch;
+  min-width: 0;
   font-family: var(--font-mono);
   font-weight: var(--fw-medium);
-  max-width: 26ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Between identity and the value cluster: the row's one growing cell. It
+   holds nothing and takes all the slack, so chip, value and action read as
+   one right-edge group at every panel width — the void between name and
+   secret is the layout, not missing content. */
+.c-fill {
+  flex: 1 1 0;
+}
 .c-file {
-  width: 1%;
+  flex: none;
   white-space: nowrap;
 }
 /* Badge metrics per the design system's one-badge rule: inline-flex,
@@ -394,11 +409,15 @@ onMounted(load);
 .file-badge.envrc {
   color: var(--accent);
 }
-/* The value column is the flexible one; the input is the Ports table's ghost
-   field — invisible at rest, surfaced on hover/focus with a WCAG-legal
-   boundary once it looks like a control. */
+/* The value field keeps a 40ch home — wide enough for a whole secret — and
+   is the first thing to yield on a narrow dock (`min-width: 0`); its text
+   pins to the right edge, so masked dots wait against the eye and a revealed
+   value lands where the dots were — the reveal never moves the secret across
+   the row. The ghost-field treatment is the Ports table's — invisible at
+   rest, surfaced on hover/focus with a WCAG-legal boundary once it looks
+   like a control. */
 .c-value {
-  width: 100%;
+  flex: 0 1 40ch;
   min-width: 0;
 }
 .value-input,
@@ -413,6 +432,10 @@ onMounted(load);
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: var(--fs-200);
+}
+/* Values read from the right, the eye's edge; key names from the left. */
+.value-input {
+  text-align: right;
 }
 .value-input::placeholder,
 .key-input::placeholder {
@@ -431,13 +454,9 @@ onMounted(load);
 }
 /* One action cell, fixed-width slots: the eye keeps its box while edited
    (`v-show`), Save keeps its box while clean (`.ghosted`), so neither state
-   change can resize the column under the caret. The flex group is a DIV
-   inside the cell — a td must stay a table-cell for the columns to size. */
+   change can resize the row under the caret. */
 .c-actions {
-  width: 1%;
-  white-space: nowrap;
-}
-.actions {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -490,7 +509,7 @@ onMounted(load);
   flex: none;
 }
 .add-row .key-input {
-  flex: 0 1 30%;
+  flex: 0 1 26ch;
 }
 .add-row .value-input {
   flex: 1 1 0;
