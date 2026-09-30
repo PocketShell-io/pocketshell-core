@@ -184,12 +184,14 @@ onBeforeUnmount(() => unwatchStates?.());
 /** Session-panel geometry. Collapsed hides it entirely; width is drag-resized. */
 const panelCollapsed = ref(false);
 /**
- * Seven controls in the header strip pin this floor: 7×28px squares + 6×4px
- * gaps = 220, plus the header's asymmetric padding of 12 — the arithmetic is
- * written out in SessionTree's template. It was 200 until the seven-control header forced
- * overflow menu into its two icons; dragging below 232 would clip the strip.
+ * Eight controls in the header strip pin this floor: 8×28px squares + 7×4px
+ * gaps = 252, plus the header's asymmetric padding of 12 — the arithmetic is
+ * written out in SessionTree's template. It was 200 until the seven-control
+ * header forced the overflow menu into its two icons, and 232 until the
+ * palette's magnifier took the eighth square; dragging below 264 would clip
+ * the strip.
  */
-const MIN_PANEL_WIDTH = 232;
+const MIN_PANEL_WIDTH = 264;
 const MAX_PANEL_WIDTH = 560;
 const DEFAULT_PANEL_WIDTH = 280;
 // usePaneWidth owns the restore/clamp/drag/write mechanics that the Files
@@ -432,7 +434,7 @@ const switcherTitle = computed(() =>
  * in `useQuickActions.ts` (a design-gate payment; the rules travel with it) —
  * the view hands it the handlers and refs above and renders the surface.
  */
-const sessionTreeEl = ref<{ openCreate: () => void; openSearch: () => void } | null>(null);
+const sessionTreeEl = ref<{ openCreate: () => void } | null>(null);
 
 /**
  * Host switching from the palette: the picker's own connect, minus its
@@ -726,6 +728,7 @@ async function onRefreshUsage(): Promise<void> {
           @back="onBack"
           @collapse="panelCollapsed = true"
           @panel="panel = $event"
+          @palette="paletteOpen = true"
         />
       </aside>
       <div

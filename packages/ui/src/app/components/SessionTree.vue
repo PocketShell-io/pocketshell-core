@@ -131,6 +131,14 @@ const emit = defineEmits<{
    *  only announces which one was asked for. */
   panel: [name: HostPanel];
   /**
+   * Open the quick-actions palette. The workspace owns the palette and its
+   * chord; this header's magnifier is the mouse door to the same surface —
+   * one click where the chord's discoverability ends. The mark is a magnifier
+   * because that is what the palette is: one search box over the host's
+   * sessions and the workspace's commands.
+   */
+  palette: [];
+  /**
    * Open a folder's workspace. The optional second argument names a session
    * tab to select on arrival — used when a session was just created, where
    * "open the folder" alone would land on whichever tab sorts first rather
@@ -399,12 +407,13 @@ function onSessionStarted(summary: SessionSummary): void {
 }
 
 /**
- * The two verbs the quick-actions palette reaches for, published for the host
+ * The verb the quick-actions palette reaches for, published for the host
  * workspace (HostWorkspaceView holds the ref): the palette's "New session…"
- * is THIS dialog, not a second one, and its "Quick search" is the summoned
- * row above, not a lookalike. One implementation per verb is the whole point —
- * a palette command that half-worked would be worse than a palette without
- * the command.
+ * is THIS dialog, not a second one. One implementation per verb is the whole
+ * point — a palette command that half-worked would be worse than a palette
+ * without the command. The palette's old "Quick search sessions" row was the
+ * second verb and went: the palette is itself a search, and a command inside
+ * a search that opened a smaller search was two features where there is one.
  *
  * `openCreate` is the header `+`'s exact body, guard included: the palette
  * and the chord both stand down while the picker is already open, and a
@@ -415,7 +424,7 @@ function openCreate(): void {
   creating.value = { startIn: defaultStartIn.value };
 }
 
-defineExpose({ openCreate, openSearch });
+defineExpose({ openCreate });
 </script>
 
 <template>
@@ -429,8 +438,8 @@ defineExpose({ openCreate, openSearch });
         <AppIcon name="panel-left" :size="14" />
       </button>
       <!-- ORDER: hide, then — across the stretch of empty panel the
-           right-aligned run keeps — back, `+`, ports, usage, refresh,
-           settings.
+           right-aligned run keeps — back, `+`, search, ports, usage,
+           refresh, settings.
 
            The user's screenshot circled the back arrow and hide with an arrow
            between: hide takes the left end the back arrow used to hold alone,
@@ -440,16 +449,27 @@ defineExpose({ openCreate, openSearch });
            same ask, and "then hide" — the dictate's last word — is what this
            screenshot undid, lifting hide out of the run entirely). The `+`
            follows back because it is the panel's primary action, first of the
-           chrome proper.
+           chrome proper, and the magnifier follows the `+` because the two
+           are the run's pair of summons — create something, find something —
+           ahead of the host overlays and the chrome tail.
 
-           WIDTH, at the 232px drag floor, because this strip is again full:
-           seven --control-h squares (7×28 = 196) plus six --sp-1 gaps (24) is
-           220px, in a content box of 232 − 8 − 4 = 220. It fits EXACTLY, with
-           no shrink and nothing clipped, and that is why the right padding is
-           --sp-1 against the left's --sp-2 (see .tree-header). There is no
-           room for an eighth: the next control added here has to displace one
-           or move the floor again — MIN_PANEL_WIDTH in HostWorkspaceView.vue
-           and .tree's min-width below pin it together. -->
+           The magnifier opens the quick-actions palette (the `palette` emit,
+           the workspace's `paletteOpen`): the palette is the app's one search
+           box over sessions and commands, and the chord that summons it
+           (Ctrl+P) is discoverable nowhere on screen. The panel's OWN filter
+           row keeps its chord (Ctrl+Shift+F) and stays summoned-only — a
+           permanent strip for it was measured and rejected (see the row's
+           comment, below); a door to the palette is a different thing than a
+           home for the filter, and this is the door.
+
+           WIDTH, at the 264px drag floor, because this strip is again full:
+           eight --control-h squares (8×28 = 224) plus seven --sp-1 gaps (28)
+           is 252px, in a content box of 264 − 8 − 4 = 252. It fits EXACTLY,
+           with no shrink and nothing clipped, and that is why the right
+           padding is --sp-1 against the left's --sp-2 (see .tree-header).
+           There is no room for a ninth: the next control added here has to
+           displace one or move the floor again — MIN_PANEL_WIDTH in
+           HostWorkspaceView.vue and .tree's min-width below pin it together. -->
       <div class="header-actions">
         <button class="icon-btn" title="Back to hosts" @click="emit('back')">
           <AppIcon name="arrow-left" :size="14" />
@@ -466,6 +486,13 @@ defineExpose({ openCreate, openSearch });
           @click="creating = { startIn: defaultStartIn }"
         >
           <AppIcon name="plus" :size="14" />
+        </button>
+        <!-- The palette's mouse door. The mark is the search icon the
+             palette's own input wears; the words live in the tooltip —
+             the surface's registry name — exactly where the retired `⋯`
+             trigger kept "Ports, Usage". -->
+        <button class="icon-btn" title="Quick actions" @click="emit('palette')">
+          <AppIcon name="search" :size="14" />
         </button>
         <!-- Ports and Usage as their own buttons. Their words live in
              the tooltips — which double as accessible names — exactly where the
@@ -724,9 +751,9 @@ defineExpose({ openCreate, openSearch });
      short of that row. */
   flex: 1 1 auto;
   min-height: 0;
-  /* Matches HostWorkspaceView's MIN_PANEL_WIDTH (232px since the header strip forced the
-     strip its seventh square; before that both were 200, and before THAT this
-     was 240, silently contradicting the drag clamp of the day). */
+  /* Matches HostWorkspaceView's MIN_PANEL_WIDTH (264px since the header strip
+     forced the strip its eighth square; before that both were 232, and before
+     THAT this was 240, silently contradicting the drag clamp of the day). */
   min-width: 232px;
   /* Query container for the narrow-panel rule that hides the rows' timestamps
      — it lives at the bottom of SessionTreeRows.vue's block, beside the rows
@@ -743,9 +770,9 @@ defineExpose({ openCreate, openSearch });
    visibly off the panel's left rhythm.
 
    The RIGHT padding is --sp-1, and the asymmetry is doing work rather than
-   drifting. The right end is a RUN of seven ghost squares, each already
+   drifting. The right end is a RUN of eight ghost squares, each already
    carrying ~7px of its own optical inset, so a further 8px there is inset on
-   top of inset. Halving it is also exactly what makes the strip fit the 232px
+   top of inset. Halving it is also exactly what makes the strip fit the 264px
    drag floor with nothing shrunk — the arithmetic is in the template, above
    `.header-actions`. The alignment argument and the width arithmetic want the
    same thing, which is the only reason to spend an asymmetry on it. */

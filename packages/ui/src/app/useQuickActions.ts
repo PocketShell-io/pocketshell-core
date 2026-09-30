@@ -13,9 +13,9 @@
  * one row per session, each opening the folder workspace with THAT tab in
  * front (`onSelectFolder`'s second argument, the same channel a create uses).
  * A folder holding one keeps a single row labelled by the folder, because a
- * folder and its only session are one destination. Then creation and the
- * search row, then the overlays, then the panel chrome, the view-level
- * preferences, and the way out. `allFolders`, not the drawn rows: a palette
+ * folder and its only session are one destination. Then creation, then the
+ * overlays, then the panel chrome, the view-level preferences, and the way
+ * out. `allFolders`, not the drawn rows: a palette
  * is a jump list, and the search row's query is nobody's business here.
  *
  * Everything the list can DO is a handler the owning surfaces publish —
@@ -52,8 +52,15 @@ export interface QuickActionsDeps {
   panel: Ref<HostPanel | null>;
   /** The panel's collapsed flag, for the show/hide verb. */
   panelCollapsed: Ref<boolean>;
-  /** The session panel's published verbs (`openCreate`, `openSearch`). */
-  sessionTree: Ref<{ openCreate: () => void; openSearch: () => void } | null>;
+  /**
+   * The session panel's published verb (`openCreate`). The palette used to
+   * carry a "Quick search sessions" row that opened the panel's summoned
+   * filter too, and it went: this palette IS a search — its whole body is
+   * one — so a command inside it opening a second, narrower one read as two
+   * features where there is one. The filter keeps its own doors (the
+   * Ctrl+Shift+F chord); the header's magnifier opens this palette.
+   */
+  sessionTree: Ref<{ openCreate: () => void } | null>;
   /** The panel row's own navigation — a palette pick IS a row click. */
   onSelectFolder: (dir: SessionDirectory, session?: string) => void;
   /** Host switching, the picker's own connect (`connect` + `host-sessions`). */
@@ -205,11 +212,6 @@ export function useQuickActions(deps: QuickActionsDeps): {
         id: 'sessions:new',
         label: 'New session…',
         run: () => deps.sessionTree.value?.openCreate(),
-      },
-      {
-        id: 'sessions:search',
-        label: 'Quick search sessions',
-        run: () => deps.sessionTree.value?.openSearch(),
       },
       { id: 'panel:ports', label: 'Port forwarding', run: () => (deps.panel.value = 'ports') },
       { id: 'panel:usage', label: 'Provider usage', run: () => (deps.panel.value = 'usage') },
