@@ -24,8 +24,15 @@ const connection = useConnectionStore();
 
 <style scoped>
 .trust-scrim {
+  /* Sized to the VISIBLE viewport, not `inset: 0`: when a view's content is
+     wider than a phone screen the WebView grows its layout viewport to fit,
+     and an `inset: 0` layer (and the fingerprint in it) would then run off
+     the right edge. `100vw`/`100dvh` stay the device's viewport. */
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100dvh;
   z-index: 1000;
   display: flex;
   align-items: center;
