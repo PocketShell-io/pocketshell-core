@@ -408,7 +408,12 @@ describe('host workspace roots over the host CLI', () => {
       }),
       connectionId,
     );
-    return { cli, release: () => held.splice(0).forEach((reply) => reply()), pending: () => held.length };
+    return {
+      cli,
+      release: () => held.splice(0).forEach((reply) => reply()),
+      pending: () => held.length,
+      takeAll: () => held.splice(0),
+    };
   }
 
   const rows = (roots: HostWorkspaceRoots) => roots.getState().memberships?.map((w) => w.path);
@@ -501,6 +506,55 @@ describe('host workspace roots over the host CLI', () => {
     expect(host.commands.filter((c) => c.includes(" --host 'g'") && c.includes(' add ')).length).toBe(1);
     expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/late-h']);
     expect(await roots.addRoot('/srv/q')).toBe(true);
+  });
+
+  it('writes only the latest listing when two listings land out of order', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    await roots.select({ hostIdentity: 'h', cli: host.cli('conn-1') });
+    const conn = heldLists(host, 'conn-2');
+    const older = roots.select({ hostIdentity: 'h', cli: conn.cli });
+    await settle();
+    // Another client registers a root between the two listings.
+    host.registry.set('h', ['/home/me/git', '/srv/other-client']);
+    const newer = roots.refresh();
+    await settle();
+    expect(conn.pending()).toBe(2);
+    // The newer answer lands first, then the older one.
+    const replies = conn.takeAll();
+    replies[1]!();
+    await settle();
+    expect(rows(roots)).toEqual(['/home/me/git', '/srv/other-client']);
+    replies[0]!();
+    await older;
+    await newer;
+    await settle();
+    expect(rows(roots)).toEqual(host.registry.get('h'));
+    expect(conn.pending()).toBe(0);
+  });
+
+  it('re-reads a listing that a reorder overlapped, like any other change', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git', '/home/me/tmp']);
+    const roots = model();
+    const conn = heldLists(host, 'conn-1');
+    const selecting = roots.select({ hostIdentity: 'h', cli: conn.cli });
+    await settle();
+    conn.release();
+    await settle();
+    await selecting;
+    const refreshing = roots.refresh();
+    await settle();
+    expect(roots.moveRoot('/home/me/tmp', -1)).toBe(true);
+    conn.release();
+    await settle();
+    // The overlapped listing was dropped and one more was sent.
+    expect(conn.pending()).toBe(1);
+    conn.release();
+    await refreshing;
+    expect(roots.ordered().map((w) => w.path)).toEqual(['/home/me/tmp', '/home/me/git']);
+    expect(roots.getState().status).toBe('ready');
   });
 
   it('never re-lists another host when a late reply for the previous host arrives', async () => {
