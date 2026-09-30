@@ -59,6 +59,15 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
     rootOrder: [],
   });
   const orderLoadError = ref<string | null>(null);
+  /**
+   * Host mode only: a registration change or a listing is in flight. The
+   * controls wait for both — a change made while a listing is out could be
+   * answered before that listing (the model re-reads in that case, so the
+   * rows stay true, but a user should not act on rows that are being read).
+   */
+  const rootsBusy = computed(
+    () => hostManaged.value && (state.value.mutating || state.value.status === 'loading'),
+  );
   const boundConnection = ref<string | null>(null);
   /** The in-flight (or settled) load for the current binding, so a second
    *  caller for the same binding waits on it instead of re-listing. */
@@ -130,7 +139,7 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
 
   async function add(host: string, path: string, home: string | null = null): Promise<boolean> {
     if (!hostManaged.value) return settings.addSessionRoot(host, path);
-    if (state.value.hostIdentity !== host) return false;
+    if (state.value.hostIdentity !== host || rootsBusy.value) return false;
     return ensureModel().addRoot(path, home);
   }
 
@@ -139,12 +148,12 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
       settings.removeSessionRoot(host, path);
       return true;
     }
-    if (state.value.hostIdentity !== host) return false;
+    if (state.value.hostIdentity !== host || rootsBusy.value) return false;
     return ensureModel().removeRoot(path);
   }
 
   function move(host: string, path: string, direction: -1 | 1, home: string | null = null): boolean {
-    if (!hostManaged.value || state.value.hostIdentity !== host) return false;
+    if (!hostManaged.value || state.value.hostIdentity !== host || rootsBusy.value) return false;
     return ensureModel().moveRoot(path, direction, home);
   }
 
@@ -155,6 +164,7 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
   return {
     hostManaged,
     state,
+    rootsBusy,
     orderLoadError,
     bind,
     refresh,
