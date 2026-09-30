@@ -123,9 +123,20 @@ async function onRevealAll(): Promise<void> {
 }
 
 /**
+ * Hide all's job is the mask, not the forget: every row goes dark in one
+ * gesture, but what was fetched stays fetched — the eye puts a single value
+ * back with no round trip, and Reveal all still pays its one `env get` when
+ * it wants a fresh read. Rows mid-edit keep their text: the dirty field is
+ * unmasked by being edited, and hides itself once the write lands.
+ */
+function onHideAll(): void {
+  for (const row of rows.value) row.visible = false;
+}
+
+/**
  * "4 keys · 3 in .env · 1 in .envrc" — the list's one quiet summary line,
- * which is also where the panel-level Reveal all lives, instead of floating
- * between the rows and the add form.
+ * which is also where the panel-level Reveal all / Hide all pair lives,
+ * instead of floating between the rows and the add form.
  */
 const keysSummary = computed(() => {
   const perFile = new Map<string, number>();
@@ -198,9 +209,17 @@ onMounted(load);
       <template v-else>
         <div class="list-meta">
           <span class="muted">{{ keysSummary }}</span>
-          <button type="button" class="btn-ghost reveal-all" @click="onRevealAll">
-            Reveal all
-          </button>
+          <!-- Both verbs stay offered whatever the list's state: on a fresh
+               panel Hide all is a no-op, on a revealed one Reveal all is a
+               re-read — neither state should hide its escape hatch. -->
+          <div class="bulk">
+            <button type="button" class="btn-ghost hide-all" @click="onHideAll">
+              Hide all
+            </button>
+            <button type="button" class="btn-ghost reveal-all" @click="onRevealAll">
+              Reveal all
+            </button>
+          </div>
         </div>
 
         <!-- One line per key, the Ports table's construction, read from both
@@ -333,7 +352,7 @@ onMounted(load);
 .empty-line {
   margin: 0;
 }
-/* The list's quiet head: what is in it, and the one bulk action. */
+/* The list's quiet head: what is in it, and the bulk pair. */
 .list-meta {
   display: flex;
   align-items: center;
@@ -346,8 +365,16 @@ onMounted(load);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The pair keeps a tighter gap than the summary's, one control's spacing. */
+.bulk {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: none;
+}
 /* `btn-ghost` at the table's density: the primitive's register, smaller. */
-.reveal-all {
+.reveal-all,
+.hide-all {
   height: var(--control-h-sm);
   font-size: var(--fs-200);
   flex: none;
