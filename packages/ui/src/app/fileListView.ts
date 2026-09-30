@@ -213,7 +213,8 @@ export type Crumb =
 //     strip is about 22 characters.
 //
 // Everything hidden stays reachable three ways regardless: the `…` menu, the
-// `title` on the strip, and the editable path bar (the pencil, or Ctrl+L).
+// `title` on the strip, and the editable path bar (double-click the strip, or
+// Ctrl+L).
 
 /**
  * Average advance of one character of `--fs-200` in `--font-ui` (Inter 12px),

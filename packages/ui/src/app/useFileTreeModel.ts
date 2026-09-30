@@ -62,6 +62,7 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
   inputEl: Ref<HTMLInputElement | null>;
   startEditing: () => Promise<void>;
   cancelEditing: () => void;
+  onStripDblclick: (e: MouseEvent) => void;
   onSubmit: () => Promise<void>;
 } {
   const { files } = deps;
@@ -310,13 +311,14 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
   // UP, so a path sitting in the clipboard — out of terminal output, a log, a
   // colleague's message — could not be used at all.
   //
-  // It is click-to-edit rather than a second permanent row, the way Explorer and
-  // VS Code do it. The breadcrumb strip already IS the "where am I" line, and
-  // spending another --tabbar-h on a control used a few times a session, in a
-  // pane whose whole job is a list, is not a trade this layout can afford (see
-  // the same reasoning behind the merged session bar). The pencil
-  // button is the affordance, so the feature does not depend on knowing a chord;
-  // Ctrl+L is there for people who expect it from every address bar they use.
+  // It is double-click-to-edit rather than a second permanent row, the way
+  // Explorer and VS Code do it. The breadcrumb strip already IS the "where am
+  // I" line, and spending another --tabbar-h on a control used a few times a
+  // session, in a pane whose whole job is a list, is not a trade this layout
+  // can afford (see the same reasoning behind the merged session bar). The
+  // double-click on the strip is the affordance, so the feature does not depend
+  // on knowing a chord; Ctrl+L is there for people who expect it from every
+  // address bar they use.
   //
   // Editing REPLACES the crumbs rather than sitting beside them, which also keeps
   // c9d4039's `~` collapsing intact by not touching the crumb builder at all.
@@ -341,6 +343,19 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
 
   function cancelEditing(): void {
     editing.value = false;
+  }
+
+  /**
+   * Double-click the strip to edit the path — the gesture that replaced the
+   * pencil button, on the theory that the strip IS the path bar, the way
+   * Explorer's address bar is. The strip's own controls keep their clicks: a
+   * double-click landing on an ancestor link or the `…` is two navigations or
+   * an open menu, never an editor, so those targets decline (the same
+   * `closest` guard `onListContextMenu` runs against the rows).
+   */
+  function onStripDblclick(e: MouseEvent): void {
+    if ((e.target as HTMLElement | null)?.closest?.('a, button')) return;
+    void startEditing();
   }
 
   /**
@@ -398,6 +413,7 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
     inputEl,
     startEditing,
     cancelEditing,
+    onStripDblclick,
     onSubmit,
   };
 }

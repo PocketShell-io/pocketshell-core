@@ -90,6 +90,7 @@ const {
   inputEl,
   startEditing,
   cancelEditing,
+  onStripDblclick,
   onSubmit,
 } = useFileTreeModel({ files, settings, connId, onEntry });
 
@@ -113,8 +114,8 @@ const {
  * one still a link to that directory. That is what keeps this a breadcrumb
  * rather than a decorative string, and NN/g's tooltip guidance is explicit
  * that a tooltip cannot be the only route to something you need in order to
- * act. The full path is also always one click away in the editable path bar
- * (the pencil, or Ctrl+L), and on the strip's own `title`.
+ * act. The full path is also always one double-click away in the editable
+ * path bar (Ctrl+L reaches the same field), and on the strip's own `title`.
  */
 const stripEl = ref<HTMLElement | null>(null);
 /** Pixels the crumb strip has to itself. `null` until the observer has run. */
@@ -365,8 +366,8 @@ function count(n: number): string {
   return n.toLocaleString();
 }
 
-// The path bar (click-to-edit, Ctrl+L) is the model's too, including why it
-// replaces the crumbs rather than sitting beside them.
+// The path bar (double-click-to-edit, Ctrl+L) is the model's too, including
+// why it replaces the crumbs rather than sitting beside them.
 
 /** Lets FilesView put the caret in either field, or jump home, from its keydown handler. */
 defineExpose({ editPath: startEditing, focusSearch, goRoot });
@@ -394,8 +395,15 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
         <!-- One scrolling-free line. `.crumbs` is the measured box: its width
              is what `buildCrumbs` fits the path into, which is why the ref is
              here and not on `.breadcrumb`. `:title` carries the full path, as
-             a supplement to the `…` menu and never as a substitute for it. -->
-        <span ref="stripEl" class="crumbs" :title="files.cwd">
+             a supplement to the `…` menu and never as a substitute for it —
+             and names the editing gesture, because with the pencil button gone
+             the tooltip is the only place the double-click advertises itself. -->
+        <span
+          ref="stripEl"
+          class="crumbs"
+          :title="`${files.cwd} (double-click to edit)`"
+          @dblclick="onStripDblclick"
+        >
           <span v-for="(c, i) in breadcrumbs" :key="i" class="crumb" :class="`is-${c.kind}`">
             <button
               v-if="c.kind === 'gap'"
@@ -481,9 +489,6 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
             @click="goRoot"
           >
             <AppIcon name="home" :size="14" />
-          </button>
-          <button class="icon-btn sm" title="Go to path (Ctrl+L)" @click="startEditing">
-            <AppIcon name="edit-2" :size="14" />
           </button>
           <button
             class="icon-btn sm"
@@ -744,6 +749,9 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  /* The strip double-clicks into the path bar, so the cells that are not
+     controls carry the text cursor; links and the `…` set their own. */
+  cursor: text;
 }
 /* Ancestors yield, the current folder does not. `buildCrumbs` has already
    picked cells that fit, so this is the belt to that braces: a few pixels of
