@@ -135,9 +135,9 @@ function onHideAll(): void {
 
 /**
  * "4 keys · 3 in .env · 1 in .envrc" — the list's one quiet summary line,
- * which is also where the panel-level Reveal all / Hide all pair lives,
- * instead of floating between the rows and the add form. It is the one place
- * a key's file is named — the rows carry no chip.
+ * which is also where the panel's one bulk verb lives, instead of floating
+ * between the rows and the add form. It is the one place a key's file is
+ * named — the rows carry no chip.
  */
 const keysSummary = computed(() => {
   const perFile = new Map<string, number>();
@@ -148,6 +148,9 @@ const keysSummary = computed(() => {
   const parts = [...perFile.entries()].map(([f, n]) => `${n} in ${f}`);
   return `${rows.value.length} keys · ${parts.join(' · ')}`;
 });
+
+/** True while nothing on screen is showing — the bulk verb's rest state. */
+const allHidden = computed(() => rows.value.every((row) => !row.visible));
 
 /**
  * A cheap key check before the host sees it. The helper has opinions about
@@ -216,17 +219,16 @@ onMounted(load);
       <template v-else>
         <div class="list-meta">
           <span class="muted">{{ keysSummary }}</span>
-          <!-- Both verbs stay offered whatever the list's state: on a fresh
-               panel Hide all is a no-op, on a revealed one Reveal all is a
-               re-read — neither state should hide its escape hatch. -->
-          <div class="bulk">
-            <button type="button" class="btn-ghost hide-all" @click="onHideAll">
-              Hide all
-            </button>
-            <button type="button" class="btn-ghost reveal-all" @click="onRevealAll">
-              Reveal all
-            </button>
-          </div>
+          <!-- One bulk verb, alternating with the list's state: anything on
+               screen and the offer is to mask it; nothing showing and the
+               offer is to read the whole env. -->
+          <button
+            type="button"
+            class="btn-ghost bulk-toggle"
+            @click="allHidden ? onRevealAll() : onHideAll()"
+          >
+            {{ allHidden ? 'Reveal all' : 'Hide all' }}
+          </button>
         </div>
 
         <!-- One line per key, the Ports table's construction, read from both
@@ -344,7 +346,7 @@ onMounted(load);
 .empty-line {
   margin: 0;
 }
-/* The list's quiet head: what is in it, and the bulk pair. */
+/* The list's quiet head: what is in it, and the one bulk verb. */
 .list-meta {
   display: flex;
   align-items: center;
@@ -357,16 +359,8 @@ onMounted(load);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The pair keeps a tighter gap than the summary's, one control's spacing. */
-.bulk {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: none;
-}
 /* `btn-ghost` at the table's density: the primitive's register, smaller. */
-.reveal-all,
-.hide-all {
+.bulk-toggle {
   height: var(--control-h-sm);
   font-size: var(--fs-200);
   flex: none;
