@@ -312,18 +312,26 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
                  sessions and names them; the run itself is capped in
                  `agentBadges`, and past it the tooltip is where the overflow
                  goes.
+                 The run is one span so the marks can lie on top of each other
+                 (`.agent-run`'s overlap) without the row's `--sp-2` gap
+                 pricing every one of them at 20px — the width the cap spends.
+                 Rendered only when there IS a run: an empty flex item would
+                 still collect two gaps where the label and the timestamp
+                 used to have one.
                  Keyed by index, not by kind: the kinds repeat now, and a
                  duplicated key is a Vue warning and broken patching. -->
-            <template v-for="(view, i) in badgeViews(dir)" :key="i">
-              <AppIcon
-                v-if="view.mark"
-                :name="view.mark.icon"
-                :size="12"
-                :title="view.mark.label"
-                class="agent-mark"
-              />
-              <span v-else class="agent-badge">{{ view.text }}</span>
-            </template>
+            <span v-if="badgeViews(dir).length" class="agent-run">
+              <template v-for="(view, i) in badgeViews(dir)" :key="i">
+                <AppIcon
+                  v-if="view.mark"
+                  :name="view.mark.icon"
+                  :size="12"
+                  :title="view.mark.label"
+                  class="agent-mark"
+                />
+                <span v-else class="agent-badge">{{ view.text }}</span>
+              </template>
+            </span>
             <!-- The folder's age is its NEWEST session's, and it is
                  INDEPENDENT of where the row sits: the list is in the host's
                  order — or the sort the user picked (folderSort.ts) — plus the
@@ -673,6 +681,55 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 .agent-mark {
   flex: none;
   color: var(--fg-muted);
+}
+/* ── The badge run: stacked at rest, spread under the cursor ──────────────
+   The run is priced by the row's `--sp-2` gap as long as the marks are its
+   direct children — 20px a mark, which is what forced `agentBadges`' cap of
+   four and made a folder's row disagree with its own tab strip (six tabs,
+   four marks). One span, its own flex formatting, and the mark-on-mark
+   overlap buys each extra mark down to 8px, so the cap can rise to the
+   tooltip's six and the row reads as its tabs again.
+
+   At rest each mark after the first lies 4px deep on its neighbor —
+   `margin-left: -4px` against no run gap — enough to read as one compact
+   run without mangling 12px glyphs; the marks are monochrome line art at
+   `--fg-muted`, so the pile stays one texture. Under the cursor (or
+   `:focus-visible`, the root-add's rule: a keyboard user sees what they
+   tabbed to) the same margin walks out to `--sp-1` and the run blooms
+   apart — the reading order the stack is compressed FROM. `@media
+   (hover: none)` keeps it spread: a pointer that cannot hover would never
+   see the bloom at all.
+
+   The spread is a real layout change — margin, not transform — and that is
+   the honest cost of the effect: the timestamp is pinned by its own auto
+   margin and cannot move, so the one thing a wider run can shift is where
+   an ALREADY-ellipsed label cuts. The root-add rule — "a row that changes
+   width under the pointer is worse" — is about an affordance appearing;
+   here the movement is the affordance, asked for outright ("spreading a
+   little on hover"), and it settles the moment the cursor leaves. */
+.agent-run {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+/* Word chips (`probing…`, `exited`) have borders and need a breath between
+   neighbours, whatever they stand next to; mark-on-mark (the rule below)
+   overrides it with the overlap. */
+.agent-run > * + * {
+  margin-left: var(--sp-1);
+}
+.agent-run > .agent-mark + .agent-mark {
+  margin-left: -4px;
+  transition: margin-left var(--dur-fast) var(--ease);
+}
+.dir-header:hover .agent-run > .agent-mark + .agent-mark,
+.dir-header:focus-visible .agent-run > .agent-mark + .agent-mark {
+  margin-left: var(--sp-1);
+}
+@media (hover: none) {
+  .agent-run > .agent-mark + .agent-mark {
+    margin-left: var(--sp-1);
+  }
 }
 /* The transient detector states keep a WORD, not a logo — a state is not a
    product — in the shared chip metric, dim register only: transparent

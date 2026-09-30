@@ -122,13 +122,16 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
  * many" lives now.
  *
  * The run is capped so a folder with a dozen sessions cannot push the
- * timestamp off the row. At the 232px panel floor a row has ~186px past the
- * label indent (SessionTreeRows' indent budget), a 12px mark and its gap cost
- * 20px, so four marks still leave the label a usable hundred; past the cap
- * the run simply stops, and the tooltip — whose own name list caps at six —
- * is where the overflow goes.
+ * timestamp off the row. The row's marks stack now (SessionTreeRows'
+ * `.agent-run` lays mark on mark, 4px deep), so a mark costs 8px where it
+ * used to cost 20 — six marks are 52px of the ~186px a row has past the
+ * label indent at the 232px panel floor, and the label keeps the rest. Six
+ * is also the tooltip's own name limit (`TOOLTIP_NAME_LIMIT`), so the run
+ * and the list that names the sessions agree, and a folder's row no longer
+ * reads as fewer sessions than its tab strip wears. Past the cap the run
+ * simply stops, and the tooltip is where the overflow goes.
  */
-const FOLDER_BADGE_LIMIT = 4;
+const FOLDER_BADGE_LIMIT = 6;
 
 export type AgentBadgeKind = Exclude<SessionAgentKind, 'shell' | 'unknown'>;
 
