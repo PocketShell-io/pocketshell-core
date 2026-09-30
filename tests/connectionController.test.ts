@@ -90,6 +90,7 @@ class FakeCapability {
   }> = [];
   private readonly queuedOutput = new Map<string, Array<{ bytes: Uint8Array; eof: boolean }>>();
   readonly sessions: SessionRow[] = [session('alpha'), session('beta')];
+  listErrors: Array<{ message: string }> = [];
   createRequests = 0;
   killRequests = 0;
   createAfterApplyFailure = false;
@@ -158,7 +159,11 @@ class FakeCapability {
         connectionId: options.connectionId,
         generationId: options.generationId,
         exitCode: 0,
-        stdout: JSON.stringify({ schema: 3, sessions: this.sessions.map(({ name, id, workspace, tag, attached }) => ({ name, id, workspace, tag, attached })) }),
+        stdout: JSON.stringify({
+          schema: 3,
+          sessions: this.sessions.map(({ name, id, workspace, tag, attached }) => ({ name, id, workspace, tag, attached })),
+          errors: this.listErrors,
+        }),
         stderr: '',
         timedOut: false,
       };
@@ -414,6 +419,32 @@ describe('JS connection and session policy', () => {
     expect(changed.controller.getSnapshot().trustDecision?.reason).toBe('mismatch');
     expect((await changed.controller.acceptPresentedHostKey()).ok).toBe(true);
     expect(changedTrust.current()).toEqual(PIN);
+  });
+
+  it('carries host-reported session list errors into the snapshot and clears them when the host recovers', async () => {
+    const capability = new FakeCapability();
+    capability.sessions.splice(0);
+    capability.listErrors = [{ message: 'aplexer snapshot failed' }];
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    expect(controller.getSnapshot().sessions).toEqual([]);
+    expect(controller.getSnapshot().sessionListErrors).toEqual([{ message: 'aplexer snapshot failed' }]);
+
+    // A mutation's follow-up listing refreshes the errors too.
+    capability.listErrors = [{ message: 'one' }, { message: 'two' }];
+    expect((await controller.createSession('gamma')).ok).toBe(true);
+    expect(controller.getSnapshot().sessionListErrors.map((row) => row.message)).toEqual(['one', 'two']);
+
+    capability.listErrors = [];
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    expect(controller.getSnapshot().sessionListErrors).toEqual([]);
+
+    capability.listErrors = [{ message: 'stale' }];
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    await controller.close();
+    expect(controller.getSnapshot().sessionListErrors).toEqual([]);
   });
 
   it('routes list and attach through HostCliCore and switches sessions on one SSH connection', async () => {

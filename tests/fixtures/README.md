@@ -38,6 +38,13 @@ The `sessions-warnings-reference.json` fixture in
 `host-cli-current-source/` is a source contract fixture copied from Android's
 host API tests. It pins parsing and selector rules for the newer warnings
 command, but it is not represented as output from the published 0.5.8 Docker
-image. Do not change these version labels or turn unsupported-command failures
+image.
+
+`host-cli-current-source/sessions-ack-no-match.json` is real stdout captured
+from unreleased pocketshell-cli `main` (`80557f0`, run from source with
+`uv run pocketshell sessions ack --json -- nope` under an empty `$HOME`): exit
+1, this `{"schema":1,"error":…}` envelope on stdout, and an empty stderr. It
+pins `ackWarnings` reporting the stdout error detail. It is not published-CLI
+output either. Do not change these version labels or turn unsupported-command failures
 into success-shaped empty values until a new published CLI is pinned and
 captured.

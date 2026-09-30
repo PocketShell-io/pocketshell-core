@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../ipc';
-import type { ConnectionId, SessionSummary } from '@pocketshell/core';
+import type { ConnectionId, SessionSummary, SessionsListResult } from '@pocketshell/core';
 import { errorMessage } from '@pocketshell/core/shared/errors';
 import type { StartSessionResult } from '@pocketshell/core';
 
@@ -49,6 +49,13 @@ export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<SessionSummary[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /**
+   * The host's `errors[]` from the last listing that came back. Non-empty
+   * means the host could not read part of its session state, so
+   * {@link sessions} may be incomplete (SessionListErrorBanner says so). A
+   * failed refresh leaves it alone, exactly as it leaves the stale list.
+   */
+  const listErrors = ref<SessionsListResult['errors']>([]);
 
   /**
    * How long a pending row survives without a refresh confirming it.
@@ -257,7 +264,11 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (!options?.quiet) loading.value = true;
     error.value = null;
     try {
-      sessions.value = mergeKilled(mergePending(await api.helper.sessionsList(connectionId, 'activity')));
+      const listing: SessionsListResult = api.helper.sessionsListing
+        ? await api.helper.sessionsListing(connectionId, 'activity')
+        : { sessions: await api.helper.sessionsList(connectionId, 'activity'), errors: [] };
+      sessions.value = mergeKilled(mergePending(listing.sessions));
+      listErrors.value = listing.errors;
     } catch (e) {
       error.value = errorMessage(e);
     } finally {
@@ -318,12 +329,14 @@ export const useSessionsStore = defineStore('sessions', () => {
     pendingRows.value = [];
     killedRows.value = [];
     error.value = null;
+    listErrors.value = [];
   }
 
   return {
     sessions,
     loading,
     error,
+    listErrors,
     refresh,
     addPending,
     removeLocal,

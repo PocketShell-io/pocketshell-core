@@ -1,0 +1,4 @@
+{
+  "schema": 1,
+  "error": "exit: exit 1: a: no matching unacknowledged warning; `a warnings` lists them"
+}

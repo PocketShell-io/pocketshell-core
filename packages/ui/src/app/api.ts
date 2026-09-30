@@ -46,6 +46,7 @@ import type {
   SavedHostInput,
   SavedHostSnapshot,
   SessionSummary,
+  SessionsListResult,
   ShellId,
   StageAttachmentsResult,
   StartSessionRequest,
@@ -142,6 +143,14 @@ export interface PocketShellApi {
     "helper": {
     "bootstrap": (connectionId: string) => Promise<BootstrapResult>;
     "sessionsList": (connectionId: string, sortBy?: 'activity' | 'created') => Promise<SessionSummary[]>;
+    /**
+     * The listing WITH the host's `errors[]`. Optional: a platform that can
+     * read the host errors (Android's HostCliCore path) provides it and the
+     * session panel prefers it, so a partially readable host shows "Some
+     * sessions may be missing" instead of looking empty. A platform without
+     * it keeps `sessionsList` and reports no list errors.
+     */
+    "sessionsListing"?: (connectionId: string, sortBy?: 'activity' | 'created') => Promise<SessionsListResult>;
     "sessionsCreate": (connectionId: string, name: string, cwd: string) => Promise<boolean>;
     "usage": (connectionId: string) => Promise<UsageRow[]>;
     "warnings": (connectionId: string) => Promise<AplexerWarning[]>;

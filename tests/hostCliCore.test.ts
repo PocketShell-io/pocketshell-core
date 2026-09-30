@@ -10,6 +10,7 @@ import {
   parseHostEnginesList,
   parseHostProfilesList,
   parseHostWorkspaces,
+  sessionListErrorNotice,
   type HostCliExecOutcome,
   type HostCliTransport,
 } from '../src/index';
@@ -190,6 +191,32 @@ describe('HostCliCore warnings contract', () => {
       stderr: expect.stringContaining("No such command 'ack'"),
     });
   });
+
+  it('reports the stdout JSON error when `sessions ack --json` fails with empty stderr', async () => {
+    // Captured from pocketshell-cli main: `sessions ack --json -- nope` exits 1,
+    // prints `{"schema":1,"error":…}` on stdout, and leaves stderr empty.
+    const stdout = readFileSync(
+      new URL('./fixtures/host-cli-current-source/sessions-ack-no-match.json', import.meta.url),
+      'utf8',
+    );
+    const ack = new HostCliCore(new ScriptedTransport({ exitCode: 1, stdout, stderr: '' }));
+    const failure = ack.ackWarnings('nope');
+    await expect(failure).rejects.toBeInstanceOf(HostCliFailed);
+    await expect(failure).rejects.toMatchObject<Partial<HostCliFailed>>({
+      exitCode: 1,
+      command: "pocketshell sessions ack --json -- 'nope'",
+      message: expect.stringContaining('no matching unacknowledged warning'),
+    });
+
+    // stderr still wins when the host wrote one, and a non-JSON stdout is not
+    // mistaken for a structured error.
+    const withStderr = new HostCliCore(new ScriptedTransport({ exitCode: 1, stdout, stderr: 'boom\n' }));
+    await expect(withStderr.ackWarnings(null)).rejects.toMatchObject({ message: expect.stringMatching(/boom$/) });
+    const garbage = new HostCliCore(new ScriptedTransport({ exitCode: 1, stdout: 'not json', stderr: '' }));
+    await expect(garbage.ackWarnings(null)).rejects.toMatchObject({
+      message: '`pocketshell sessions ack --json` failed on the host (exit 1).',
+    });
+  });
 });
 
 describe('HostCliCore workspaces contract', () => {
@@ -309,5 +336,22 @@ describe('HostCliCore engine and profile catalog contract', () => {
       .rejects.toThrow(HostCliMalformed);
     await expect(new HostCliCore(new ScriptedTransport({ exitCode: 127, stdout: '', stderr: 'missing cli' }))
       .listProfiles()).rejects.toThrow(HostCliFailed);
+  });
+});
+
+describe('sessionListErrorNotice', () => {
+  it('names the distinct host messages from the captured errors listing', () => {
+    const listing = parseHostSessionsList(fixture('sessions-list-errors.json'));
+    expect(sessionListErrorNotice(listing.errors)).toBe(
+      'Some sessions may be missing: `/does/not/exist --json snapshot` and `/does/not/exist --json list` both failed or returned unreadable JSON',
+    );
+  });
+
+  it('is null without errors, dedupes, and still warns when every message is blank', () => {
+    expect(sessionListErrorNotice([])).toBeNull();
+    expect(sessionListErrorNotice([{ message: 'a' }, { message: ' a ' }, { message: 'b' }]))
+      .toBe('Some sessions may be missing: a, b');
+    expect(sessionListErrorNotice([{ message: '  ' }]))
+      .toBe('Some sessions may be missing: the host could not read part of its session list.');
   });
 });

@@ -86,6 +86,7 @@ import type { SessionSummary } from '@pocketshell/core';
 import { useFolderMenu } from '../useFolderMenu';
 import { useFolderStop } from '../useFolderStop';
 import CrashWarningBanner from './CrashWarningBanner.vue';
+import SessionListErrorBanner from './SessionListErrorBanner.vue';
 import { useWarningsStore } from '../stores/warnings';
 import { useSessionTreePoll } from '../useSessionTreePoll';
 import { useSessionSearch } from '../useSessionSearch';
@@ -577,6 +578,8 @@ defineExpose({ openCreate });
          died badly is the one fact about this host the panel must not let
          the user scroll past. No dismiss — only `a ack`, one row or all. -->
     <CrashWarningBanner :now="now" />
+    <!-- The host's listing `errors[]`: the rows below may be incomplete. -->
+    <SessionListErrorBanner />
 
     <SessionTreeRows
       :active-folder="activeFolder"
