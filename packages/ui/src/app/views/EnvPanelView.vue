@@ -158,7 +158,13 @@ function keyIsSane(key: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
 }
 
-/** Write one row's value back to the file it came from. */
+/**
+ * Write one row's value back to the file it came from — the field's Enter,
+ * not a button: the reserved Save slot spent every row's right edge on
+ * chrome that only a dirty row ever used. And the write stays on Enter, not
+ * blur: the stray click that means "copy this value" must never be able to
+ * commit a corrupted one.
+ */
 async function onSave(row: EnvRow): Promise<void> {
   if (!row.dirty || row.saving) return;
   row.saving = true;
@@ -234,10 +240,12 @@ onMounted(load);
              negotiated into "spacer absorbs the slack, value holds its width"
              — a percentage spacer starves the value cell to its minimum. The
              value field yields first on a narrow dock (`min-width: 0`), the
-             key ellipsises last. The action cell holds the eye and the row's
-             Save in FIXED slots — `v-show` + the ghosted class, never `v-if`
-             — so the column cannot resize under the caret the moment a row
-             goes dirty. -->
+             key ellipsises last. The action cell is the eye alone, at the
+             row's right edge; while the field is edited (or its write is in
+             flight) the eye steps aside GHOSTED — `visibility`, never `v-if`
+             or `v-show` — so its box holds and the field's edge cannot move
+             under the caret. The write itself is the field's Enter; the row
+             carries no button for it. -->
         <div class="env-rows">
           <div v-for="row in rows" :key="row.key" class="env-row">
             <span class="c-key" :title="row.key">{{ row.key }}</span>
@@ -262,32 +270,20 @@ onMounted(load);
             </div>
             <div class="c-actions">
               <!-- The eye: fetch-and-show the first time, show/hide after.
-                   Retired (slot kept) while the field is edited — there is
-                   no editing a secret you cannot see, and once edited there
-                   is nothing left for the eye to offer. -->
+                   While the field is edited it steps aside ghosted (slot
+                   kept) — there is no editing a secret you cannot see, and
+                   once edited there is nothing left for the eye to offer. -->
               <button
                 v-if="row.hasValue"
-                v-show="!row.dirty && !row.saving"
                 type="button"
                 class="icon-btn sm eye-btn"
+                :class="{ ghosted: row.dirty || row.saving }"
                 :aria-pressed="row.visible"
                 :title="row.revealed ? (row.visible ? 'Hide value' : 'Show value') : 'Fetch and show the value'"
                 :aria-label="row.revealed ? (row.visible ? `Hide the value of ${row.key}` : `Show the value of ${row.key}`) : `Fetch and show the value of ${row.key}`"
                 @click="onEye(row)"
               >
                 <AppIcon :name="row.visible ? 'eye-off' : 'eye'" :size="14" />
-              </button>
-              <!-- Save only ever exists for a change worth writing; clean
-                   it keeps its slot, invisible, so the row's width holds. -->
-              <button
-                type="button"
-                class="row-save"
-                :class="{ ghosted: !row.dirty && !row.saving }"
-                :disabled="row.saving"
-                :title="row.dirty ? 'Write to the host' : 'Unchanged'"
-                @click="onSave(row)"
-              >
-                {{ row.saving ? 'Saving…' : 'Save' }}
               </button>
             </div>
           </div>
@@ -314,7 +310,7 @@ onMounted(load);
           spellcheck="false"
           autocomplete="off"
         />
-        <button class="row-save add" type="submit" :disabled="!keyIsSane(newKey.trim()) || adding">
+        <button class="row-save" type="submit" :disabled="!keyIsSane(newKey.trim()) || adding">
           {{ adding ? 'Adding…' : 'Add key' }}
         </button>
       </form>
@@ -457,24 +453,26 @@ onMounted(load);
 .value-input:disabled {
   opacity: var(--disabled-opacity);
 }
-/* One action cell, fixed-width slots: the eye keeps its box while edited
-   (`v-show`), Save keeps its box while clean (`.ghosted`), so neither state
-   change can resize the row under the caret. */
+/* One action cell, the eye alone: ghosted while the field is edited or its
+   write is in flight — `visibility`, so the box holds and the row's right
+   edge cannot move under the caret. */
 .c-actions {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--sp-1);
 }
 .eye-btn {
   flex: none;
 }
+.eye-btn.ghosted {
+  visibility: hidden;
+}
+/* The add form's submit — the one button left in the panel; the rows'
+   writes are the field's Enter. */
 .row-save {
   flex: none;
-  /* Fixed width so 'Save' and 'Saving…' occupy the same box — the action
-     column cannot breathe when a write starts. */
-  width: 64px;
+  min-width: 64px;
   height: var(--control-h-sm);
   padding: 0 var(--sp-1);
   border: 1px solid var(--border);
@@ -486,16 +484,13 @@ onMounted(load);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.row-save:hover:not(:disabled):not(.ghosted) {
+.row-save:hover:not(:disabled) {
   color: var(--fg);
   background: var(--state-hover);
 }
 .row-save:disabled {
   opacity: var(--disabled-opacity);
   cursor: default;
-}
-.row-save.ghosted {
-  visibility: hidden;
 }
 .save-error {
   margin: 0;
@@ -518,10 +513,6 @@ onMounted(load);
 }
 .add-row .value-input {
   flex: 1 1 0;
-}
-.row-save.add {
-  width: auto;
-  min-width: 64px;
 }
 .hint {
   margin: 0;
