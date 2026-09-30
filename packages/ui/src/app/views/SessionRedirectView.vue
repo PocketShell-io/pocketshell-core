@@ -75,7 +75,9 @@ onMounted(async () => {
   }
   // Host-registered roots decide which folder a session is filed under, so a
   // cold start waits for this host's listing (a no-op in the Settings mode).
-  if (connectionId) await workspaceRoots.bind(connectionId, host);
+  if (connectionId && connection.activeHost?.name === host) {
+    await workspaceRoots.bind(connectionId, connection.activeHost);
+  }
 
   const folder = session ? folderFor(host, session) : null;
   // `void`: vue-router rejects the returned promise on an aborted or redirected

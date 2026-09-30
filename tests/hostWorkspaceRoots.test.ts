@@ -557,6 +557,24 @@ describe('host workspace roots over the host CLI', () => {
     expect(roots.getState().status).toBe('ready');
   });
 
+  it('keeps saying loading while a listing that landed during a change is re-read', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    const conn = heldAdds(host, 'conn-1');
+    await roots.select({ hostIdentity: 'h', cli: conn.cli });
+    const adding = roots.addRoot('/srv/new');
+    await settle();
+    await roots.refresh();
+    // The listing landed while the add runs: deferred, and the view says so.
+    expect(roots.getState()).toMatchObject({ status: 'loading', mutating: true });
+    conn.release();
+    expect(await adding).toBe(true);
+    await settle();
+    expect(roots.getState()).toMatchObject({ status: 'ready', mutating: false });
+    expect(roots.getState().memberships?.map((w) => w.path)).toEqual(host.registry.get('h'));
+  });
+
   it('never re-lists another host when a late reply for the previous host arrives', async () => {
     const host = new FakeHost();
     host.registry.set('h', ['/home/me/git']);

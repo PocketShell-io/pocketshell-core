@@ -2,9 +2,11 @@ import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import {
   HostWorkspaceRoots,
+  hostEntryId,
   RestoredWorkspaceRootsLedger,
   WorkspaceRootOrderStore,
   workspaceRootsCliForConnection,
+  type HostEntry,
   type WorkspaceMembership,
   type WorkspaceRootsState,
   type WorkspaceStringStorage,
@@ -69,6 +71,13 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
     () => hostManaged.value && (state.value.mutating || state.value.status === 'loading'),
   );
   const boundConnection = ref<string | null>(null);
+  /**
+   * The bound host's alias. Callers (the tree, Settings) address a host by
+   * its alias; the host CLI registry and the persisted order are keyed by its
+   * stable identity (`hostEntryId`: the saved host's id, else the alias), so
+   * a renamed saved host keeps its roots and order.
+   */
+  const boundName = ref('');
   /** The in-flight (or settled) load for the current binding, so a second
    *  caller for the same binding waits on it instead of re-listing. */
   let bindTask: Promise<void> = Promise.resolve();
@@ -87,24 +96,33 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
   }
 
   /**
-   * Follow the active connection. `host` is the stable host identity (the SSH
-   * alias on desktop, the saved-host id on a phone); an empty host or a null
-   * connection clears the host-scoped state.
+   * Follow the active connection. The host is keyed by `hostEntryId` (the
+   * saved host's stable id, else its SSH alias); a null host or connection
+   * clears the host-scoped state.
    */
-  async function bind(connectionId: string | null, host: string): Promise<void> {
+  async function bind(
+    connectionId: string | null,
+    entry: Pick<HostEntry, 'id' | 'name'> | null,
+  ): Promise<void> {
+    const host = entry ? hostEntryId(entry) : '';
     const workspaces = api.workspaces;
     if (!workspaces) return;
     const roots = ensureModel();
     const key = connectionId && host ? `${connectionId}\u0000${host}` : '';
+    // A rename keeps the identity (and so the binding); follow the new alias.
+    if (key && key === bindKey && entry) boundName.value = entry.name;
     if (key === bindKey) return bindTask;
     bindKey = key;
-    if (!connectionId || !host) {
+    if (!connectionId || !host || !entry) {
       boundConnection.value = null;
+      boundName.value = '';
       bindTask = roots.select(null);
       return bindTask;
     }
     boundConnection.value = connectionId;
-    const local = settings.sessionRootsFor(host);
+    boundName.value = entry.name;
+    // The Settings list is keyed by alias; it is only read, as the restore source.
+    const local = settings.sessionRootsFor(entry.name);
     bindTask = roots.select({
       hostIdentity: host,
       cli: workspaceRootsCliForConnection(workspaces, connectionId),
@@ -119,7 +137,7 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
 
   /** The registered roots, in display order, as membership rows. */
   function membershipsFor(host: string, home: string | null = null): WorkspaceMembership[] {
-    if (!hostManaged.value || !host || state.value.hostIdentity !== host) return [];
+    if (!hostManaged.value || !host || !isBound(host)) return [];
     // Read the reactive state so a computed over this call re-runs on change.
     void state.value.memberships;
     void state.value.rootOrder;
@@ -137,9 +155,14 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
     return membershipsFor(host, home).map((workspace) => workspace.path);
   }
 
+  /** Is [host] (an alias) the host this store is bound to? */
+  function isBound(host: string): boolean {
+    return state.value.hostIdentity !== null && boundName.value === host;
+  }
+
   async function add(host: string, path: string, home: string | null = null): Promise<boolean> {
     if (!hostManaged.value) return settings.addSessionRoot(host, path);
-    if (state.value.hostIdentity !== host || rootsBusy.value) return false;
+    if (!isBound(host) || rootsBusy.value) return false;
     return ensureModel().addRoot(path, home);
   }
 
@@ -148,12 +171,12 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
       settings.removeSessionRoot(host, path);
       return true;
     }
-    if (state.value.hostIdentity !== host || rootsBusy.value) return false;
+    if (!isBound(host) || rootsBusy.value) return false;
     return ensureModel().removeRoot(path);
   }
 
   function move(host: string, path: string, direction: -1 | 1, home: string | null = null): boolean {
-    if (!hostManaged.value || state.value.hostIdentity !== host || rootsBusy.value) return false;
+    if (!hostManaged.value || !isBound(host) || rootsBusy.value) return false;
     return ensureModel().moveRoot(path, direction, home);
   }
 
@@ -186,9 +209,9 @@ export function useWorkspaceRootsBinding(): void {
   const connection = useConnectionStore();
   const workspaceRoots = useWorkspaceRootsStore();
   watch(
-    () => [connection.connectionId, connection.activeHost?.name ?? ''] as const,
+    () => [connection.connectionId, connection.activeHost, connection.activeHost?.name] as const,
     ([connectionId, host]) => {
-      void workspaceRoots.bind(connectionId, host);
+      void workspaceRoots.bind(connectionId, host ?? null);
     },
     { immediate: true },
   );
