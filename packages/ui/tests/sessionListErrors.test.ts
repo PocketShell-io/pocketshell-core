@@ -83,4 +83,33 @@ describe('session list errors in the shared session panel', () => {
     expect(store.listErrors).toEqual([]);
     expect(await renderBanner()).not.toContain('session-list-errors');
   });
+
+  it('treats a catch-all transport whose sessionsListing answers undefined as "capability absent"', async () => {
+    // The desktop suite's doubles make every helper.* key callable and
+    // resolve undefined; the store must fall back to sessionsList, not
+    // crash or show an empty host.
+    let listCalls = 0;
+    const helper = new Proxy({}, {
+      get: (_target, key: string) => key === 'sessionsList'
+        ? async () => { listCalls += 1; return [row('alpha')]; }
+        : async () => undefined,
+    });
+    provideApi({ helper } as unknown as PocketShellApi);
+    const store = useSessionsStore();
+    await store.refresh('conn-1');
+    expect(store.error).toBeNull();
+    expect(listCalls).toBe(1);
+    expect(store.sessions.map((s) => s.name)).toEqual(['alpha']);
+    expect(store.listErrors).toEqual([]);
+
+    // A malformed answer (errors not an array of { message }) is not a listing either.
+    provideHelper({
+      sessionsListing: async () => ({ sessions: [], errors: [{ nope: 1 }] }) as unknown as SessionsListResult,
+      sessionsList: async () => [row('beta')],
+    });
+    await store.refresh('conn-1');
+    expect(store.sessions.map((s) => s.name)).toEqual(['beta']);
+    expect(store.listErrors).toEqual([]);
+  });
 });
+

@@ -87,6 +87,21 @@ export function sessionListErrorNotice(errors: readonly SessionListError[]): str
     : 'Some sessions may be missing: the host could not read part of its session list.';
 }
 
+/**
+ * Whether a platform's `helper.sessionsListing` answer is a real listing:
+ * `{ sessions: [], errors: [{ message }] }`. The shared session store treats
+ * anything else (an absent capability, a catch-all test double answering
+ * `undefined`) as "no listing capability" and uses `sessionsList` instead.
+ */
+export function isSessionsListResult(value: unknown): value is { sessions: unknown[]; errors: SessionListError[] } {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { sessions?: unknown; errors?: unknown };
+  return Array.isArray(candidate.sessions)
+    && Array.isArray(candidate.errors)
+    && candidate.errors.every((error) =>
+      typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string');
+}
+
 /** Parse the schema-3 output from `pocketshell sessions list --json`. */
 export function parseHostSessionsList(raw: string): SessionsListing {
   const root = parseObject(raw);

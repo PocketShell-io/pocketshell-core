@@ -10,6 +10,7 @@ import {
   parseHostEnginesList,
   parseHostProfilesList,
   parseHostWorkspaces,
+  isSessionsListResult,
   sessionListErrorNotice,
   type HostCliExecOutcome,
   type HostCliTransport,
@@ -370,5 +371,15 @@ describe('sessionListErrorNotice', () => {
       .toBe('Some sessions may be missing: a, b');
     expect(sessionListErrorNotice([{ message: '  ' }]))
       .toBe('Some sessions may be missing: the host could not read part of its session list.');
+  });
+});
+
+describe('isSessionsListResult', () => {
+  it('accepts only a { sessions: [], errors: [{ message }] } listing', () => {
+    expect(isSessionsListResult({ sessions: [], errors: [] })).toBe(true);
+    expect(isSessionsListResult({ sessions: [{ name: 'a' }], errors: [{ message: 'x' }] })).toBe(true);
+    for (const value of [undefined, null, [], 'x', { sessions: [] }, { errors: [] }, { sessions: [], errors: [{}] }, { sessions: {}, errors: [] }]) {
+      expect(isSessionsListResult(value), JSON.stringify(value)).toBe(false);
+    }
   });
 });

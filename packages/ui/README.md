@@ -43,8 +43,11 @@ specified by the rewrite plan.
 Build, typecheck and test this source standalone with `npm run build`,
 `npm run typecheck` and `npm run test` in this directory (core's CI gates all
 three), or from the desktop repo with `npm run build:ui` and
-`npm run typecheck:ui`. `npm run test` covers store and pure-module logic
-(`tests/`); components are rendered by the clients' own suites.
+`npm run typecheck:ui`. `npm run test` runs every `tests/**/*.test.ts` under
+the one shared-UI setup (`vitest.config.ts`): stores, pure modules and
+components. `.vue` files compile through the Vue plugin and can be mounted with
+`@vue/test-utils`; the default environment is `node`, and a spec that needs a
+DOM starts with `// @vitest-environment jsdom` (desktop's convention).
 
 Host list: a platform that reads its hosts (desktop `~/.ssh/config`, the web's
 synced account) implements `ssh.listConfigHosts`. A platform that owns its
