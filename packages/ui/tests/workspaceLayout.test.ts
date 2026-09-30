@@ -3,7 +3,7 @@ import {
   NARROW_WORKSPACE_MAX_WIDTH,
   NARROW_WORKSPACE_QUERY,
   resolveWorkspaceLayout,
-} from '../packages/ui/src/app/workspaceLayout';
+} from '../src/app/workspaceLayout';
 
 describe('host workspace layout', () => {
   it('keeps the wide side-by-side layout whatever is open', () => {
