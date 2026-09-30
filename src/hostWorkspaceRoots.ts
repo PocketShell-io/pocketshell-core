@@ -435,9 +435,9 @@ export class HostWorkspaceRoots {
     // (2) A newer listing is out: it answers for the view, this one is moot.
     if (sequence !== this.listSequence) return;
     if (this.busy()) {
-      // (4) Read again once the running change has settled.
+      // (4) Read again once the running change has settled. The rows are
+      // still owed a fresh read, so the view keeps saying `loading`.
       this.relistAfterOperation = true;
-      this.set({ status: 'ready' });
       return;
     }
     if (generation !== this.generation) {
