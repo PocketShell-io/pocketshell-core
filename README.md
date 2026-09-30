@@ -20,6 +20,7 @@ Android WebView.
 | --- | --- |
 | `types` | hosts, sessions, forward specs — the shared vocabulary |
 | `sync`, `syncConfig`, `syncMerge` | the settings-sync payload: assemble, serialize, parse, merge |
+| `syncRound` | the one pull → auto-check → assemble → push → conflict-retry loop over injected platform effects |
 | `sshConfigCore` | `~/.ssh/config` directive parsing and host folding |
 | `knownHostsCore` | host-key tokens, verdicts, blob decode |
 | `osc52` | OSC 52 clipboard decode |
@@ -29,6 +30,8 @@ Android WebView.
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | UTF-8 framing, serialized insert/submit, submit timing, draft retention and uncertain-send outcomes |
 | `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
+| `sshExec` | the checked exec: request/connection/generation echo verification, stderr summary, request ids |
+| `usageSource`, `remotePortScan`, `portForwardController` | provider usage, listener scan + cwd labels, and the port-forward reconcile controller, all over `SshCapability` |
 | `sftpCore` | SFTP listing/entry rules both clients' Files panes share |
 | `shellQuote`, `userBinPath`, `net`, `byteSize` | quoting, `~/.local/bin`, loopback/port constants, byte formatting |
 
