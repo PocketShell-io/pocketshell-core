@@ -1,5 +1,5 @@
 import { HostCliCore } from './hostCliCore';
-import { HostCliFailed, type HostCliTransport } from './hostCliCommon';
+import { HostCliFailed, type HostCliExecOutcome, type HostCliTransport } from './hostCliCommon';
 import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
 import {
   acceptedHostKeyPin,
@@ -408,6 +408,36 @@ export class ConnectionController {
       const message = error instanceof Error ? error.message : String(error);
       this.setSnapshot({ phase: 'error', error: message });
       if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY attach failed after transport loss');
+      return { ok: false, reason: 'failed', message };
+    }
+  }
+
+  /**
+   * Run one host command over the current transport generation.
+   *
+   * A platform adapter that exposes a generic exec (the shared app's
+   * `ssh.exec`, bootstrap and usage probes) goes through here rather than
+   * the raw capability, so the controller stays the one owner of the
+   * connection generation and a transport failure observed by the command
+   * starts the same reconnect path as every other operation (#2936, D28).
+   * A non-zero exit is a result, not a failure.
+   */
+  async runHostCommand(
+    command: string,
+    timeoutMs: number,
+  ): Promise<ConnectionActionResult<HostCliExecOutcome>> {
+    const connection = this.connection;
+    if (!connection) {
+      return { ok: false, reason: 'not-connected', message: 'Connect to a host before running a command.' };
+    }
+    try {
+      const outcome = await this.createHostCliTransport(connection).exec(command, timeoutMs);
+      return { ok: true, value: outcome };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (connection === this.connection && this.isCurrentTransportFailure(error)) {
+        this.startReconnect('host command observed a transport failure');
+      }
       return { ok: false, reason: 'failed', message };
     }
   }
