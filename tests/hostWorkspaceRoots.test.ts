@@ -397,6 +397,112 @@ describe('host workspace roots over the host CLI', () => {
     expect(roots.getState().memberships?.map((w) => w.path)).toEqual(host.registry.get('h'));
   });
 
+  /** A CLI whose `list` is answered by the host at SEND time but whose reply is held. */
+  function heldLists(host: FakeHost, connectionId: string) {
+    const held: Array<() => void> = [];
+    const cli = workspaceRootsCliForConnection(
+      workspaceRootsApiFromExec(async (id, command) => {
+        const outcome = await host.exec(id, command);
+        if (!command.includes(' list ')) return outcome;
+        return new Promise<HostCliExecOutcome>((resolve) => held.push(() => resolve(outcome)));
+      }),
+      connectionId,
+    );
+    return { cli, release: () => held.splice(0).forEach((reply) => reply()), pending: () => held.length };
+  }
+
+  const rows = (roots: HostWorkspaceRoots) => roots.getState().memberships?.map((w) => w.path);
+
+  // Reviewer interleavings I1–I3 (#2925 round 3): a listing requested BEFORE a
+  // registration change and answered AFTER it must never overwrite the newer rows.
+  it('I1: a reconnect listing that lands after a user remove does not bring the root back', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git', '/srv/a']);
+    const roots = model();
+    await roots.select({ hostIdentity: 'h', cli: host.cli('conn-1') });
+    const conn2 = heldLists(host, 'conn-2');
+    const reselect = roots.select({ hostIdentity: 'h', cli: conn2.cli });
+    await settle();
+    expect(await roots.removeRoot('/srv/a')).toBe(true);
+    for (let i = 0; i < 5 && conn2.pending(); i += 1) { conn2.release(); await settle(); }
+    await reselect;
+    await settle();
+    expect(host.registry.get('h')).toEqual(['/home/me/git']);
+    expect(rows(roots)).toEqual(host.registry.get('h'));
+  });
+
+  it('I2: a first listing that lands after a user add does not drop the new root', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    const conn = heldLists(host, 'conn-1');
+    const selecting = roots.select({ hostIdentity: 'h', cli: conn.cli });
+    await settle();
+    expect(await roots.addRoot('/srv/new')).toBe(true);
+    for (let i = 0; i < 5 && conn.pending(); i += 1) { conn.release(); await settle(); }
+    await selecting;
+    await settle();
+    expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/new']);
+    expect(rows(roots)).toEqual(host.registry.get('h'));
+  });
+
+  it('I1b: a late-reply re-list that lands after a user add does not drop the new root', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    const roots = model();
+    const first = heldAdds(host, 'conn-1');
+    await roots.select({ hostIdentity: 'h', cli: first.cli });
+    const lateAdd = roots.addRoot('/srv/late');
+    await settle();
+    const conn2 = heldLists(host, 'conn-2');
+    const reselect = roots.select({ hostIdentity: 'h', cli: conn2.cli });
+    await settle();
+    conn2.release();
+    await reselect;
+    // The late reply asks for a re-list; hold that listing's reply.
+    first.release();
+    await settle();
+    expect(conn2.pending()).toBe(1);
+    expect(await roots.addRoot('/srv/b')).toBe(true);
+    for (let i = 0; i < 5 && conn2.pending(); i += 1) { conn2.release(); await settle(); }
+    expect(await lateAdd).toBe(false);
+    await settle();
+    expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/b', '/srv/late']);
+    expect(rows(roots)).toEqual(host.registry.get('h'));
+  });
+
+  it('I3: host switch, reconnect with restore and late replies from both old connections', async () => {
+    const host = new FakeHost();
+    host.registry.set('h', ['/home/me/git']);
+    host.registry.set('g', []);
+    const prev = { roots: ['/srv/p'], rootOrder: [] };
+    const roots = model();
+    const h = heldAdds(host, 'conn-h');
+    await roots.select({ hostIdentity: 'h', cli: h.cli });
+    const hAdd = roots.addRoot('/srv/late-h');
+    await settle();
+    const g1 = heldReplies(host, 'conn-g1');
+    const gSel1 = roots.select({ hostIdentity: 'g', cli: g1.cli, previousRoots: prev });
+    await settle();
+    expect(roots.getState().mutating).toBe(true);
+    const g2 = heldLists(host, 'conn-g2');
+    const gSel2 = roots.select({ hostIdentity: 'g', cli: g2.cli, previousRoots: prev });
+    await settle();
+    h.release();
+    expect(await hAdd).toBe(false);
+    g1.release();
+    await settle();
+    for (let i = 0; i < 5 && g2.pending(); i += 1) { g2.release(); await settle(); }
+    await gSel1;
+    await gSel2;
+    await settle();
+    expect(roots.getState()).toMatchObject({ hostIdentity: 'g', mutating: false });
+    expect(rows(roots)).toEqual(host.registry.get('g'));
+    expect(host.commands.filter((c) => c.includes(" --host 'g'") && c.includes(' add ')).length).toBe(1);
+    expect(host.registry.get('h')).toEqual(['/home/me/git', '/srv/late-h']);
+    expect(await roots.addRoot('/srv/q')).toBe(true);
+  });
+
   it('never re-lists another host when a late reply for the previous host arrives', async () => {
     const host = new FakeHost();
     host.registry.set('h', ['/home/me/git']);

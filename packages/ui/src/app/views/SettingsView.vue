@@ -280,7 +280,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
                 <button
                   class="icon-btn"
                   :title="`Move ${root.label} up`"
-                  :disabled="index === 0 || workspaceRoots.state.mutating"
+                  :disabled="index === 0 || workspaceRoots.rootsBusy"
                   @click="onMoveRoot(root.path, -1)"
                 >
                   <AppIcon name="chevron-up" :size="14" />
@@ -288,7 +288,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
                 <button
                   class="icon-btn"
                   :title="`Move ${root.label} down`"
-                  :disabled="index === rootRows.length - 1 || workspaceRoots.state.mutating"
+                  :disabled="index === rootRows.length - 1 || workspaceRoots.rootsBusy"
                   @click="onMoveRoot(root.path, 1)"
                 >
                   <AppIcon name="chevron-down" :size="14" />
@@ -297,7 +297,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
               <button
                 class="icon-btn"
                 :title="`Remove ${root.label}`"
-                :disabled="rootsOnHost && workspaceRoots.state.mutating"
+                :disabled="workspaceRoots.rootsBusy"
                 @click="onRemoveRoot(root.path)"
               >
                 <AppIcon name="trash-2" :size="14" />
@@ -331,7 +331,7 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
             </datalist>
             <button
               class="add-btn"
-              :disabled="rootsFull || (rootsOnHost && workspaceRoots.state.mutating)"
+              :disabled="rootsFull || workspaceRoots.rootsBusy"
               @click="onAddRoot"
             >
               <AppIcon name="plus" :size="14" />

@@ -283,6 +283,12 @@ export class HostWorkspaceRoots {
   private state: WorkspaceRootsState = emptyState(null, []);
   private selection: WorkspaceRootsSelection | null = null;
   private epoch = 0;
+  /**
+   * Bumped by every registration change (add, remove, restore) as it starts.
+   * A listing records it when sent; if it moved by the time the reply lands,
+   * the listing may predate that change and is re-read instead of written.
+   */
+  private generation = 0;
   /** The registration change holding the lock, tagged with its epoch. */
   private operation: { epoch: number } | null = null;
   /** A listing arrived (or was owed) while an operation held the lock. */
@@ -360,6 +366,7 @@ export class HostWorkspaceRoots {
   private async locked<T>(body: (epoch: number) => Promise<T>): Promise<T> {
     const operation = { epoch: this.epoch };
     this.operation = operation;
+    this.generation += 1;
     this.set({ mutating: true });
     try {
       return await body(operation.epoch);
@@ -377,6 +384,7 @@ export class HostWorkspaceRoots {
     const selection = this.selection;
     if (!selection) return;
     const epoch = this.epoch;
+    const generation = this.generation;
     this.set({ status: 'loading', error: null });
     try {
       const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
@@ -386,6 +394,12 @@ export class HostWorkspaceRoots {
         // Re-read once it settles instead of writing a possibly older list.
         this.relistAfterOperation = true;
         this.set({ status: 'ready' });
+        return;
+      }
+      if (generation !== this.generation) {
+        // A change started (and finished) while this listing was in flight:
+        // the listing may predate it. Re-read; never decide a restore on it.
+        await this.relist();
         return;
       }
       this.set({ status: 'ready', memberships: listing.workspaces, error: null });
@@ -401,11 +415,19 @@ export class HostWorkspaceRoots {
     const selection = this.selection;
     if (!selection) return;
     const epoch = this.epoch;
+    const generation = this.generation;
+    this.set({ status: 'loading' });
     try {
       const listing = await selection.cli.listWorkspaces(selection.hostIdentity);
       if (epoch !== this.epoch) return;
       if (this.busy()) {
         this.relistAfterOperation = true;
+        this.set({ status: 'ready' });
+        return;
+      }
+      if (generation !== this.generation) {
+        // Same as `refresh`: a newer change landed meanwhile; read again.
+        await this.relist();
         return;
       }
       this.set({ status: 'ready', memberships: listing.workspaces, error: null });
