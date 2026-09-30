@@ -2,13 +2,10 @@
  * @pocketshell/core — the PocketShell contract layer, one implementation for
  * every client.
  *
- * Each module here is a VERBATIM copy of the code that used to live in
- * pocketshell-desktop's src/shared/ and was re-copied into pocketshell-web by
- * scripts/sync-shared.sh. The package is now the source of truth; the desktop
- * and web apps import it and no app holds a copy. Every module is pure
- * TypeScript — no Node, no DOM, no I/O — so the same build runs in the
- * Electron main process, the browser, and an embedded JS engine (the Android
- * path; see embed/ and README.md).
+ * The desktop (Electron), web and JS-first Android clients import this
+ * package from source; none of them holds a copy. Every module is pure
+ * TypeScript — no Node, no DOM, no I/O — so the same code runs in the Electron
+ * main process and in any browser WebView. Each module is exported once below.
  */
 
 export * from './types';
@@ -28,11 +25,6 @@ export * from './usageParsers';
 export * from './usagePolicy';
 export * from './portScanner';
 export * from './portForwardPolicy';
-export * from './projectCommands';
-export * from './projectFolderName';
-export * from './reposScope';
-export * from './hostProbeParsers';
-export * from './usageParsers';
 export * from './projectCommands';
 export * from './projectFolderName';
 export * from './reposScope';
@@ -65,12 +57,6 @@ export * from './sessionRoots';
 export * from './sessionTree';
 export * from './sessionTreeText';
 export * from './snippets';
-export * from './sessionNameParts';
-export * from './sessionIdentity';
-export * from './sessionGrouping';
-export * from './sessionRoots';
-export * from './sessionTree';
-export * from './sessionTreeText';
 export * from './transport';
 export * from './attachments/mimeTypes';
 export * from './preview/previewPaths';

@@ -38,7 +38,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:unit && npm run test:integration",
     "test:browser": "node scripts/verify-browser-policy.mjs",
-    "embed": "node scripts/build-embed.mjs && node scripts/verify-embed.mjs",
     "build:ui": "npm --prefix packages/ui run build",
     "typecheck:ui": "npm --prefix packages/ui run typecheck",
     "test:unit": "vitest run --exclude 'tests/integration/**'",
@@ -47,7 +46,6 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
-    "quickjs-emscripten": "^0.32.0",
     "typescript": "5.7.2",
     "vitest": "2.1.8",
     "ssh2": "1.16.0",

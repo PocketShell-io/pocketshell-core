@@ -1,7 +1,7 @@
 /**
  * Sources keep extensionless relative imports (verbatim from the desktop
  * repo). Every bundler resolves those, but plain-Node ESM needs the explicit
- * .js — and the embed harness imports dist/esm directly. This pass rewrites
+ * .js to import dist/esm directly. This pass rewrites
  * only the emitted specifiers, never the sources.
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';

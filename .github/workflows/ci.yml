@@ -8,8 +8,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Fast gate: build, unit contracts, the browser policy contract, and the
-  # dual-engine embed check. No Docker needed — this is the every-push floor.
+  # Fast gate: build, unit contracts, and the browser policy contract. No
+  # Docker needed — this is the every-push floor.
   gate:
     runs-on: ubuntu-latest
     steps:
@@ -25,7 +25,6 @@ jobs:
       - run: npm run test:browser
         env:
           CHROMIUM_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
-      - run: npm run embed
       # The shared interface package (@pocketshell/ui) rides in this repo so
       # desktop, web and Android consume one UI source — same bargain as the
       # contract layer in src/. Gate it where it lives: its own pinned

@@ -1,8 +1,8 @@
 # @pocketshell/core
 
 PocketShell's contract layer as ONE TypeScript implementation, shared by every
-client: the desktop (Electron), the web SPA, and — through an embedded JS
-engine — the Android app.
+client: the desktop (Electron), the web SPA, and the JS-first Android app
+(a Capacitor WebView).
 
 The package exists to kill the copy problem: the web app used to hold 19
 verbatim copies of the desktop's `src/shared/` modules, refreshed by a sync
@@ -14,7 +14,7 @@ depend on it. A contract change is one commit in this repo.
 Pure TypeScript only — no Node APIs, no DOM, no I/O. The platform surface is
 exactly `setTimeout`, `clearTimeout`, `atob`, and `TextDecoder`
 (`types/globals.d.ts`), all provided by browsers, Electron, Node 16+, and the
-shim set in `embed/host-shims.js`.
+Android WebView.
 
 | Module | Contract |
 | --- | --- |
@@ -76,8 +76,8 @@ published to npm, the `file:` specs become plain versions.
 1. Edit here. Keep modules pure; extend `types/globals.d.ts` only for APIs
    every client genuinely provides.
 2. `npm run test:unit`, `npm run test:browser`, `npm run test:integration`
-   (core's clients against the Docker fleet — see `docs/TESTING.md`), and
-   `npm run embed` (Node and QuickJS verification) must pass.
+   (core's clients against the Docker fleet — see `docs/TESTING.md`) must
+   pass.
 3. `npm run build` — the apps resolve into `dist/` through the `file:` link,
    so a rebuild here is propagation; no republish, no reinstall.
 4. Commit here first, then bump/pin the apps as they adopt it.
@@ -92,37 +92,9 @@ grace. The plugin reports transport state and moves bounded SSH/PTY/SFTP and
 forwarding data without deciding which session to restore or retrying an
 uncertain send.
 
-The core also maintains a single-file embed build for the prototype path:
-bundle the whole core into one file and evaluate it in an embedded JS engine
-(QuickJS, via quickjs-emscripten or equivalent).
-
-```bash
-npm run embed
-```
-
-- `embed/pocketshell-core.js` — the entire core as one IIFE installing a
-  single `PocketShellCore` global.
-- `embed/host-shims.js` — the host surface an engine must provide, with
-  working fallbacks (`atob`, a UTF-8 `TextDecoder`; timers fail loudly unless
-  the embedder wires real ones).
-
-`scripts/verify-embed.mjs` runs the SAME contract assertions against the SAME
-bundle in TWO engines — Node's vm, and a real QuickJS (quickjs-emscripten).
-The QuickJS pass is the Android integration surface exercised as code, not a
-claim. On the device, the Kotlin side is the same shape:
-
-```js
-const controller = new PocketShellCore.ConnectionController({
-  capability: androidSshCapability,
-  trustStore: encryptedHostKeyStore,
-});
-await controller.connect(host);
-```
-
 The same portable connection and composer-policy contracts run from source in
-Vitest, against a browser-targeted bundle in Chromium, and against the embed
-bundle in Node's `vm` and QuickJS. Composer byte vectors live in
-`tests/fixtures/composer-delivery-vectors.json`; an ambiguous write retains the
+Vitest and against a browser-targeted bundle in Chromium. Composer byte vectors
+live in `tests/fixtures/composer-delivery-vectors.json`; an ambiguous write retains the
 draft, and reconnecting does not replay it. Existing Android SHA-256 host-key
 records are read as fingerprint pins and retained in that format when a user
 accepts a replacement.
@@ -141,7 +113,6 @@ npm test              # unit contract suites + integration tier (Docker)
 npm run test:unit     # unit tier only — no Docker needed
 npm run test:browser  # shared SSH policy contract in Chromium
 npm run build         # dist/esm + dist/cjs + types
-npm run embed         # esbuild bundle + Node/QuickJS verification
 ```
 
 ## Release flow

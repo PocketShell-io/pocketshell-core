@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import * as core from '../src/index';
 
@@ -28,5 +29,13 @@ describe('@pocketshell/core index', () => {
     ]) {
       expect(core, `missing export: ${name}`).toHaveProperty(name);
     }
+  });
+
+  it('re-exports each module exactly once', () => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const modules = [...source.matchAll(/^export \* from '([^']+)';$/gm)].map((match) => match[1]);
+    expect(modules.length).toBeGreaterThan(0);
+    const duplicates = modules.filter((name, index) => modules.indexOf(name) !== index);
+    expect(duplicates, 'modules exported more than once from src/index.ts').toEqual([]);
   });
 });

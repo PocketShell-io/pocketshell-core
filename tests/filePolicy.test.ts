@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DirEntry } from '../src/sftpCore';
+import * as Core from '../src';
+import { runFilePolicyContract } from './filePolicyContract';
 import {
   classifyFileByName,
   classifyFileBytes,
@@ -109,5 +111,11 @@ describe('evaluateFileEditSave', () => {
     expect(evaluateFileEditSave(null, loaded)).toBe('unverifiable');
     expect(evaluateFileEditSave(loaded, { ...loaded, modifiedEpochMs: 0 })).toBe('unverifiable');
     expect(evaluateFileEditSave(loaded, { ...loaded, sizeBytes: Number.NaN })).toBe('unverifiable');
+  });
+});
+
+describe('file policy runtime contract', () => {
+  it('passes the same assertions the Chromium bundle runs', () => {
+    expect(runFilePolicyContract(Core)).toMatch(/^assertions=[1-9]\d*$/);
   });
 });
