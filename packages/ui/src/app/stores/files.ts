@@ -1182,6 +1182,80 @@ export const useFilesStore = defineStore('files', () => {
       null;
   }
 
+  // -------------------------------------------------------------------------
+  // Deleting an entry of the browsed directory
+  // -------------------------------------------------------------------------
+
+  /**
+   * Delete one entry of the browsed directory: a file or symlink through
+   * `unlink`, a directory through `rmdir`.
+   *
+   * The row menu's action, and the store is its home rather than the tree's
+   * for the same reason the create flow is: it acts on the LISTING's
+   * directory, re-lists, and reports into `error` — the footer the tree
+   * already renders, which is where the user's eyes are when a row they
+   * right-clicked refuses to go.
+   *
+   * A directory goes through `rmdir`, not a recursive walk, and that is the
+   * SFTP layer's honesty rather than a missing feature: there is no recursive
+   * verb in the protocol's vocabulary this service speaks, and building one
+   * out of readdir + unlink + rmdir bottom-up would put a deep, unconfirmable
+   * deletion behind a single confirmation about ONE name. So a folder that
+   * still holds anything is refused by the host, and the dialog says so
+   * before the confirm rather than after the failure.
+   *
+   * A symlink is unlinked, never followed — the row is the thing the menu
+   * acted on, and deleting a link whose target is a directory must not become
+   * an rmdir of that directory.
+   *
+   * One piece of state the deleted bytes invalidate is taken with it: the
+   * OPEN FILE — closed when it IS the deleted path or lived under a deleted
+   * directory (a file opened from a folder the user has since browsed out
+   * of). An editor showing bytes that no longer exist one refresh behind the
+   * tree is the "silently did nothing" reading this store's other actions
+   * are built to avoid; `closeFile` also retires a dirty buffer that can now
+   * never be saved back.
+   *
+   * The browsed directory needs no such guard, and cannot have one: the verb
+   * takes a NAME in the listing, so the pane is never standing in (or under)
+   * what it deletes — `abs` is always a child of `cwd`, and a plain re-list
+   * after the delete is the whole update.
+   *
+   * The name rules are the create flow's, narrowed to the same refusal:
+   * `.` and `..` are navigation, and a `/` would reach past the directory
+   * being browsed. Names arrive from a readdir rather than a field, so this
+   * is belt to the listing's braces — but the action destroys, and a
+   * destroyer validates its input itself.
+   */
+  async function deleteEntry(
+    connectionId: ConnectionId,
+    name: string,
+    type: DirEntry['type'],
+  ): Promise<boolean> {
+    if (!cwd.value) return false;
+    if (name === '' || name === '.' || name === '..' || name.includes('/')) {
+      error.value = `Not a usable name: ${name === '' ? '(empty)' : name}`;
+      return false;
+    }
+    const abs = joinPosix(cwd.value, name);
+    error.value = null;
+    try {
+      if (type === 'dir') {
+        await api.sftp.rmdir(connectionId, abs);
+      } else {
+        await api.sftp.deleteFile(connectionId, abs);
+      }
+    } catch (e) {
+      error.value = errorMessage(e);
+      return false;
+    }
+    if (openPath.value != null && (openPath.value === abs || openPath.value.startsWith(`${abs}/`))) {
+      closeFile();
+    }
+    await refresh(connectionId);
+    return true;
+  }
+
   /**
    * Download the open file to a location the user picks. This is the binary
    * panel's only action, and the reason refusing to render something is not a
@@ -1413,6 +1487,7 @@ export const useFilesStore = defineStore('files', () => {
     save,
     createFile,
     createFolder,
+    deleteEntry,
     download,
     closeFile,
     requestReveal,

@@ -6,6 +6,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import AppIcon, { type AppIconName } from '@ui/components/AppIcon.vue';
 import PopupMenu from './PopupMenu.vue';
+import OverlayPanel from './OverlayPanel.vue';
 import { api } from '../ipc';
 import { useConnectionStore } from '../stores/connection';
 import { useFilesStore } from '../stores/files';
@@ -279,6 +280,59 @@ async function copyPath(entry: DirEntry): Promise<void> {
   } catch {
     // A clipboard a user has denied is not worth an error banner over a path
     // that is already visible in the row's tooltip.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deleting a row
+// ---------------------------------------------------------------------------
+
+/**
+ * The row a confirmed Delete would remove, or null while nothing is being
+ * asked.
+ *
+ * The tree menu's only destructive item — added deliberately late, after the
+ * menu first shipped without one (the session stop's history records that
+ * omission), because an SSH file manager without a delete eventually stops
+ * being a file manager. The confirmation lives HERE, in the tree, for the
+ * same reason the folder-stop one lives in the session panel: the entry is
+ * named by the question, the dangerous half carries the error tint, and the
+ * store's verb behind it refuses to run until this dialog says so.
+ *
+ * The ENTRY is armed rather than a path string so the dialog's wording can
+ * follow the type (file versus folder) without re-guessing it from a path's
+ * spelling.
+ */
+const deleting = ref<{ entry: DirEntry } | null>(null);
+const deleteBusy = ref(false);
+
+/** Arm the question. The menu closes — one question on screen at a time. */
+function askDelete(entry: DirEntry): void {
+  closeMenu();
+  deleting.value = { entry };
+}
+
+/**
+ * Remove the row's entry, through the store's `deleteEntry`.
+ *
+ * Refusals never reach this function — the store reports them in the
+ * listing's footer channel and returns false — so there is no catch, only
+ * the latch that must lift whatever the verdict was: a `deleteBusy` left
+ * true would disable the Delete button until the component remounted.
+ */
+async function confirmDelete(): Promise<void> {
+  const target = deleting.value;
+  const connectionId = connId.value;
+  if (!target || !connectionId) {
+    deleting.value = null;
+    return;
+  }
+  deleteBusy.value = true;
+  try {
+    await files.deleteEntry(connectionId, target.entry.name, target.entry.type);
+  } finally {
+    deleteBusy.value = false;
+    deleting.value = null;
   }
 }
 
@@ -669,8 +723,53 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
             Save to this computer…
           </button>
         </li>
+        <!-- Last, separated, and the menu's one destructive item — the same
+             seat the folder row's Stop takes in the session panel. The `…`
+             is the app's convention for "this asks first", and the question
+             is armed here and asked in the sheet below, never skipped. -->
+        <li class="menu-sep" />
+        <li>
+          <button class="menu-item danger" @click="askDelete(menu.entry)">
+            <AppIcon name="trash-2" :size="14" />
+            Delete…
+          </button>
+        </li>
       </ul>
     </PopupMenu>
+
+    <!-- Delete's question. A sheet rather than a second menu state, matching
+         the session stop's confirm: it names what goes, states the one rule
+         the host will enforce, and makes Cancel the quiet half while the
+         button that removes carries the error fill. -->
+    <OverlayPanel
+      v-if="deleting"
+      :title="deleting.entry.type === 'dir' ? 'Delete folder' : 'Delete file'"
+      size="sm"
+      @close="deleting = null"
+    >
+      <div class="delete-confirm">
+        <p>Delete <code>{{ deleting.entry.name }}</code> ?</p>
+        <p class="muted">
+          <template v-if="deleting.entry.type === 'dir'">
+            This removes the folder from the host. It has to be empty — one with anything
+            still in it is refused. There is no undo.
+          </template>
+          <template v-else>This removes the file from the host. There is no undo.</template>
+        </p>
+        <footer class="actions">
+          <button class="btn-secondary" @click="deleting = null">Cancel</button>
+          <button class="btn-danger" :disabled="deleteBusy" @click="confirmDelete">
+            {{
+              deleteBusy
+                ? 'Deleting…'
+                : deleting.entry.type === 'dir'
+                  ? 'Delete folder'
+                  : 'Delete file'
+            }}
+          </button>
+        </footer>
+      </div>
+    </OverlayPanel>
 
     <!-- Creation's menu: opened by the strip's `+` and by a right-click on
          the listing's empty ground. `ignore` names the `+` so the press that
@@ -1039,5 +1138,71 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
 }
 .create-input::placeholder {
   color: var(--fg-muted);
+}
+
+/* The menu's destructive item. `:deep` because PopupMenu's items arrive through
+   its slot and so carry THIS component's scope id, not the menu's — the same
+   reason PopupMenu publishes `.menu-item` with `:deep` from its side, and the
+   same block SessionTree renders for its Stop item: two destructive menus that
+   must read as one feature. The hover fill is the error tint rather than the
+   ordinary grey, so the row confirms what it is as the cursor lands on it. */
+.popup-menu :deep(.menu-item.danger) {
+  color: var(--error);
+}
+.popup-menu :deep(.menu-item.danger:hover) {
+  background: var(--error-soft);
+}
+
+/* Delete's question — the stop-confirm sheet's metrics, one seat over. The
+   name is the only part allowed to break a line (`word-break`), the footer's
+   hairline separates the verdict from the question, and the dangerous half is
+   solid error, not a tinted ghost: a confirm whose destructive option is the
+   quieter of the two is a trap. */
+.delete-confirm p {
+  margin: 0 0 var(--sp-2);
+}
+.delete-confirm code {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.delete-confirm .muted {
+  color: var(--fg-muted);
+}
+.delete-confirm .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.delete-confirm .btn-secondary,
+.delete-confirm .btn-danger {
+  height: var(--control-h);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  font-weight: var(--fw-semibold);
+  transition: background var(--dur-fast) var(--ease);
+}
+.delete-confirm .btn-secondary {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+}
+.delete-confirm .btn-secondary:hover {
+  background: var(--state-hover);
+}
+.delete-confirm .btn-danger {
+  background: var(--error);
+  border: 1px solid var(--error);
+  color: var(--on-accent);
+}
+.delete-confirm .btn-danger:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
 }
 </style>
