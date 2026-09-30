@@ -1,6 +1,6 @@
 import { composerTiming } from './composerSend';
 import { DEFAULT_MAX_BACKGROUND_GRACE_MS } from './connectionController';
-import { USAGE_CRITICAL_PERCENT, USAGE_DEFAULT_WARN_PERCENT } from './usagePolicy';
+import { USAGE_CRITICAL_PERCENT } from './usagePolicy';
 
 /**
  * Portable preference policy shared by every PocketShell client's settings
@@ -80,7 +80,16 @@ export const USAGE_WARN_MIN_PERCENT = 50;
 export const USAGE_WARN_MAX_PERCENT = USAGE_CRITICAL_PERCENT;
 export const USAGE_WARN_STEP_PERCENT = 5;
 
-/** The "approaching limit" percentage, snapped to 50–95 % in 5 % steps. */
+/**
+ * The "approaching limit" percentage, snapped to 50–95 % in 5 % steps, or
+ * null for "not set" — the default, which keeps each client's shipped meter
+ * colours (core `usageMeterTone`).
+ */
+export function parseUsageWarnPercentSetting(raw: unknown): number | null | undefined {
+  return raw === null ? null : parseUsageWarnPercent(raw);
+}
+
+/** A numeric warning percentage, snapped to 50–95 % in 5 % steps. */
 export function parseUsageWarnPercent(raw: unknown): number | undefined {
   const value = asNumber(raw);
   return value === undefined
@@ -95,6 +104,7 @@ export function parseUsageWarnPercent(raw: unknown): number | undefined {
  * snapshot. Theme, text size and grace have their own pages and are outside it.
  */
 export const ADVANCED_SETTING_DEFAULTS = Object.freeze({
-  usageWarnPercent: USAGE_DEFAULT_WARN_PERCENT,
+  /** Not set: meters keep their shipped colours until the user picks a threshold. */
+  usageWarnPercent: null as number | null,
   submitEnterDelayMs: DEFAULT_SUBMIT_ENTER_DELAY_MS,
 });

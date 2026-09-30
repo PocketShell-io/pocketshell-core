@@ -42,7 +42,7 @@ import { useAgentsStore } from '../stores/agents';
 import { useSettingsStore } from '../stores/settings';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { usageProviderMark } from '@pocketshell/core/shared/agentBadge';
-import { usagePercentThresholdState, type UsageRow } from '@pocketshell/core';
+import { usageMeterTone, type UsageRow } from '@pocketshell/core';
 
 const props = defineProps<{
   /**
@@ -105,15 +105,16 @@ function windowsOf(row: UsageRow): WindowRow[] {
 const settings = useSettingsStore();
 
 /**
- * Meter colour from core's threshold bands, so every client grades a quota the
- * same way: the user's Settings → Advanced "Warn at" percentage turns it
- * amber, and the fixed critical (95 %) / exceeded (100 %) bands turn it red.
- * `p` is the REMAINING percentage the helper reports.
+ * Meter colour from core's `usageMeterTone`, so every client grades a quota
+ * the same way. With Settings → Advanced "Warn at" unset (the default) the
+ * shipped bands stay: green above 50 % left, amber above 20 %, red below. An
+ * explicit threshold switches to core's used-percentage bands. `p` is the
+ * REMAINING percentage the helper reports.
  */
 function pctColor(p: number): string {
-  const state = usagePercentThresholdState(100 - p, settings.usageWarnPercent);
-  if (state === 'ok') return 'var(--success)';
-  if (state === 'approaching') return 'var(--warning)';
+  const tone = usageMeterTone(p, settings.usageWarnPercent);
+  if (tone === 'ok') return 'var(--success)';
+  if (tone === 'approaching') return 'var(--warning)';
   return 'var(--error)';
 }
 function pctWidth(p: number): string {

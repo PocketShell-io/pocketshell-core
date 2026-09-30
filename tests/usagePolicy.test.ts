@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { parseUsageNdjson } from '../src/usageParsers.js';
 import {
   usagePercentThresholdState,
+  usageMeterTone,
   usageDisplayName,
   usageIsBlocked,
   usageIsNearLimit,
@@ -124,5 +125,16 @@ describe('usage display and quota policy over transport rows', () => {
     expect(usagePercentThresholdState(80)).toBe('approaching');
     expect(usagePercentThresholdState(95, 50)).toBe('critical');
     expect(usagePercentThresholdState(100, 50)).toBe('exceeded');
+  });
+
+  it.each([
+    // [remaining %, warnPercent, tone]: null keeps the shipped desktop/web bands.
+    [100, null, 'ok'], [51, null, 'ok'], [50, null, 'approaching'], [21, null, 'approaching'],
+    [20, null, 'critical'], [0, null, 'critical'],
+    // An explicit threshold switches to core's used-percentage bands.
+    [21, 80, 'ok'], [20, 80, 'approaching'], [6, 80, 'approaching'], [5, 80, 'critical'],
+    [40, 60, 'approaching'], [41, 60, 'ok'], [0, 50, 'critical'],
+  ] as const)('meter with %s%% remaining and warn=%s is %s', (remaining, warn, tone) => {
+    expect(usageMeterTone(remaining, warn)).toBe(tone);
   });
 });

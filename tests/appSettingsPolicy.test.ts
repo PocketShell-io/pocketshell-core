@@ -11,6 +11,7 @@ import {
   parseBoolean,
   parseSubmitEnterDelayMs,
   parseUsageWarnPercent,
+  parseUsageWarnPercentSetting,
 } from '../src';
 
 describe('shared app settings policy', () => {
@@ -42,7 +43,11 @@ describe('shared app settings policy', () => {
     expect(parseUsageWarnPercent(10)).toBe(50);
     expect(parseUsageWarnPercent(99)).toBe(95);
     expect(parseUsageWarnPercent({})).toBeUndefined();
-    expect(ADVANCED_SETTING_DEFAULTS).toEqual({ usageWarnPercent: USAGE_DEFAULT_WARN_PERCENT, submitEnterDelayMs: DEFAULT_SUBMIT_ENTER_DELAY_MS });
+    expect(ADVANCED_SETTING_DEFAULTS).toEqual({ usageWarnPercent: null, submitEnterDelayMs: DEFAULT_SUBMIT_ENTER_DELAY_MS });
+    expect(parseUsageWarnPercentSetting(null)).toBeNull();
+    expect(parseUsageWarnPercentSetting(62)).toBe(60);
+    expect(parseUsageWarnPercentSetting('x')).toBeUndefined();
+    expect(USAGE_DEFAULT_WARN_PERCENT).toBe(80);
   });
 
   it('accepts only real booleans for switches', () => {
