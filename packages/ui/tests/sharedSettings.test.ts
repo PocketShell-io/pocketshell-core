@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { composerTiming, USAGE_DEFAULT_WARN_PERCENT } from '@pocketshell/core';
-import { coerceSettings, settingsDefaults, useSettingsStore } from '../../packages/ui/src/app/stores/settings';
-import { registerSettingsSection, settingsSections } from '../../packages/ui/src/app/settingsSections';
-import { provideApi } from '../../packages/ui/src/app/ipc';
-import { diagErrors, dismissDiagError, installDiagCapture } from '../../packages/ui/src/app/diag';
-import type { PocketShellApi } from '../../packages/ui/src/app/api';
+import { coerceSettings, settingsDefaults, useSettingsStore } from '../src/app/stores/settings';
+import { registerSettingsSection, settingsSections } from '../src/app/settingsSections';
+import { provideApi } from '../src/app/ipc';
+import { diagErrors, dismissDiagError, installDiagCapture } from '../src/app/diag';
+import type { PocketShellApi } from '../src/app/api';
 
 describe('shared settings: lifecycle, advanced and usage preferences', () => {
   it('defaults every carried-over 0.5.x preference', () => {
