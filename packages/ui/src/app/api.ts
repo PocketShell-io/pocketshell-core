@@ -36,6 +36,8 @@ import type {
   GeometryProbe,
   HomeResult,
   HostEntry,
+  HostKeyTrustChoice,
+  HostKeyTrustRequest,
   KillSessionResult,
   PortIntent,
   RemotePort,
@@ -112,6 +114,17 @@ export interface PocketShellApi {
     "exec": (connectionId: string, command: string) => Promise<ExecResult>;
     "close": (connectionId: string) => Promise<boolean>;
     "onState": (listener: (payload: { connectionId: string; state: ConnectionState }) => void) => (() => void);
+    /**
+     * OPTIONAL — present only on a platform that asks the user before trusting
+     * a first-contact host key (mechanism (i): the capability is present when
+     * the member is). The shared connection store registers one decider at
+     * startup; while a dial waits on an unknown key the platform calls it and
+     * applies the answer. With this present the store dials WITHOUT a
+     * `tofuDecision`, so nothing is pinned silently. A platform that provides
+     * it must fail closed (refuse the key) when no decider is registered, and
+     * must refuse a CHANGED key outright rather than ask.
+     */
+    "onTrustDecision"?: (decider: (request: HostKeyTrustRequest) => Promise<HostKeyTrustChoice>) => Unsubscribe;
     };
 
     "shell": {

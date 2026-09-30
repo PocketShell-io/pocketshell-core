@@ -66,6 +66,32 @@ export interface ConnectResult {
   error?: string;
 }
 
+/**
+ * The user's answer to a first-contact host key: trust it for this connection
+ * only, pin it for every later connection, or refuse it (no connection).
+ */
+export type HostKeyTrustChoice = 'accept-once' | 'accept-always' | 'reject';
+
+/**
+ * A host key the platform will not trust without the user's say-so, raised
+ * through the optional `ssh.onTrustDecision` hook while a dial waits.
+ *
+ * Only a FIRST contact is ever asked: a key that differs from the one already
+ * pinned for the host is refused by the platform with a visible error and
+ * never reaches this prompt.
+ */
+export interface HostKeyTrustRequest {
+  /** What the user picked: the config alias or saved-host name, else the hostname. */
+  hostLabel: string;
+  hostname: string;
+  port: number;
+  user: string;
+  /** SSH key algorithm, e.g. `ssh-ed25519`. */
+  keyType: string;
+  /** OpenSSH-style `SHA256:<base64>` fingerprint of the presented key. */
+  fingerprintSha256: string;
+}
+
 /** Bootstrap probe result for a connected host. */
 export interface BootstrapResult {
   pocketshell: ToolState;

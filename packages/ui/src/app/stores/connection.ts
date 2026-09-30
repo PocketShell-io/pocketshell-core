@@ -6,6 +6,8 @@ import type {
   ConnectionId,
   ConnectionState,
   HostEntry,
+  HostKeyTrustChoice,
+  HostKeyTrustRequest,
 } from '@pocketshell/core';
 import { MAX_ATTEMPTS } from '@pocketshell/core/shared/reconnectBackoff';
 import { ReconnectLoop } from '../reconnectLoop';
@@ -53,6 +55,44 @@ export const useConnectionStore = defineStore('connection', () => {
    * re-dialled without asking the user to re-pick it.
    */
   const lastKeyPath = ref<string | undefined>(undefined);
+
+  /**
+   * The first-contact host key a dial is waiting on, when the platform asks
+   * (`ssh.onTrustDecision`). `HostKeyTrustGate` renders it; `answerTrust`
+   * resolves it. `pendingTrustSeq` changes with every new question so the
+   * prompt remounts even when the same host asks twice in a row.
+   */
+  const pendingTrust = shallowRef<HostKeyTrustRequest | null>(null);
+  const pendingTrustSeq = ref(0);
+  let resolvePendingTrust: ((choice: HostKeyTrustChoice) => void) | null = null;
+
+  /**
+   * Whether the platform asks the user about unknown host keys. Optional by
+   * presence: without the hook the platform keeps its own policy and this
+   * store dials with the historical trust-on-first-use answer, unchanged.
+   */
+  const asksTrust = typeof api.ssh.onTrustDecision === 'function';
+  if (asksTrust) {
+    api.ssh.onTrustDecision!((request) =>
+      new Promise<HostKeyTrustChoice>((resolve) => {
+        // One question at a time: a newer dial's question supersedes an
+        // unanswered older one, which is refused (fail closed).
+        resolvePendingTrust?.('reject');
+        pendingTrustSeq.value += 1;
+        pendingTrust.value = { ...request };
+        resolvePendingTrust = (choice) => {
+          resolvePendingTrust = null;
+          pendingTrust.value = null;
+          resolve(choice);
+        };
+      }),
+    );
+  }
+
+  /** The user's answer to {@link pendingTrust}; a no-op when nothing waits. */
+  function answerTrust(choice: HostKeyTrustChoice): void {
+    resolvePendingTrust?.(choice);
+  }
 
   /**
    * The old id while a reconnect is replacing it. The explicit close emits an
@@ -271,7 +311,9 @@ export const useConnectionStore = defineStore('connection', () => {
         port: host.port,
         user: host.user || '',
         privateKeyPath: privateKeyPath ?? host.identityFile ?? undefined,
-        tofuDecision: 'accept-always',
+        // A platform that asks (`ssh.onTrustDecision`) gets NO standing
+        // decision: an unknown key must reach the user, never pin silently.
+        ...(asksTrust ? {} : { tofuDecision: 'accept-always' as const }),
       });
     } catch (e) {
       // A rejected invoke is a failed dial, not an exception to bubble: leave
@@ -313,6 +355,8 @@ export const useConnectionStore = defineStore('connection', () => {
     // First, not last: it must also orphan a recovery dial already on the
     // wire, whose success would otherwise undo the disconnect.
     loop.cancel();
+    // A dial still waiting on the user's host-key answer is abandoned too.
+    answerTrust('reject');
     if (connectionId.value) {
       // Drop this host's browsing state BEFORE the id is forgotten. The files
       // store is a singleton keyed by connection, and this is the guarantee
@@ -339,6 +383,9 @@ export const useConnectionStore = defineStore('connection', () => {
     error,
     bootstrap,
     activeHost,
+    pendingTrust,
+    pendingTrustSeq,
+    answerTrust,
     autoRetry: loop.autoRetry,
     retryIn: loop.retryIn,
     recovering: loop.recovering,

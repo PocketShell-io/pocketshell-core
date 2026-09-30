@@ -199,6 +199,13 @@ export class ConnectionController {
   private lastDialRetryable = true;
   private connectIntent = 0;
   private pendingConnectRequestId: string | null = null;
+  /**
+   * A first-contact key the user trusted for this controller's lifetime only
+   * ("accept once"). It answers this controller's own re-dials (reconnect,
+   * grace resume) without ever reaching the persistent trust store, so the
+   * next controller — the next app launch or a fresh connection — asks again.
+   */
+  private onceTrusted: { hostId: string; pin: HostKeyTrustPin } | null = null;
 
   constructor(options: ConnectionControllerOptions) {
     this.capability = options.capability;
@@ -287,12 +294,29 @@ export class ConnectionController {
     }
   }
 
+  /**
+   * Trust the key the host presented and dial again.
+   *
+   * `persist: false` is "accept once": the key is trusted for this
+   * controller's lifetime (its own re-dials included) and never written to the
+   * trust store. It only applies to a first contact — a CHANGED key is never
+   * trusted transiently, because the stored pin would refuse it again on the
+   * very next dial.
+   */
   async acceptPresentedHostKey(
-    options: { passphrase?: string | null } = {},
+    options: { passphrase?: string | null; persist?: boolean } = {},
   ): Promise<ConnectionActionResult<SshConnectionRef>> {
     const pending = this.snapshot.trustDecision;
     const host = this.host;
     if (!pending || !host) return { ok: false, reason: 'failed', message: 'There is no pending host-key decision.' };
+    const persist = options.persist ?? true;
+    if (!persist && pending.reason !== 'unknown') {
+      return {
+        ok: false,
+        reason: 'trust-mismatch',
+        message: 'A changed host key cannot be trusted for one connection only.',
+      };
+    }
     const retryHost = hostWithTransientPassphrase(host, options.passphrase);
     if (isKeyHandleCredential(retryHost.credential) && !isValidSshKeyHandleCredential(retryHost.credential)) {
       return {
@@ -301,7 +325,9 @@ export class ConnectionController {
         message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.',
       };
     }
-    await this.trustStore.record(host.hostId, acceptedHostKeyPin(pending.previouslyTrusted, pending.presented));
+    const accepted = acceptedHostKeyPin(pending.previouslyTrusted, pending.presented);
+    if (persist) await this.trustStore.record(host.hostId, accepted);
+    else this.onceTrusted = { hostId: host.hostId, pin: accepted };
     this.setSnapshot({ trustDecision: null, phase: 'connecting', error: null });
     return this.connect(retryHost);
   }
@@ -665,7 +691,8 @@ export class ConnectionController {
     let expectedHostKey: HostKeyTrustPin | null = null;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
     try {
-      expectedHostKey = await this.trustStore.get(host.hostId);
+      expectedHostKey = (await this.trustStore.get(host.hostId))
+        ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const connected = await this.capability.connect({
         ...host,
