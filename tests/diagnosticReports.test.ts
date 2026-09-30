@@ -91,4 +91,61 @@ describe('local diagnostic reports', () => {
     expect(text).toContain('Recorded: 1970-01-01T00:00:00.000Z');
     expect(text).not.toContain('/home/alexey');
   });
+
+  describe('redacts seeded secrets (review 5920997338)', () => {
+    const SEEDS = ['prodbox', 'SEEDEDPW123', 'SEEDEDTOK456', 'ghp_SEEDEDabcdef123456', 'MIIEvSEEDEDKEYBODY', 'secret-project', 'alexey', 'fe80::1ff:fe23:4567:890a', '2001:db8::8a2e:370:7334', '10.20.30.40', 'hunter2'];
+    it.each([
+      ['controller reconnect message', 'Could not reconnect to prodbox.corp.example.com after 5 attempts.'],
+      ['controller session message', 'Session “secret-project” no longer exists on prodbox.corp.example.com.'],
+      ['UnknownHost in a native crash', 'java.net.UnknownHostException: Unable to resolve host "prodbox.corp.example.com": No address associated with hostname'],
+      ['UnknownHost with a single-label alias', 'java.net.UnknownHostException: Unable to resolve host "prodbox"'],
+      ['ECONNREFUSED host:port', 'Error: connect ECONNREFUSED prodbox.corp.example.com:2222'],
+      ['ENOTFOUND alias', 'getaddrinfo ENOTFOUND prodbox'],
+      ['IPv6 literals', 'dial fe80::1ff:fe23:4567:890a%wlan0 and [2001:db8::8a2e:370:7334]:22 failed'],
+      ['IPv4 with port', 'connect to 10.20.30.40:22 timed out'],
+      ['JSON-keyed secrets', '{"password":"SEEDEDPW123","token":"SEEDEDTOK456","host":"prodbox.corp.example.com","user":"alexey"}'],
+      ['key=value secrets', 'password=hunter2 passphrase: SEEDEDPW123 token SEEDEDTOK456'],
+      ['PKCS#8 private key', '-----BEGIN PRIVATE KEY-----\nMIIEvSEEDEDKEYBODY\n-----END PRIVATE KEY-----'],
+      ['encrypted PKCS#8 key', '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIEvSEEDEDKEYBODY'],
+      ['Authorization Bearer header', 'Authorization: Bearer ghp_SEEDEDabcdef123456'],
+      ['bare bearer token', 'sent bearer SEEDEDTOK456abcdef to api'],
+      ['GitHub token alone', 'token leaked: ghp_SEEDEDabcdef123456'],
+      ['ssh URL with user', 'ssh://alexey@prodbox.corp.example.com:22/'],
+      ['home path', 'open /home/alexey/secret-project/.env'],
+    ])('%s', (_label, input) => {
+      const out = redactDiagnosticText(input, { knownTerms: ['prodbox', 'alexey'] });
+      for (const seed of SEEDS) expect(out, `${seed} survived in: ${out}`).not.toContain(seed);
+    });
+
+    it('keeps stack frames, file names, versions and times readable', () => {
+      const benign = [
+        '\tat com.pocketshell.app.SshCapabilityPlugin.connect(SshCapabilityPlugin.java:120)',
+        'java.lang.IllegalStateException',
+        'at connect (https://localhost/assets/index-abc123.js:1:2345)',
+        'App version: 0.5.6-139-g3e004f29b',
+        'Generated: 2026-09-30T21:24:49.156Z',
+        'Android: 15 (SDK 35)',
+      ];
+      const out = benign.map((line) => redactDiagnosticText(line));
+      expect(out[0]).toContain('com.pocketshell.app.SshCapabilityPlugin.connect(SshCapabilityPlugin.java:120)');
+      expect(out[1]).toBe('java.lang.IllegalStateException');
+      expect(out[2]).toContain('index-abc123.js:1:2345');
+      expect(out[3]).toBe('App version: 0.5.6-139-g3e004f29b');
+      expect(out[4]).toBe('Generated: 2026-09-30T21:24:49.156Z');
+      expect(out[5]).toBe('Android: 15 (SDK 35)');
+    });
+
+    it('applies known host terms in every report builder and in the share bundle', () => {
+      const terms = { knownTerms: ['devbox', 'alexey'] };
+      const runtime = runtimeErrorReport({ id: 'r', at: 0, kind: 'error', error: new Error('lost devbox while alexey typed'), knownTerms: terms.knownTerms });
+      const crash = legacyCrashReport('c', 'x.txt', 'Exception summary: IOException\n\nException\njava.io.IOException: devbox reset', terms);
+      const history = legacyDiagnosticHistoryReport('h', '{"event":"lost devbox"}', terms);
+      const bundle = formatDiagnosticReportsForSharing([{ id: 'x', source: 'native-crash', at: 0, title: 't', body: 'devbox' }], 0, terms);
+      for (const text of [runtime.body, crash.body, history.body, bundle]) {
+        expect(text).not.toContain('devbox');
+        expect(text).not.toContain('alexey');
+      }
+    });
+  });
 });
+

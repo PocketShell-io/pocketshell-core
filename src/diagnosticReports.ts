@@ -33,20 +33,89 @@ export const MAX_DIAGNOSTIC_REPORTS = 50;
 
 const CONTEXT_PREFIXES = ['Host:', 'Hostname:', 'User:', 'Session:', 'Directory:', 'Action:'];
 
-/** Scrub paths, credentials, keys, addresses and `user@host` from free text. */
-export function redactDiagnosticText(value: string): string {
-  return value
-    .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?(-----END [^-]+ PRIVATE KEY-----|$)/gi, '<private-key-redacted>')
-    .replace(/(authorization|bearer|password|passphrase|token|secret|private key)(\s*[=:]\s*|\s+)[^\s,;]+/gi, '$1=[redacted]')
-    .replace(/(\/home\/|\/users\/|\/var\/home\/|\/root\/)[^\s:)'"]+/gi, '<path>')
+/** Extra redaction input: host names, aliases and user names the platform knows about. */
+export interface RedactionOptions {
+  /**
+   * Terms to blank wherever they appear — saved host names, SSH aliases,
+   * hostnames and user names from the host store. They catch single-label
+   * names (`devbox`) that no generic pattern can tell apart from prose.
+   */
+  knownTerms?: readonly string[];
+}
+
+const SECRET_KEYS = 'password|passphrase|passwd|pwd|token|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|client[_-]?secret|api[_-]?key|apikey|private[_-]?key|credential|cookie|session[_-]?token';
+const IDENTITY_KEYS = 'host|hostname|host[_-]?alias|alias|user|username|login|session|session[_-]?name|workspace|directory|cwd|path|home';
+/** File extensions that make a dotted token a file name, not a host. */
+const FILE_EXTENSIONS = new Set(['js', 'mjs', 'cjs', 'ts', 'vue', 'java', 'kt', 'css', 'html', 'json', 'txt', 'png', 'xml', 'map', 'wasm', 'so', 'jsonl', 'log', 'md', 'py', 'sh']);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Lowercase dotted names with a letter TLD (`prodbox.corp.example.com`).
+ * Java/JS stack frames stay readable: a package prefix followed by `.Class`
+ * or `(`, and file names (`Foo.java`, `index-abc.js`), are not hosts.
+ */
+function redactHostNames(text: string): string {
+  return text.replace(/\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+\b/g, (match, offset: number, whole: string) => {
+    const labels = match.split('.');
+    const last = labels[labels.length - 1]!;
+    if (!/^[a-z]{2,24}$/.test(last)) return match;
+    if (FILE_EXTENSIONS.has(last)) return match;
+    const next = whole.slice(offset + match.length, offset + match.length + 2);
+    if (/^\.[A-Z]/.test(next) || next.startsWith('(')) return match;
+    return '<host>';
+  });
+}
+
+/** IPv6 literals: `::` compressed forms, or 3+ colon-separated groups with a hex letter. */
+function redactIpv6(text: string): string {
+  return text.replace(/(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?:%\w+)?(?![\w:])/g, (match) => {
+    const colons = (match.match(/:/g) ?? []).length;
+    if (match.includes('::') && /[0-9a-f]/i.test(match)) return '<address>';
+    if (colons >= 2 && /[a-f]/i.test(match)) return '<address>';
+    return match;
+  });
+}
+
+/**
+ * Scrub free text before it is stored, shown or shared: private-key blocks,
+ * credentials (key=value, JSON `"key":"value"`, `Authorization: Bearer …`,
+ * GitHub tokens), identity fields, home paths, `user@host`, URLs with hosts,
+ * quoted names, IPv4/IPv6 literals, dotted host names, and every known term.
+ */
+export function redactDiagnosticText(value: string, options: RedactionOptions = {}): string {
+  let text = value
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, '<private-key-redacted>')
+    .replace(/\b(authorization|proxy-authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;}]+/gi, '$1$2[redacted]')
+    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]')
+    .replace(/\b(gh[pousr]_|github_pat_|glpat-|xox[abprs]-|sk-)[A-Za-z0-9_-]{8,}/g, '[redacted-token]')
+    .replace(new RegExp(`(["']?)\\b(${SECRET_KEYS})\\1(\\s*[:=]\\s*)("[^"]*"|'[^']*'|[^\\s,;}]+)`, 'gi'), (_m, q: string, key: string, sep: string, v: string) =>
+      `${q}${key}${q}${sep}${v.startsWith('"') ? '"[redacted]"' : v.startsWith("'") ? "'[redacted]'" : '[redacted]'}`)
+    .replace(new RegExp(`\\b(${SECRET_KEYS})(\\s+)(?!\\[redacted)[^\\s,;}]+`, 'gi'), '$1$2[redacted]')
+    .replace(new RegExp(`(["'])(${IDENTITY_KEYS})\\1(\\s*:\\s*)("[^"]*"|'[^']*')`, 'gi'), (_m, q: string, key: string, sep: string, v: string) =>
+      `${q}${key}${q}${sep}${v.startsWith('"') ? '"[redacted]"' : "'[redacted]'"}`)
+    .replace(/\b(host(?:name)?|resolve host|connect to|connecting to)(\s*[=:]?\s*)(["'])[^"']+\3/gi, '$1$2$3<host>$3')
+    .replace(/[“«][^”»]*[”»]/g, '“<name>”')
+    .replace(/(\/home\/|\/users\/|\/var\/home\/|\/root\/|\/Users\/)[^\s:)'"]+/g, '<path>')
     .replace(/~\/[^\s:)'"]+/g, '<path>')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/"'<>]+/gi, (url) => `${url.slice(0, url.indexOf('://') + 3)}<host>`)
     .replace(/\b[\w.+-]+@[\w-]+(\.[\w-]+)*\b/g, '<user@host>')
     .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b/g, '<address>')
-    .replace(/\bssh:\/\/[^\s]+/gi, 'ssh://<host>');
+    .replace(/\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|ECONNRESET|EAI_AGAIN)(\s+)([A-Za-z0-9.-]+)(:\d+)?/g, '$1$2<host>$4');
+  text = redactIpv6(text);
+  text = redactHostNames(text);
+  for (const term of options.knownTerms ?? []) {
+    const trimmed = term.trim();
+    if (trimmed.length < 3) continue;
+    text = text.replace(new RegExp(`(?<![\\w.-])${escapeRegExp(trimmed)}(?![\\w-])`, 'gi'), '<host>');
+  }
+  return text;
 }
 
 /** Line-aware redaction of a 0.5.x-format crash report. */
-export function redactCrashReport(report: string): string {
+export function redactCrashReport(report: string, options: RedactionOptions = {}): string {
   let inException = false;
   const out: string[] = [];
   for (const line of report.split(/\r?\n/)) {
@@ -54,16 +123,16 @@ export function redactCrashReport(report: string): string {
       inException = true;
       out.push(line);
     } else if (inException) {
-      out.push(redactDiagnosticText(line));
+      out.push(redactDiagnosticText(line, options));
     } else if (CONTEXT_PREFIXES.some((prefix) => line.startsWith(prefix))) {
       out.push(`${line.slice(0, line.indexOf(':'))}: [redacted]`);
     } else if (line.startsWith('Exception summary:')) {
       const value = line.slice('Exception summary:'.length).trim();
-      out.push(`Exception summary: ${value.split(':', 1)[0]}`);
+      out.push(`Exception summary: ${redactDiagnosticText(value.split(':', 1)[0] ?? '', options)}`);
     } else if (line.startsWith('Top frame:')) {
       out.push('Top frame: [redacted]');
     } else {
-      out.push(redactDiagnosticText(line));
+      out.push(redactDiagnosticText(line, options));
     }
   }
   return `${out.join('\n').trimEnd()}\n`;
@@ -91,7 +160,9 @@ export function runtimeErrorReport(input: {
   kind: 'render' | 'error' | 'unhandledrejection' | string;
   error: unknown;
   appVersion?: string;
+  knownTerms?: readonly string[];
 }): DiagnosticReport {
+  const options: RedactionOptions = { knownTerms: input.knownTerms ?? [] };
   const className = errorClassName(input.error);
   const message = input.error instanceof Error ? input.error.message : typeof input.error === 'string' ? input.error : '';
   const stack = input.error instanceof Error && input.error.stack ? input.error.stack : '';
@@ -104,8 +175,8 @@ export function runtimeErrorReport(input: {
     `Exception summary: ${className}`,
     '',
     'Exception',
-    redactDiagnosticText(message),
-    redactDiagnosticText(stack),
+    redactDiagnosticText(message, options),
+    redactDiagnosticText(stack, options),
   ].join('\n');
   return { id: input.id, source: 'runtime-error', at: input.at, title: `${kindLabel}: ${className}`, body: bounded(`${body.trimEnd()}\n`) };
 }
@@ -120,7 +191,7 @@ export function parseLegacyCrashReportTimestamp(fileName: string): number | null
 }
 
 /** An imported 0.5.x crash report, redacted, titled by its exception class. */
-export function legacyCrashReport(id: string, relativePath: string, text: string): DiagnosticReport {
+export function legacyCrashReport(id: string, relativePath: string, text: string, options: RedactionOptions = {}): DiagnosticReport {
   const generated = /^Generated:\s*(\S+)/m.exec(text)?.[1];
   const generatedAt = generated ? Date.parse(generated) : Number.NaN;
   const summary = /^Exception summary:\s*([^:\r\n]+)/m.exec(text)?.[1]?.trim();
@@ -130,7 +201,7 @@ export function legacyCrashReport(id: string, relativePath: string, text: string
     source: 'imported-crash',
     at: Number.isFinite(generatedAt) ? generatedAt : parseLegacyCrashReportTimestamp(relativePath),
     title: `0.5.x crash report: ${className}`,
-    body: bounded(redactCrashReport(text)),
+    body: bounded(redactCrashReport(text, options)),
   };
 }
 
@@ -139,7 +210,7 @@ export function legacyCrashReport(id: string, relativePath: string, text: string
  * one report: each JSON line is re-serialized after redaction; malformed lines
  * are counted, not shown.
  */
-export function legacyDiagnosticHistoryReport(id: string, jsonl: string): DiagnosticReport {
+export function legacyDiagnosticHistoryReport(id: string, jsonl: string, options: RedactionOptions = {}): DiagnosticReport {
   const lines: string[] = [];
   let malformed = 0;
   let latest: number | null = null;
@@ -151,7 +222,7 @@ export function legacyDiagnosticHistoryReport(id: string, jsonl: string): Diagno
       const wall = (parsed as Record<string, unknown>)['wallClock'] ?? (parsed as Record<string, unknown>)['lastWallClock'];
       const at = typeof wall === 'string' ? Date.parse(wall) : typeof wall === 'number' ? wall : Number.NaN;
       if (Number.isFinite(at)) latest = Math.max(latest ?? at, at);
-      lines.push(redactDiagnosticText(JSON.stringify(parsed)));
+      lines.push(redactDiagnosticText(JSON.stringify(parsed), options));
     } catch {
       malformed += 1;
     }
@@ -170,13 +241,13 @@ export function sortDiagnosticReports(reports: readonly DiagnosticReport[]): Dia
 }
 
 /** The shareable text for one report or a bundle; bodies are re-redacted as a last guard. */
-export function formatDiagnosticReportsForSharing(reports: readonly DiagnosticReport[], exportedAt: number): string {
+export function formatDiagnosticReportsForSharing(reports: readonly DiagnosticReport[], exportedAt: number, options: RedactionOptions = {}): string {
   const sections = reports.map((report) => [
     `=== ${report.title}`,
     `Recorded: ${report.at === null ? 'unknown' : new Date(report.at).toISOString()}`,
     `Source: ${report.source}`,
     '',
-    redactDiagnosticText(report.body).trimEnd(),
+    redactDiagnosticText(report.body, options).trimEnd(),
   ].join('\n'));
   return [
     `PocketShell diagnostics export (${new Date(exportedAt).toISOString()})`,
