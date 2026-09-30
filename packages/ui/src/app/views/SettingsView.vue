@@ -61,6 +61,21 @@ import {
 } from '../zoom';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import ShortcutSettings from '../components/ShortcutSettings.vue';
+import DiagnosticsPanel from '../components/DiagnosticsPanel.vue';
+import { settingsSections } from '../settingsSections';
+import type { InstalledAppInfo } from '../api';
+import {
+  BACKGROUND_GRACE_OPTIONS,
+  SUBMIT_ENTER_DELAY_MAX_MS,
+  SUBMIT_ENTER_DELAY_MIN_MS,
+  SUBMIT_ENTER_DELAY_STEP_MS,
+  USAGE_WARN_MAX_PERCENT,
+  USAGE_WARN_MIN_PERCENT,
+  USAGE_WARN_STEP_PERCENT,
+  parseBackgroundGraceMs,
+  parseSubmitEnterDelayMs,
+  parseUsageWarnPercent,
+} from '@pocketshell/core';
 
 const connection = useConnectionStore();
 const projects = useProjectsStore();
@@ -264,6 +279,49 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
   const size = parseFontSize(el.value) ?? settings[key];
   settings.set(key, size);
   el.value = String(size);
+}
+
+/* --- Connections, Advanced, platform sections, Diagnostics, About ---------
+ * Grace and reconnect-on-return only change behaviour on a platform that
+ * suspends in the background (`api.app.backgroundGrace`); desktop keeps its
+ * connection while minimised and never shows them. Diagnostics renders only
+ * where the platform stores reports (`api.diagnostics`). Platform-only
+ * settings arrive through the settingsSections extension point.
+ * ---------------------------------------------------------------------- */
+
+const lifecycleSupported = api.app.backgroundGrace === true;
+const diagnosticsSupported = api.diagnostics !== undefined;
+const platformSections = computed(() => settingsSections());
+const appInfo = ref<InstalledAppInfo | null>(null);
+
+onMounted(async () => {
+  if (!api.app.info) return;
+  try {
+    appInfo.value = await api.app.info();
+  } catch {
+    appInfo.value = null;
+  }
+});
+
+const installedVersion = computed(() => {
+  const info = appInfo.value;
+  if (!info) return null;
+  return info.versionCode === null ? info.versionName : `${info.versionName} (${info.versionCode})`;
+});
+
+function onGraceChange(event: Event): void {
+  const parsed = parseBackgroundGraceMs((event.target as HTMLSelectElement).value);
+  if (parsed !== undefined) settings.set('backgroundGraceMs', parsed);
+}
+
+function onEnterDelayInput(event: Event): void {
+  const parsed = parseSubmitEnterDelayMs((event.target as HTMLInputElement).value);
+  if (parsed !== undefined) settings.set('submitEnterDelayMs', parsed);
+}
+
+function onWarnPercentInput(event: Event): void {
+  const parsed = parseUsageWarnPercent((event.target as HTMLInputElement).value);
+  if (parsed !== undefined) settings.set('usageWarnPercent', parsed);
 }
 
 /* --- Keyboard ------------------------------------------------------------
@@ -657,6 +715,140 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
     </section>
 
 
+    <section v-if="lifecycleSupported" class="group" data-testid="settings-group-connections">
+      <h3 class="group-title">Connections</h3>
+      <div class="row">
+        <div class="row-text">
+          <label class="row-label" for="background-grace">Keep connection after leaving</label>
+          <p class="row-hint">
+            How long a live terminal stays connected while PocketShell is in the
+            background. When it ends, the phone's connection closes; the remote session
+            keeps running on the host.
+          </p>
+        </div>
+        <select
+          id="background-grace"
+          class="control"
+          data-testid="setting-background-grace"
+          :value="settings.backgroundGraceMs"
+          @change="onGraceChange"
+        >
+          <option v-for="option in BACKGROUND_GRACE_OPTIONS" :key="option.milliseconds" :value="option.milliseconds">
+            {{ option.label }} · {{ option.detail }}
+          </option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="row-text">
+          <span class="row-label">Reconnect when I return</span>
+          <p class="row-hint">
+            Reconnect and reopen the session automatically when PocketShell comes back
+            after the connection closed. Off leaves it waiting for you to tap Reconnect.
+          </p>
+        </div>
+        <button
+          class="switch"
+          role="switch"
+          data-testid="setting-reconnect-on-return"
+          :aria-checked="settings.reconnectOnReturn"
+          :class="{ on: settings.reconnectOnReturn }"
+          @click="settings.set('reconnectOnReturn', !settings.reconnectOnReturn)"
+        >
+          <AppIcon :name="settings.reconnectOnReturn ? 'toggle-right' : 'toggle-left'" />
+          <span>{{ settings.reconnectOnReturn ? 'On' : 'Off' }}</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="group" data-testid="settings-group-advanced">
+      <h3 class="group-title">Advanced</h3>
+      <div class="row">
+        <div class="row-text">
+          <label class="row-label" for="enter-delay">Enter-key delay</label>
+          <p class="row-hint">
+            Pause after sending a prompt's text before sending Enter. Change it only if an
+            agent leaves pasted input unsubmitted.
+          </p>
+        </div>
+        <span class="range-control">
+          <input
+            id="enter-delay"
+            type="range"
+            data-testid="setting-enter-delay"
+            :min="SUBMIT_ENTER_DELAY_MIN_MS"
+            :max="SUBMIT_ENTER_DELAY_MAX_MS"
+            :step="SUBMIT_ENTER_DELAY_STEP_MS"
+            :value="settings.submitEnterDelayMs"
+            @input="onEnterDelayInput"
+          />
+          <output for="enter-delay" data-testid="setting-enter-delay-value">{{ settings.submitEnterDelayMs }} ms</output>
+        </span>
+      </div>
+      <div class="row">
+        <div class="row-text">
+          <label class="row-label" for="usage-warn">Usage: warn at</label>
+          <p class="row-hint">
+            A provider quota turns amber once this much of it is used. Critical (95%) and
+            exceeded (100%) stay fixed.
+          </p>
+        </div>
+        <span class="range-control">
+          <input
+            id="usage-warn"
+            type="range"
+            data-testid="setting-usage-warn"
+            :min="USAGE_WARN_MIN_PERCENT"
+            :max="USAGE_WARN_MAX_PERCENT"
+            :step="USAGE_WARN_STEP_PERCENT"
+            :value="settings.usageWarnPercent"
+            @input="onWarnPercentInput"
+          />
+          <output for="usage-warn" data-testid="setting-usage-warn-value">{{ settings.usageWarnPercent }}%</output>
+        </span>
+      </div>
+      <div class="row">
+        <div class="row-text">
+          <span class="row-label">Reset advanced defaults</span>
+          <p class="row-hint">Restores the Enter-key delay and usage warning threshold.</p>
+        </div>
+        <button
+          class="btn-ghost"
+          data-testid="settings-reset-advanced"
+          :disabled="settings.advancedIsDefault"
+          @click="settings.resetAdvancedDefaults()"
+        >
+          Reset
+        </button>
+      </div>
+    </section>
+
+    <section
+      v-for="section in platformSections"
+      :id="`settings-section-${section.id}`"
+      :key="section.id"
+      class="group"
+      :data-testid="`settings-section-${section.id}`"
+    >
+      <h3 class="group-title">{{ section.title }}</h3>
+      <component :is="section.component" />
+    </section>
+
+    <section v-if="diagnosticsSupported" class="group" data-testid="settings-group-diagnostics">
+      <h3 class="group-title">Diagnostics</h3>
+      <DiagnosticsPanel />
+    </section>
+
+    <section v-if="installedVersion" class="group" data-testid="settings-group-about">
+      <h3 class="group-title">About</h3>
+      <div class="row">
+        <div class="row-text">
+          <span class="row-label">Installed version</span>
+          <p class="row-hint">The build the platform reports for this install.</p>
+        </div>
+        <span class="control" data-testid="settings-installed-version">{{ installedVersion }}</span>
+      </div>
+    </section>
+
     <section v-if="updatesSupported" class="group">
       <h3 class="group-title">Updates</h3>
 
@@ -695,6 +887,22 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 </template>
 
 <style scoped>
+.range-control {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 64px;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+}
+.range-control input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.range-control output {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--fg);
+}
 .settings {
   display: flex;
   flex-direction: column;

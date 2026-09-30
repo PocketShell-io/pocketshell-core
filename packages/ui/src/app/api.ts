@@ -56,9 +56,23 @@ import type {
   SyncPushResult,
   SyncStatus,
   TransferProgress,
+  DiagnosticReport,
   UpdateCheckResult,
   UsageRow,
 } from '@pocketshell/core';
+
+/** The installed build, as the platform's package manager reports it. */
+export interface InstalledAppInfo {
+  /** e.g. `0.5.5` or `0.5.5-12-gabc1234`; `unknown` when the platform cannot say. */
+  versionName: string;
+  /** Android `versionCode`; null elsewhere. */
+  versionCode: number | null;
+  /** Package or bundle id, including any per-install suffix; '' when unknown. */
+  applicationId: string;
+}
+
+/** How a share request ended: handed to a share target, saved locally, or dismissed. */
+export type DiagnosticsShareOutcome = 'shared' | 'saved' | 'cancelled';
 import type { ZoomCommand } from '@pocketshell/core/shared/zoomKeys';
 
 
@@ -94,6 +108,17 @@ export interface PocketShellApi {
 
     "app": {
     "onResumed": (handler: () => void) => Unsubscribe;
+    /**
+     * Optional: the installed build's identity for Settings → About. A
+     * platform without it shows only the shared source revision it knows.
+     */
+    "info"?: () => Promise<InstalledAppInfo>;
+    /**
+     * Optional: true on a platform that suspends in the background and holds a
+     * live connection for a grace window (Android). Settings shows the grace
+     * and reconnect-on-return controls only where they change behaviour.
+     */
+    "backgroundGrace"?: boolean;
     };
 
     "ssh": {
@@ -249,7 +274,19 @@ export interface PocketShellApi {
     };
 
     "diag": {
-    "log": (entry: { kind: string; message: string; stack?: string; detail?: Record<string, unknown> }) => void;
+    "log": (entry: { kind: string; message: string; stack?: string; errorName?: string; detail?: Record<string, unknown> }) => void;
+    };
+
+    // Optional capability: locally stored diagnostic reports (runtime errors
+    // the shared app caught, native crashes, and imported 0.5.x reports) that
+    // Settings lists, deletes and shares. Reports arrive already redacted
+    // (core diagnosticReports.ts). Desktop writes a log file instead and omits
+    // the group; the Diagnostics section is hidden over the seam.
+    "diagnostics"?: {
+    "list": () => Promise<DiagnosticReport[]>;
+    "remove": (id: string) => Promise<boolean>;
+    "clear": () => Promise<number>;
+    "share": (payload: { fileName: string; text: string }) => Promise<DiagnosticsShareOutcome>;
     };
 
     // Optional capability: a browser deployment IS the current build (a reload

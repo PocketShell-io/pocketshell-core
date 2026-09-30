@@ -3,7 +3,7 @@ import { api } from './ipc';
 import { useComposerStore } from './stores/composer';
 import { useSettingsStore } from './stores/settings';
 import { useShellsStore } from './stores/shells';
-import { composerTiming, deliverPayload, sendRoute, type ComposerAgentKind } from '@pocketshell/core';
+import { deliverPayload, type ComposerAgentKind } from '@pocketshell/core';
 import type { useComposerDraft } from './useComposerDraft';
 
 /** The component's reactive props, as the send paths read them. */
@@ -49,24 +49,18 @@ export function useComposerSend(deps: ComposerSendDeps): {
   async function onSend(): Promise<void> {
     const k = key.value;
     const shellId = deps.shells.shellIdFor(sessionKey.value);
-    const route = sendRoute({
-      liveAgent: deps.props.agentKind ?? null,
-      presumedAgent: null,
-      // Inside the composer there is exactly one Send verb and it submits.
-      withEnter: true,
-    });
-    // Codex's TUI needs a longer gap before Enter (TmuxSessionViewModel.kt:12135).
-    const submitDelayMs =
-      route === 'agent-payload'
-        ? Math.max(250, composerTiming.submitDelayMs)
-        : composerTiming.submitDelayMs;
+    // The user's Settings → Advanced "Enter-key delay", read per send so a
+    // change applies to the next Send. Its default is composerTiming's 250 ms,
+    // the gap Codex's TUI needs before Enter (TmuxSessionViewModel.kt:12135),
+    // so every route keeps its shipped timing until the user moves it.
+    const submitDelayMs = settings.submitEnterDelayMs;
 
     const delivered = await composer.send(
       k,
       async (payload) => {
         if (!shellId) return false;
-        // Both arms write into the pane's PTY; they differ only in how long
-        // they wait before Enter (codex's TUI needs the longer gap).
+        // Every send writes into the pane's PTY and waits submitDelayMs
+        // before its separate Enter write.
         return deliverPayload(payload, {
           // Fenced on name AND workspace: the shellId came out of the
           // workspace-qualified registry, and the fence re-checks it main-side

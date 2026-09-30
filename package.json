@@ -42,6 +42,7 @@
     "typecheck:ui": "npm --prefix packages/ui run typecheck",
     "test:unit": "vitest run --exclude 'tests/integration/**'",
     "test:integration": "vitest run tests/integration",
+    "test:ui": "vitest run --config vitest.ui.config.ts",
     "build-docker": "bash scripts/build-docker.sh"
   },
   "devDependencies": {
