@@ -79,6 +79,20 @@ export interface PlatformHostStore {
 }
 
 /**
+ * One `ssh.onState` notification. `attempt`/`maxAttempts`/`error` are filled
+ * only by a transport that owns recovery (`ssh.reconnect` present): the dial
+ * of its ladder in progress while `reconnecting`, and the reason once it
+ * gives up (`lost`).
+ */
+export interface ConnectionStateEvent {
+  connectionId: string;
+  state: ConnectionState;
+  attempt?: number;
+  maxAttempts?: number;
+  error?: string;
+}
+
+/**
  * The full transport surface the shared UI consumes, generated from the
  * desktop preload's api object. Desktop provides it over Electron IPC
  * (the preload bridge); the web app provides the same surface over its browser
@@ -111,7 +125,21 @@ export interface PocketShellApi {
       }) => Promise<ConnectResult>;
     "exec": (connectionId: string, command: string) => Promise<ExecResult>;
     "close": (connectionId: string) => Promise<boolean>;
-    "onState": (listener: (payload: { connectionId: string; state: ConnectionState }) => void) => (() => void);
+    "onState": (listener: (payload: ConnectionStateEvent) => void) => (() => void);
+    /**
+     * Present when the transport owns recovery (#2954, D28: one reconnect
+     * owner) — Android's core `ConnectionController` today. Its presence is
+     * the capability: the shared connection store then runs no reconnect
+     * ladder of its own, shows the transport's `reconnecting` state and
+     * attempt count, and its Retry calls this with the SAME connection id
+     * (the transport keeps the logical id across its re-dials). Resolves
+     * true once the link (and the attached session) is back.
+     *
+     * Absent: the store owns recovery (its `ReconnectLoop` re-dials on
+     * `lost`, minting a new connection id) — desktop and web until their
+     * transports move onto the controller (#2936 U5/U6).
+     */
+    "reconnect"?: (connectionId: string) => Promise<boolean>;
     };
 
     "shell": {

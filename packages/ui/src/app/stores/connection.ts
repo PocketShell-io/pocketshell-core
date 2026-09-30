@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
-import { ref, shallowRef } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import { api } from '../ipc';
+import type { ConnectionStateEvent } from '../api';
 import type {
   BootstrapResult,
   ConnectionId,
@@ -38,6 +39,17 @@ import { errorMessage } from '@pocketshell/core/shared/errors';
  * A manual `reconnect()` supersedes a pending schedule without discarding its
  * attempt budget, and an explicit `disconnect()` cancels the whole thing —
  * nobody wants the app re-dialling a host they just left.
+ *
+ * ## When the transport owns recovery (#2954, D28/D42)
+ *
+ * A platform whose `ssh` group has `reconnect` (Android: core's
+ * `ConnectionController`) re-dials by itself and keeps the connection id
+ * stable. Running the loop above beside it is two ladders racing — a second,
+ * slower re-dial after the controller already recovered or gave up. So with
+ * that capability this store makes no reconnect decision at all: the
+ * `ReconnectLoop` never starts, the resume probe is the transport's, the
+ * banner reads the transport's `reconnecting` state and attempt count
+ * ({@link transportRetry}), and Retry is `api.ssh.reconnect(id)`.
  */
 export const useConnectionStore = defineStore('connection', () => {
   const hosts = ref<HostEntry[]>([]);
@@ -60,6 +72,19 @@ export const useConnectionStore = defineStore('connection', () => {
    * is still mounted on the old id, or it can hide the reconnect banner.
    */
   let replacingConnectionId: ConnectionId | null = null;
+
+  /**
+   * Whether the transport owns recovery — see the header. Read once: a
+   * platform provides its API before any store exists and never swaps it.
+   */
+  const transportOwnsRecovery = typeof api.ssh.reconnect === 'function';
+
+  /**
+   * The transport's ladder while it re-dials: the dial in progress and its
+   * budget (`maxAttempts` null when the transport does not say). Null when
+   * no transport-owned recovery is running.
+   */
+  const transportRetry = ref<{ attempt: number; maxAttempts: number | null } | null>(null);
 
   const loop = new ReconnectLoop({
     hasTarget: () => activeHost.value != null,
@@ -106,12 +131,41 @@ export const useConnectionStore = defineStore('connection', () => {
     ) {
       return;
     }
+    if (transportOwnsRecovery) {
+      followTransportRecovery(payload);
+      return;
+    }
     state.value = payload.state;
     if (payload.state === 'lost') {
       error.value = 'Connection lost';
       loop.begin();
     }
   });
+
+  /**
+   * Mirror a recovery-owning transport's state; decide nothing. A link that
+   * comes back re-reads the surfaces a dead link left stale — the id did not
+   * change, but a poll that ran mid-recovery may have left its failure on
+   * screen.
+   */
+  function followTransportRecovery(payload: ConnectionStateEvent): void {
+    const previous = state.value;
+    state.value = payload.state;
+    if (payload.state === 'reconnecting') {
+      transportRetry.value = { attempt: payload.attempt ?? 0, maxAttempts: payload.maxAttempts ?? null };
+      error.value = payload.error ?? 'Connection lost';
+      return;
+    }
+    transportRetry.value = null;
+    if (payload.state === 'lost') {
+      error.value = payload.error ?? 'Connection lost';
+      return;
+    }
+    if (payload.state === 'connected' && (previous === 'reconnecting' || previous === 'lost')) {
+      error.value = null;
+      void recoverSurfaces(payload.connectionId);
+    }
+  }
 
   // Sleep/wake (F12). A machine that slept is the classic SILENT drop: the
   // peer is gone (NAT entry expired, network changed) but the local TCP stack
@@ -125,6 +179,9 @@ export const useConnectionStore = defineStore('connection', () => {
   // will confirm shortly after; `startAutoReconnect` is idempotent, so
   // whichever notice lands first wins.
   async function onOsResume(): Promise<void> {
+    // A recovery-owning transport reconciles resume itself (Android drives
+    // the controller's background grace from its own lifecycle).
+    if (transportOwnsRecovery) return;
     if (state.value !== 'connected' || !connectionId.value) return;
     const probe = await api.ssh.exec(connectionId.value, 'true').catch(() => null);
     if (probe && probe.exitCode === 0) return;
@@ -166,6 +223,7 @@ export const useConnectionStore = defineStore('connection', () => {
   async function reconnect(): Promise<boolean> {
     const host = activeHost.value;
     if (!host) return false;
+    if (transportOwnsRecovery) return reconnectThroughTransport();
     // A manual dial supersedes a pending automatic one. The backoff keeps its
     // attempt position: a user pressing the button 4s into a 5s wait is saying
     // "now", not "start the curve over" — the schedule only resets on success.
@@ -187,6 +245,34 @@ export const useConnectionStore = defineStore('connection', () => {
   }
 
   /**
+   * Retry on a recovery-owning transport: ask IT to recover the same logical
+   * connection. It joins a ladder already running rather than starting a
+   * second one, and the id does not change, so nothing is re-keyed.
+   */
+  async function reconnectThroughTransport(): Promise<boolean> {
+    const id = connectionId.value;
+    const reconnectTransport = api.ssh.reconnect;
+    if (!id || !reconnectTransport) return false;
+    let ok: boolean;
+    try {
+      ok = await reconnectTransport(id);
+    } catch (e) {
+      error.value = errorMessage(e);
+      ok = false;
+    }
+    if (connectionId.value !== id) return false; // disconnected meanwhile
+    if (!ok) {
+      if (state.value !== 'reconnecting') state.value = 'lost';
+      return false;
+    }
+    transportRetry.value = null;
+    state.value = 'connected';
+    error.value = null;
+    await recoverSurfaces(id);
+    return true;
+  }
+
+  /**
    * Skip the wait: dial now, under the running curve's budget.
    *
    * With no curve running this is a plain `reconnect()` — the button's old
@@ -194,7 +280,7 @@ export const useConnectionStore = defineStore('connection', () => {
    * spent.
    */
   async function retryNow(): Promise<void> {
-    if (!loop.running) {
+    if (transportOwnsRecovery || !loop.running) {
       await reconnect();
       return;
     }
@@ -326,6 +412,7 @@ export const useConnectionStore = defineStore('connection', () => {
     }
     connectionId.value = null;
     replacingConnectionId = null;
+    transportRetry.value = null;
     state.value = 'idle';
     bootstrap.value = null;
     activeHost.value = null;
@@ -341,7 +428,9 @@ export const useConnectionStore = defineStore('connection', () => {
     activeHost,
     autoRetry: loop.autoRetry,
     retryIn: loop.retryIn,
-    recovering: loop.recovering,
+    recovering: computed(() => loop.recovering.value || transportRetry.value !== null),
+    transportOwnsRecovery,
+    transportRetry,
     loadHosts,
     connect,
     reconnect,

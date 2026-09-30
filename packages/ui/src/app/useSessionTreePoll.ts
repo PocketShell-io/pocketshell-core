@@ -77,7 +77,8 @@ export function useSessionTreePoll(deps: SessionTreePollDeps): { now: Ref<number
    *   - `document.hidden`, because a window in the background has no reader and
    *     a laptop in a bag should not be holding an SSH connection busy;
    *   - a listing already in flight (see {@link polling});
-   *   - a transport main has reported dead (`connection.state === 'lost'`),
+   *   - a transport main has reported dead (`connection.state === 'lost'`)
+   *     or is re-dialling (`'reconnecting'`, a recovery-owning transport),
    *     because the failure has already been surfaced once and a poll cannot
    *     revive a dead link — only the reconnect can. Ticking on would fail
    *     every five seconds forever, rewriting `sessions.error` with a raw IPC
@@ -90,7 +91,15 @@ export function useSessionTreePoll(deps: SessionTreePollDeps): { now: Ref<number
    */
   async function pollSessions(): Promise<void> {
     const connectionId = deps.connection.connectionId;
-    if (!connectionId || polling || document.hidden || deps.connection.state === 'lost') return;
+    if (
+      !connectionId ||
+      polling ||
+      document.hidden ||
+      deps.connection.state === 'lost' ||
+      deps.connection.state === 'reconnecting'
+    ) {
+      return;
+    }
     polling = true;
     try {
       await deps.sessions.refresh(connectionId, { quiet: true });
