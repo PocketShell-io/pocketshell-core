@@ -1,5 +1,7 @@
 /**
- * Which mark a session tab wears for the agent running in it
+ * Which mark a session tab wears for the agent running in it, and which mark
+ * a provider wears in the usage table — the two places this UI names an
+ * engine or provider by its vendor's own silhouette.
  *
  *
  * The classification itself is not decided here and is not decided anywhere in
@@ -75,7 +77,13 @@ import type { SessionAgentKind } from '../types';
  * mark renamed in the registry fails `vue-tsc` at the call site rather than
  * rendering an empty `<svg>`.
  */
-type AgentMarkName = 'brand-claude' | 'brand-codex' | 'brand-grok' | 'brand-opencode';
+type AgentMarkName =
+  | 'brand-claude'
+  | 'brand-codex'
+  | 'brand-copilot'
+  | 'brand-grok'
+  | 'brand-opencode'
+  | 'brand-zai';
 
 /** What a session tab shows for one agent kind. */
 export interface AgentMark {
@@ -120,6 +128,46 @@ export function agentMark(kind: SessionAgentKind | null | undefined): AgentMark 
     default:
       // An enum member added host-side that this build does not know about.
       // Silence is the safe answer for the same reason `unknown` gets it.
+      return null;
+  }
+}
+
+/**
+ * The mark the provider usage table wears beside [provider]'s name — the same
+ * vendor register the session tabs draw from, read by the usage ROW's
+ * provider key instead of a session's agent kind.
+ *
+ * The tab function stays the narrower question and this the broader one,
+ * because the two key off different vocabularies that mostly overlap: the
+ * usage table speaks the helper's provider names, where `go` IS OpenCode (on
+ * the Go backend, the helper's own gloss) but `copilot` and `zai` are
+ * providers no session kind ever names — their marks exist for this table
+ * alone. An unfamiliar provider gets null, the tab rule's silence: a table
+ * where every row wears SOMETHING would have the same "we do not know"
+ * glyph problem the header above refuses.
+ */
+export function usageProviderMark(provider: string): AgentMark | null {
+  switch (provider.toLowerCase()) {
+    case 'claude':
+      return { icon: 'brand-claude', label: 'Claude Code' };
+    case 'codex':
+      return { icon: 'brand-codex', label: 'Codex' };
+    case 'copilot':
+    case 'github_copilot':
+    case 'github-copilot':
+      return { icon: 'brand-copilot', label: 'GitHub Copilot' };
+    // The helper's own gloss: `go` is OpenCode on the Go backend.
+    case 'go':
+    case 'opencode':
+    case 'open_code':
+    case 'open-code':
+      return { icon: 'brand-opencode', label: 'OpenCode' };
+    case 'grok':
+    case 'grok-build':
+      return { icon: 'brand-grok', label: 'Grok' };
+    case 'zai':
+      return { icon: 'brand-zai', label: 'Z.ai' };
+    default:
       return null;
   }
 }

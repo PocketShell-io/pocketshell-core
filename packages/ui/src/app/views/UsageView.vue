@@ -16,13 +16,19 @@
 // monthly); windows the provider does not have are dropped upstream, so the
 // panel never shows a "not reported" placeholder for a window that does not
 // exist. A window label (`5h`/`7d`/`weekly`/`monthly`) is always present.
-// A `resets_available` count (codex's reset credits, grok's restok tokens)
-// renders as a plain per-provider note line when the provider has a POSITIVE
-// count, dated with the soonest expiry the helper reports ("1 reset
-// available · expires in 26d"; the absolute timestamp is the hover title).
-// A spent count (0) renders no line at all: the meter and the status badge
-// already say the provider is out, and a standing "0 resets available" is
-// one more zero on a screen whose job is comparison.
+// A `resets_available` count — codex's reset credits, grok's restok tokens,
+// zai's and claude's banked resets — renders as a plain per-provider note
+// line when the provider has a POSITIVE count, dated with the soonest expiry
+// the helper reports ("1 reset available · expires in 26d"; the absolute
+// timestamp is the hover title). A spent count (0) renders no line at all:
+// the meter and the status badge already say the provider is out, and a
+// standing "0 resets available" is one more zero on a screen whose job is
+// comparison.
+//
+// The provider name wears the same vendor mark the session tabs draw from
+// (see usageProviderMark in @pocketshell/core/shared/agentBadge): the shape
+// says which provider, the capitalised name beside it says it again in
+// words, and a provider the register does not know wears nothing.
 //
 // A null percentage is NOT an empty row. It means the meter is unknown, not
 // that the provider has nothing to say: the reset time is still real and is
@@ -34,6 +40,7 @@ import { computed, onMounted } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useAgentsStore } from '../stores/agents';
 import AppIcon from '@ui/components/AppIcon.vue';
+import { usageProviderMark } from '@pocketshell/core/shared/agentBadge';
 import type { UsageRow } from '@pocketshell/core';
 
 const props = defineProps<{
@@ -49,6 +56,14 @@ const props = defineProps<{
 const connection = useConnectionStore();
 const agents = useAgentsStore();
 const connId = computed(() => connection.connectionId);
+
+/**
+ * The rows as rendered: each provider paired with the mark its name wears,
+ * resolved once here rather than twice per cell in the template.
+ */
+const rowsWithMarks = computed(() =>
+  agents.usage.map((row) => ({ row, mark: usageProviderMark(row.provider) })),
+);
 
 onMounted(async () => {
   if (connId.value) await agents.loadUsage(connId.value);
@@ -100,12 +115,12 @@ function pctText(p: number): string {
 
 /**
  * The "how many full resets can I still spend" line — codex's reset credits,
- * grok's restok tokens — normalized by the parser into one count. Null when
- * the provider has no such concept (claude, copilot, zai), and now also when
- * the count is spent (0): the meter at zero and the limited/blocked badge
- * already say "out", and the footnote's job is the resource that remains.
- * When the parser could read an expiry for the soonest credit, the count is
- * dated — the same relative form the resets column uses.
+ * grok's restok tokens, zai's and claude's banked resets — normalized by the
+ * parser into one count. Null when the provider has no such concept, and now
+ * also when the count is spent (0): the meter at zero and the limited/blocked
+ * badge already say "out", and the footnote's job is the resource that
+ * remains. When the parser could read an expiry for the soonest credit, the
+ * count is dated — the same relative form the resets column uses.
  */
 function resetsNote(row: UsageRow): string | null {
   const n = row.resets_available;
@@ -205,12 +220,16 @@ async function onRefresh(): Promise<void> {
            gaps, which read as four stray underlines rather than a table head. -->
       <div class="head-rule" />
 
-      <template v-for="(row, i) in agents.usage" :key="row.provider">
+      <template v-for="({ row, mark }, i) in rowsWithMarks" :key="row.provider">
         <div v-if="i > 0" class="divider" />
 
         <!-- The identity cell leads every provider group ONCE, whatever the
-             provider's window count — 1, 2, 3, or (an errored row) none. -->
+             provider's window count — 1, 2, 3, or (an errored row) none. The
+             mark is the same vendor silhouette the session tabs wear, muted
+             like the tree shows them; a provider the register does not know
+             (a future one, a renamed one) wears nothing, the tab rule. -->
         <span class="cell provider-cell">
+          <AppIcon v-if="mark" :name="mark.icon" :size="14" class="provider-mark" />
           <span class="provider">{{ row.provider }}</span>
           <!-- Badge only when the state is NOT ok: a row of "ok" chips is
                noise, and the meter already says so when it is fine. -->
@@ -354,6 +373,11 @@ h2 {
 /* ---- column 1: identity, the top of the hierarchy ---------------------- */
 .provider-cell {
   gap: var(--sp-2);
+}
+/* The vendor mark, at the same muted grey the session tree shows the tab
+   marks at — the SHAPE says which provider, never a tint. */
+.provider-mark {
+  color: var(--fg-muted);
 }
 .provider {
   font-size: var(--fs-400);
