@@ -500,20 +500,20 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
 /* ── The per-root sort door ────────────────────────────────────────────────
    The `+`'s reveal rules copied whole — opacity never `display` (the count
    never reflows under the cursor), `:focus-visible` so a keyboard user sees
-   what they tabbed to, `hover: none` for the pointer that cannot hover —
-   with ONE widening: `.engaged`, a non-default sort in force, holds the mark
-   visible without any hover. A list drawn in an order the host did not send
-   must say so where the eye is, not only under the cursor; the tint is
-   `.sort-btn.engaged`'s rule from SessionTree, carried over, because the two
-   marks are doors to the same menu and must read as the same control. */
+   what they tabbed to, `hover: none` for the pointer that cannot hover.
+   Nothing holds the mark visible on its own: the rows' order itself says a
+   sort is in force, and the state keeps its always-visible doors in the
+   search row and Settings' select. `.engaged` only tints the mark once the
+   cursor is on the header — `.sort-btn.engaged`'s rule from SessionTree,
+   carried over, because the two marks are doors to the same menu and must
+   read as the same control. */
 .root-sort {
   flex: none;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
 .folder-header:hover .root-sort,
-.root-sort:focus-visible,
-.root-sort.engaged {
+.root-sort:focus-visible {
   opacity: 1;
 }
 .root-sort.engaged {
