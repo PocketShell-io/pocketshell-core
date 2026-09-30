@@ -62,6 +62,8 @@ import UsageView from './UsageView.vue';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
+import { useWorkspaceRootsBinding } from '../stores/workspaceRoots';
+import { useNarrowWorkspace } from '../useNarrowWorkspace';
 
 const route = useRoute();
 const router = useRouter();
@@ -325,6 +327,13 @@ const missingToolsText = computed(() => {
 /** Folder named by the route, so the panel can highlight the current row. */
 const activeFolder = computed(() => (route.params['folder'] as string | undefined) ?? null);
 
+// The narrow (phone) layout and the registered-roots binding; see each file.
+const { layout, shown, onShowPanel, onCollapsePanel, closeNarrowPanel } = useNarrowWorkspace({
+  activeFolder,
+  panelCollapsed,
+});
+useWorkspaceRootsBinding();
+
 /**
  * The panel's folder rows, flat and in draw order, for the `Ctrl+↑`/`Ctrl+↓`
  * chords below, plus the switcher's root sections. `allFolders` is the same
@@ -344,6 +353,8 @@ const { folders, allFolders, roots } = useFolderTree();
  * and the point of the navigation is to move to the new tab.
  */
 function onSelectFolder(folder: SessionDirectory, session?: string): void {
+  // A pick from the full-width panel is a request to see that folder.
+  closeNarrowPanel();
   if (folder.key === activeFolder.value && session === undefined) {
     // A bare re-click of the open row: nothing to navigate to — same folder,
     // same route — but it is still "take me to this workspace", so the
@@ -614,8 +625,8 @@ async function onRefreshUsage(): Promise<void> {
            and back one click away and still returns ~90% of the panel's width
            to the terminal. v-if, not v-show — it must never match a selector
            while the expanded header's twin buttons do. -->
-      <aside v-if="panelCollapsed" class="collapsed-rail">
-        <button class="icon-btn" title="Show session panel" @click="panelCollapsed = false">
+      <aside v-if="shown.rail" class="collapsed-rail">
+        <button class="icon-btn" title="Show session panel" @click="onShowPanel">
           <AppIcon name="panel-left" :size="14" />
         </button>
         <button class="icon-btn" title="Back to hosts" @click="onBack">
@@ -712,9 +723,10 @@ async function onRefreshUsage(): Promise<void> {
            v-show, not v-if — collapsing must not cost the tree its disclosure
            and scroll state. A flex column: the tree above, host actions below. -->
       <aside
-        v-show="!panelCollapsed"
+        v-show="shown.panel"
         class="session-panel"
-        :style="{ width: `${panelWidth}px` }"
+        :class="{ 'full-width': layout === 'panel' }"
+        :style="layout === 'split' ? { width: `${panelWidth}px` } : undefined"
       >
         <!-- The host destinations moved INTO this component's header as an
              overflow menu; it emits which overlay was asked for and this view
@@ -722,17 +734,19 @@ async function onRefreshUsage(): Promise<void> {
         <SessionTree
           ref="sessionTreeEl"
           :active-folder="activeFolder"
+          :active-session="typeof route.query['tab'] === 'string' ? route.query['tab'] : null"
+          :show-sessions="layout !== 'split'"
           :auto-forward="autoFwd"
           :forward-count="fwdCount"
           @select="onSelectFolder"
           @back="onBack"
-          @collapse="panelCollapsed = true"
+          @collapse="onCollapsePanel"
           @panel="panel = $event"
           @palette="paletteOpen = true"
         />
       </aside>
       <div
-        v-show="!panelCollapsed"
+        v-show="shown.splitter"
         class="splitter"
         role="separator"
         aria-orientation="vertical"
@@ -741,7 +755,7 @@ async function onRefreshUsage(): Promise<void> {
       />
 
       <!-- Right pane: the selected folder's workspace, or the empty state. -->
-      <main class="session-pane">
+      <main v-show="shown.pane" class="session-pane">
         <router-view />
       </main>
     </div>
@@ -965,6 +979,12 @@ async function onRefreshUsage(): Promise<void> {
 .splitter:hover {
   background: var(--accent-dim);
   transition-delay: 250ms;
+}
+/* The narrow layout's panel (useNarrowWorkspace.ts): whole width, no seam. */
+.session-panel.full-width {
+  flex: 1 1 auto;
+  width: 100%;
+  border-right: none;
 }
 /* No border-left here: the session panel draws its own right hairline and the
    splitter sits between them. */

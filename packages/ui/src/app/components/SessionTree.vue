@@ -77,6 +77,7 @@ import { useConnectionStore } from '../stores/connection';
 import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
+import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { editingTarget } from '../editingTarget';
 import { useFolderTree } from '../folderTree';
@@ -115,6 +116,13 @@ defineProps<{
    * open) and this header's buttons must read exactly like the rail's.
    */
   forwardCount?: number;
+  /** The open folder's selected session tab, marked on a leaf row. */
+  activeSession?: string | null;
+  /**
+   * Draw each folder's sessions as leaf rows — the narrow (phone) layout,
+   * where no folder workspace sits beside the panel to show them as tabs.
+   */
+  showSessions?: boolean;
 }>();
 
 /**
@@ -150,6 +158,7 @@ const emit = defineEmits<{
 }>();
 
 const composer = useComposerStore();
+const workspaceRoots = useWorkspaceRootsStore();
 const connection = useConnectionStore();
 const projects = useProjectsStore();
 const sessions = useSessionsStore();
@@ -578,11 +587,21 @@ defineExpose({ openCreate });
          the user scroll past. No dismiss — only `a ack`, one row or all. -->
     <CrashWarningBanner :now="now" />
 
+    <!-- The host's registered roots come from the host itself when the
+         platform provides `api.workspaces` (stores/workspaceRoots.ts). A
+         listing that failed or came back malformed is said here, over the
+         tree, rather than drawn as a host with no roots. -->
+    <p v-if="workspaceRoots.hostManaged && workspaceRoots.state.error" class="error roots-error" role="alert">
+      {{ workspaceRoots.state.error }}
+    </p>
+
     <SessionTreeRows
       :active-folder="activeFolder"
+      :active-session="activeSession ?? null"
+      :show-sessions="showSessions ?? false"
       :now="now"
       :default-start-in="defaultStartIn"
-      @select="emit('select', $event)"
+      @select="(folder, session) => emit('select', folder, session)"
       @menu="openFolderMenu"
       @create="creating = { startIn: $event }"
       @sort="onRowSort"

@@ -57,6 +57,7 @@ import type {
   TransferProgress,
   UpdateCheckResult,
   UsageRow,
+  WorkspaceRootsApi,
 } from '@pocketshell/core';
 import type { ZoomCommand } from '@pocketshell/core/shared/zoomKeys';
 
@@ -284,6 +285,13 @@ export interface PocketShellApi {
     "editors"?: {
     "openVsCode": (req: { hostToken: string; path: string }) => Promise<boolean>;
     };
+
+    // Optional capability: the host CLI's `pocketshell workspaces` contract
+    // (core `workspaceRootsApiFromExec` builds it from the platform's exec).
+    // With it, the session panel's roots are the host's own registrations,
+    // partitioned by the stable host identity; without it they stay the
+    // per-host list in Settings. See stores/workspaceRoots.ts.
+    "workspaces"?: WorkspaceRootsApi;
 
     "sync": {
     "status": () => Promise<SyncStatus>;

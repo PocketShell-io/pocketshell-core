@@ -29,22 +29,14 @@
 import { computed, onMounted, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
-import { useProjectsStore } from '../stores/projects';
-import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import { useUpdateStore } from '../stores/update';
+import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
 import { hostEntryId } from '@pocketshell/core';
 import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from '../folderSort';
-import { canonicalisePath } from '../sessionGrouping';
-import {
-  inferHome,
-  normaliseRootPath,
-  OTHER_ROOT,
-  rootForPath,
-  SESSION_ROOTS_MAX,
-} from '../sessionRoots';
+import { useProjectRoots } from '../useProjectRoots';
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -61,29 +53,35 @@ import {
 } from '../zoom';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import ShortcutSettings from '../components/ShortcutSettings.vue';
+// Used by the roots list's icon buttons (and the notices); it was referenced
+// without an import, so those buttons rendered empty.
+import AppIcon from '@ui/components/AppIcon.vue';
 
 const connection = useConnectionStore();
-const projects = useProjectsStore();
-const sessions = useSessionsStore();
 const settings = useSettingsStore();
 const hostList = useHostsStore();
 const updates = useUpdateStore();
+const workspaceRoots = useWorkspaceRootsStore();
 // Update checks are a desktop capability (the desktop install replaces itself
 // from GitHub releases); the web deployment is always current, so the whole
 // group stays hidden over a platform without the seam.
 const updatesSupported = api.update !== undefined;
 
-/**
- * The host whose project roots this section edits.
- *
- * A connected workspace supplies its active alias, so opening Settings there
- * cannot accidentally edit another instance. When Settings is opened from
- * the disconnected host picker, the user chooses an alias explicitly before
- * the root controls become active.
- */
-const selectedRootHost = ref('');
-const rootHost = computed(() => connection.activeHost?.name ?? selectedRootHost.value);
-const scopedSessionRoots = computed(() => settings.sessionRootsFor(rootHost.value));
+const {
+  selectedRootHost,
+  rootHost,
+  rootsOnHost,
+  rootsEditable,
+  rootRows,
+  rootDraft,
+  rootSuggestions,
+  rootsFull,
+  rootMessage,
+  selectDefaultRootHost,
+  onAddRoot,
+  onRemoveRoot,
+  onMoveRoot,
+} = useProjectRoots();
 
 onMounted(async () => {
   // The picker loads hosts on its own mount, but the workspace does not
@@ -91,15 +89,7 @@ onMounted(async () => {
   // the single source for the default-host choices, so ask for it when the
   // list is empty rather than rendering an empty select.
   if (!connection.hosts.length) await connection.loadHosts();
-  // Session roots are keyed by the host's alias; the default is keyed by its
-  // identity, which is the alias for a config host and the stable id for a
-  // saved one — so resolve the row and take its name.
-  const defaultHostRow = hostList.defaultHostKey
-    ? connection.hosts.find((host) => hostEntryId(host) === hostList.defaultHostKey)
-    : undefined;
-  if (!connection.activeHost && defaultHostRow) {
-    selectedRootHost.value = defaultHostRow.name;
-  }
+  selectDefaultRootHost();
 });
 
 /**
@@ -129,77 +119,7 @@ function onSortChange(event: Event): void {
   settings.setSessionTreeSort((event.target as HTMLSelectElement).value as FolderSortKey);
 }
 
-/* --- Session roots -------------------------------------------------------
- * The session panel's top level for the selected host. An empty host entry
- * means "derive roots from $HOME", which is what the panel did before this
- * control existed, so this section is additive: a user who never opens it
- * sees no change.
- * ---------------------------------------------------------------------- */
 
-const rootDraft = ref('');
-const rootError = ref<string | null>(null);
-
-/**
- * Roots offered as suggestions: the ones the CURRENT host's sessions are
- * actually running under, minus what is already registered.
- *
- * This exists because a text field alone asks the user to remember paths on a
- * machine they are not looking at. Their real roots are, by definition, where
- * their sessions already are — so the app can just read them off the session
- * list it already has when that host is connected. There is no remote
- * directory scan behind this: the panel can open with no connection at all
- * from the host picker, and a suggestion list that is sometimes empty is
- * better than one that sometimes blocks on SSH. The phone solves it the other
- * way, with a remote directory scan over three guessed parents
- * (WatchedFoldersViewModel.kt:397).
- */
-const rootSuggestions = computed<string[]>(() => {
-  // Sessions are only associated with an alias while that host is connected.
-  // Do not offer stale rows from a previous connection for a host selected in
-  // the disconnected picker.
-  if (!rootHost.value || rootHost.value !== connection.activeHost?.name) return [];
-  const paths = sessions.sessions.map((session) => session.path);
-  const home = projects.home ?? inferHome(paths);
-  const out: string[] = [];
-  for (const path of paths) {
-    const { key } = rootForPath(canonicalisePath(path), home);
-    if (key === OTHER_ROOT) continue;
-    if (scopedSessionRoots.value.includes(key)) continue;
-    if (!out.includes(key)) out.push(key);
-  }
-  return out.sort();
-});
-
-const rootsFull = computed(() => scopedSessionRoots.value.length >= SESSION_ROOTS_MAX);
-
-/**
- * Add whatever is in the field. The store owns normalisation and dedupe, so
- * the only work here is turning its `false` into a sentence — and the two
- * reasons it can refuse a *well-formed* path need telling apart, because
- * "already registered" and "list is full" call for different next actions.
- */
-function onAddRoot(): void {
-  const value = rootDraft.value;
-  if (!rootHost.value || !value.trim()) return;
-  if (normaliseRootPath(value) === null) {
-    rootError.value = 'Use an absolute path, or one under ~ — for example ~/git.';
-    return;
-  }
-  if (!settings.addSessionRoot(rootHost.value, value)) {
-    rootError.value = rootsFull.value
-      ? `That is the limit of ${SESSION_ROOTS_MAX} roots. Remove one first.`
-      : 'That root is registered already.';
-    return;
-  }
-  rootDraft.value = '';
-  rootError.value = null;
-}
-
-function onRemoveRoot(path: string): void {
-  if (!rootHost.value) return;
-  settings.removeSessionRoot(rootHost.value, path);
-  rootError.value = null;
-}
 
 /* --- Theme ---------------------------------------------------------------
  * The options are read off the THEMES registry, so this control never needs
@@ -322,7 +242,12 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
             The top level of the session tree: <code>~/git</code>, <code>~/tmp</code>, or
             any folder you keep projects in. Every session below a root is grouped under
             it, by the folder it runs in. Sessions under no root collect in
-            <em>other</em>, at the bottom. Roots are stored separately for each SSH host;
+            <em>other</em>, at the bottom.
+            <template v-if="rootsOnHost">
+              Roots are registered on the host itself; removing one only takes it off
+              this list — its folder, files and sessions stay.
+            </template>
+            <template v-else>Roots are stored separately for each SSH host;</template>
             <template v-if="rootHost">
               this list belongs to <code>{{ rootHost }}</code>.
             </template>
@@ -340,15 +265,49 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
           </select>
         </div>
 
-        <template v-if="rootHost">
-          <ul v-if="scopedSessionRoots.length" class="roots">
-            <li v-for="root in scopedSessionRoots" :key="root" class="root">
-              <span class="root-path">{{ root }}</span>
-              <button class="icon-btn" :title="`Remove ${root}`" @click="onRemoveRoot(root)">
+        <template v-if="rootsEditable">
+          <ul v-if="rootRows.length" class="roots" data-testid="workspace-roots">
+            <li
+              v-for="(root, index) in rootRows"
+              :key="root.path"
+              class="root"
+              :data-root-path="root.path"
+            >
+              <span class="root-path" :title="root.path">{{ root.label }}</span>
+              <template v-if="rootsOnHost">
+                <button
+                  class="icon-btn"
+                  :title="`Move ${root.label} up`"
+                  :disabled="index === 0 || workspaceRoots.state.mutating"
+                  @click="onMoveRoot(root.path, -1)"
+                >
+                  <AppIcon name="chevron-up" :size="14" />
+                </button>
+                <button
+                  class="icon-btn"
+                  :title="`Move ${root.label} down`"
+                  :disabled="index === rootRows.length - 1 || workspaceRoots.state.mutating"
+                  @click="onMoveRoot(root.path, 1)"
+                >
+                  <AppIcon name="chevron-down" :size="14" />
+                </button>
+              </template>
+              <button
+                class="icon-btn"
+                :title="`Remove ${root.label}`"
+                :disabled="rootsOnHost && workspaceRoots.state.mutating"
+                @click="onRemoveRoot(root.path)"
+              >
                 <AppIcon name="trash-2" :size="14" />
               </button>
             </li>
           </ul>
+          <p
+            v-else-if="rootsOnHost && workspaceRoots.state.status === 'loading'"
+            class="row-hint"
+          >
+            Reading this host's workspace roots…
+          </p>
 
           <div class="add-root">
             <input
@@ -368,20 +327,32 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
             <datalist id="root-suggestions">
               <option v-for="path in rootSuggestions" :key="path" :value="path" />
             </datalist>
-            <button class="add-btn" :disabled="rootsFull" @click="onAddRoot">
+            <button
+              class="add-btn"
+              :disabled="rootsFull || (rootsOnHost && workspaceRoots.state.mutating)"
+              @click="onAddRoot"
+            >
               <AppIcon name="plus" :size="14" />
               Add
             </button>
           </div>
 
-          <p v-if="rootError" class="notice">
-            <AppIcon name="alert-triangle" :size="14" />
-            <span>{{ rootError }}</span>
+          <p
+            v-if="rootMessage"
+            class="notice"
+            :class="{ info: rootMessage.tone === 'info' }"
+            :role="rootMessage.tone === 'error' ? 'alert' : undefined"
+          >
+            <AppIcon :name="rootMessage.tone === 'error' ? 'alert-triangle' : 'check'" :size="14" />
+            <span>{{ rootMessage.text }}</span>
           </p>
         </template>
         <p v-else class="root-notice">
           <AppIcon name="alert-triangle" :size="14" />
-          <span v-if="connection.hosts.length">
+          <span v-if="rootsOnHost && rootHost">
+            Workspace roots are stored on the host. Connect to {{ rootHost }} to manage them.
+          </span>
+          <span v-else-if="connection.hosts.length">
             Connect to an instance, or choose an SSH host above, to configure its roots.
           </span>
           <span v-else>Connect to an instance to configure its roots.</span>
@@ -972,6 +943,25 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 .sample.editor {
   color: var(--code-variable);
   font-size: var(--code-font-size);
+}
+/* The roots editor's message: the host's refusal or unreadable answer in the
+   error register, a completed add/remove/restore in the quiet one. */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  color: var(--error);
+  background: var(--error-soft);
+  font-size: var(--fs-200);
+  line-height: var(--lh-200);
+  overflow-wrap: anywhere;
+}
+.notice.info {
+  color: var(--fg-secondary);
+  background: var(--surface-2);
 }
 /* The refusal sheet's other half: the roots editor's notice. The keyboard
    group's own notice moved to ShortcutSettings.vue with the group. */

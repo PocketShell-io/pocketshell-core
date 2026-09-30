@@ -54,6 +54,7 @@ import { useConnectionStore } from './stores/connection';
 import { useProjectsStore } from './stores/projects';
 import { useSessionsStore } from './stores/sessions';
 import { useSettingsStore } from './stores/settings';
+import { useWorkspaceRootsStore } from './stores/workspaceRoots';
 
 export interface FolderTree {
   /**
@@ -131,6 +132,7 @@ export function useFolderTree(): FolderTree {
   const projects = useProjectsStore();
   const sessions = useSessionsStore();
   const settings = useSettingsStore();
+  const workspaceRoots = useWorkspaceRootsStore();
 
   /**
    * Read from the projects store, with an inference from the session paths as
@@ -170,7 +172,10 @@ export function useFolderTree(): FolderTree {
       groupSessionsIntoRoots(
         sessions.sessions,
         home.value,
-        settings.sessionRootsFor(host.value),
+        // The registered roots: the host's own `workspaces` registrations
+        // when the platform provides them, else this host's Settings list
+        // (stores/workspaceRoots.ts decides which, by capability).
+        workspaceRoots.rootsFor(host.value, home.value),
       ),
       settings.sessionTreeSort,
     ),

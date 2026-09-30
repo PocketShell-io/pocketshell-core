@@ -62,6 +62,8 @@ export * from './sessionGrouping';
 export * from './sessionRoots';
 export * from './sessionTree';
 export * from './sessionTreeText';
+export * from './hostWorkspaceTree';
+export * from './hostWorkspaceRoots';
 export * from './snippets';
 export * from './transport';
 export * from './attachments/mimeTypes';
