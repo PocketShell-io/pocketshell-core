@@ -209,6 +209,14 @@ export const useSessionsStore = defineStore('sessions', () => {
    * wholesale, exactly as it does for a pending create row, and the optimistic
    * answer and the fetched one now agree.
    *
+   * A rename ONTO a killed identity also LIFTS that identity's kill ledger
+   * entry, the same rule {@link addPending} applies to a reusing create: the
+   * host has accepted the rename, so the destination name is live and the row
+   * must not sit under the deleted session's tombstone. Without the lift, a
+   * stop-then-rename in one folder — the natural "rename the spare to the name
+   * I just freed" — filed the renamed session under the grave and the bar
+   * lost it until the TTL lapsed (reported live, more than once).
+   *
    * Matching is by the same identity {@link identity} spells — name plus
    * workspace — so a same-named aplexer tag in another workspace is never
    * renamed by accident; the tmux spelling (no workspace) matches only rows
@@ -218,6 +226,10 @@ export const useSessionsStore = defineStore('sessions', () => {
    */
   function renameLocal(from: string, to: string, workspace?: string): void {
     const key = identity({ name: from, workspace: workspace ?? null });
+    const lifted = identity({ name: to, workspace: workspace ?? null });
+    if (lifted !== key) {
+      killedRows.value = killedRows.value.filter((row) => row.key !== lifted);
+    }
     sessions.value = sessions.value.map((s) =>
       identity(s) !== key ? s : { ...s, name: to, ...(s.tag != null ? { tag: to } : {}) },
     );
