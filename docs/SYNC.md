@@ -64,7 +64,12 @@ therefore replaces the account value. The desktop's parsed local host includes
 its known directives, so those local settings continue to be authoritative.
 
 On a server conflict, clients re-pull and run the same selection/merge policy
-against the newest account copy. Local explicit values continue to win, and
+against the newest account copy. `src/syncRound.ts` (`runSyncRound`) is that
+loop, shared by every client: the shared `packages/ui` sync store (desktop and
+web) and Android's settings sync call it with platform `pull`/`push` effects
+and never re-implement it. It uses the strict parser, re-bases at most
+`SYNC_ROUND_CONFLICT_RETRIES` (3) times, and refuses to upload an empty
+assembled set or unreadable account data. Local explicit values continue to win, and
 new remote-only fields are carried through. There is no timestamp-based or
 field-by-field reconciliation of two explicit conflicting values.
 

@@ -5,9 +5,9 @@ import { useConnectionStore } from './connection';
 import { useSettingsStore } from './settings';
 import {
   aliasesToAutoCheck,
-  assembleSyncSet,
   parseSyncPayload,
-  serializeSyncPayload,
+  runSyncRound,
+  type SyncRoundResult,
 } from '@pocketshell/core';
 import { SYNC_SLOT } from '@pocketshell/core';
 import type { SyncStatus } from '@pocketshell/core';
@@ -32,21 +32,20 @@ import type { HostEntry } from '@pocketshell/core';
  * relaunch that reset every tick to off would let an innocent "Sync now"
  * push an empty list and wipe the account.
  *
- * `syncNow` is the whole feature in one action: pull the account, absorb
- * its aliases into the selection (a sync never silently drops another
- * machine's hosts), assemble the ticked set (local entry when the config
- * has the alias, the account's when it does not), push, and add anything
- * the config file is missing. A 409 from a concurrent writer is re-based
- * and retried; each retry re-absorbs, so it cannot compound.
+ * `syncNow` is the whole feature in one action: core's `runSyncRound` pulls
+ * the account, absorbs its aliases into the selection (a sync never silently
+ * drops another machine's hosts), assembles the ticked set (local entry when
+ * the config has the alias, the account's when it does not) and pushes; a
+ * 409 from a concurrent writer is re-based and retried, and each retry
+ * re-absorbs, so it cannot compound. This store only supplies the api
+ * effects, mirrors each pull into the account copy and the persisted
+ * selection, and afterwards adds anything the config file is missing.
  */
 
 export interface SyncMessage {
   kind: 'ok' | 'error';
   text: string;
 }
-
-/** How many times a 409 (another device pushed first) is re-based before giving up. */
-const CONFLICT_RETRIES = 3;
 
 export const useSyncStore = defineStore('sync', () => {
   const status = ref<SyncStatus | null>(null);
@@ -178,52 +177,40 @@ export const useSyncStore = defineStore('sync', () => {
     busy.value = true;
     message.value = null;
     try {
-      // 1. What the account holds. A wrong passphrase rejects here with
-      // SyncCryptoError's message — that IS the user feedback.
-      let baseVersion = 0;
-      let remoteHosts: HostEntry[] = [];
-      const pulled = await api.sync.pull(SYNC_SLOT, passphrase.value);
-      if (pulled.kind === 'ok') {
-        baseVersion = pulled.version;
-        remoteHosts = parseSyncPayload(pulled.plaintext);
-        accountHosts.value = remoteHosts;
-        absorbRemoteAliases(remoteHosts);
-      } else {
-        accountHosts.value = [];
-      }
-      if (settings.syncSelectedHosts.length === 0) {
-        message.value = { kind: 'error', text: 'Tick at least one host to sync.' };
+      // One shared round (pull → absorb → assemble → push, 409 re-base and
+      // retry). A wrong passphrase rejects the pull with SyncCryptoError's
+      // message — that IS the user feedback. Every pull, including a re-pull
+      // after a 409, refreshes the account copy and persists the auto-ticked
+      // aliases.
+      let pulls = 0;
+      const result = await runSyncRound(connection.hosts, settings.syncSelectedHosts, {
+        async pull() {
+          pulls += 1;
+          const pulled = await api.sync.pull(SYNC_SLOT, passphrase.value);
+          // A re-pull after a 409 that finds no account at all means the
+          // account was cleared mid-sync: stop rather than re-create it.
+          if (pulls > 1 && pulled.kind !== 'ok') throw new Error('the account changed while syncing — try again');
+          return pulled;
+        },
+        // The account API's conflict base for a fresh (absent) account is 0.
+        push: ({ baseVersion, plaintext }) =>
+          api.sync.push(SYNC_SLOT, plaintext, passphrase.value, baseVersion ?? 0),
+        onPulled({ hosts, selectedAliases }) {
+          accountHosts.value = hosts as HostEntry[];
+          const current = settings.syncSelectedHosts;
+          const absorbed = selectedAliases.filter((alias) => !current.includes(alias));
+          if (absorbed.length > 0) settings.syncSelectedHosts = [...current, ...absorbed];
+        },
+      });
+      if (result.kind !== 'synced') {
+        message.value = { kind: 'error', text: syncFailureText(result, settings.syncSelectedHosts.length) };
         return;
       }
-
-      // 2. The payload IS the selection — unticked hosts never leave the
-      // machine — so this push replaces the account's content with the
-      // ticked set.
-      let set = assembleSyncSet(connection.hosts, remoteHosts, settings.syncSelectedHosts);
-      if (set.length === 0) {
-        message.value = { kind: 'error', text: 'None of the ticked hosts exists here or in the account.' };
-        return;
-      }
-
-      // 3. Push on the version just pulled; a 409 (another device pushed
-      // first) re-pulls, absorbs its aliases, re-assembles, retries.
-      for (let attempt = 0; attempt <= CONFLICT_RETRIES; attempt++) {
-        const pushed = await api.sync.push(SYNC_SLOT, serializeSyncPayload(set), passphrase.value, baseVersion);
-        if (pushed.kind === 'ok') break;
-        if (pushed.kind === 'error') throw new Error(pushed.message);
-        if (attempt === CONFLICT_RETRIES) throw new Error('the account kept changing — try again in a moment');
-        const repulled = await api.sync.pull(SYNC_SLOT, passphrase.value);
-        if (repulled.kind !== 'ok') throw new Error('the account changed while syncing — try again');
-        baseVersion = repulled.version;
-        const reparsed = parseSyncPayload(repulled.plaintext);
-        accountHosts.value = reparsed;
-        absorbRemoteAliases(reparsed);
-        set = assembleSyncSet(connection.hosts, reparsed, settings.syncSelectedHosts);
-      }
-
+      // The synced set IS the payload: the ticked hosts, local entry first.
+      const set = result.hosts as HostEntry[];
       accountHosts.value = set;
 
-      // 4. Restore path: the synced set is offered to main, which appends
+      // Restore path: the synced set is offered to main, which appends
       // whatever ~/.ssh/config is actually missing (it re-checks against the
       // FILE, not this list — a host hand-added since loadHosts is never
       // duplicated).
@@ -255,3 +242,22 @@ export const useSyncStore = defineStore('sync', () => {
     syncNow,
   };
 });
+
+/** The one sentence for each way a sync round stops short of `synced`. */
+function syncFailureText(
+  result: Exclude<SyncRoundResult, { kind: 'synced' }>,
+  selectedCount: number,
+): string {
+  switch (result.kind) {
+    case 'empty-selection':
+      return selectedCount === 0
+        ? 'Tick at least one host to sync.'
+        : 'None of the ticked hosts exists here or in the account.';
+    case 'error':
+      return result.message;
+    case 'conflict-limit':
+      return 'the account kept changing — try again in a moment';
+    case 'invalid-payload':
+      return 'The account holds sync data this version cannot read, so nothing was uploaded.';
+  }
+}
