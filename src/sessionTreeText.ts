@@ -105,18 +105,30 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
 }
 
 /**
- * The distinct agent KINDS running in a folder, in row order, deduped — the
- * caller decides how each kind presents (a brand mark for the four engines,
- * the dim word form for `probing` / `exited`), so the tree does not have to
- * parse display strings back into kinds.
+ * The agent badges a folder row wears: ONE PER SESSION that runs a named
+ * agent, in row order — the same order the folder's workspace tabs wear
+ * theirs (`buildWorkspaceTabs` walks the same rows), so the row reads as its
+ * tab bar folded flat. The caller decides how each kind presents (a brand
+ * mark for the four engines, the dim word form for `probing` / `exited`), so
+ * the tree does not have to parse display strings back into kinds.
  *
- * A folder row stands in for several sessions now, so a single badge would
- * have to pick one arbitrarily. Deduping and capping is the honest compromise:
- * a folder running claude and codex says both, a folder running three claudes
- * says `claude` once, and a folder running four different engines says the
- * first two and stops rather than pushing the timestamp off the row.
+ * This replaced a session count beside a deduped kind list: the count said
+ * HOW MANY and the deduped marks said WHICH PRODUCTS, two notations on one
+ * row, and the user asked for the tabs' notation outright — "show the icons
+ * from tabs here instead of a number". Shells and unknown kinds wear nothing
+ * (agentBadge's silence rule), so the run can be shorter than the folder's
+ * session list, and a folder of bare shells wears no marks at all; the row
+ * tooltip still counts the sessions and names them, which is where "how
+ * many" lives now.
+ *
+ * The run is capped so a folder with a dozen sessions cannot push the
+ * timestamp off the row. At the 232px panel floor a row has ~186px past the
+ * label indent (SessionTreeRows' indent budget), a 12px mark and its gap cost
+ * 20px, so four marks still leave the label a usable hundred; past the cap
+ * the run simply stops, and the tooltip — whose own name list caps at six —
+ * is where the overflow goes.
  */
-const FOLDER_BADGE_LIMIT = 2;
+const FOLDER_BADGE_LIMIT = 4;
 
 export type AgentBadgeKind = Exclude<SessionAgentKind, 'shell' | 'unknown'>;
 
@@ -125,9 +137,9 @@ export function agentBadges(dir: SessionDirectory): AgentBadgeKind[] {
   for (const row of dir.rows) {
     const kind = row.session.agentKind;
     if (kind !== 'shell' && kind !== 'unknown' && kind !== null && kind !== undefined) {
-      if (!out.includes(kind)) out.push(kind);
+      out.push(kind);
+      if (out.length === FOLDER_BADGE_LIMIT) break;
     }
-    if (out.length === FOLDER_BADGE_LIMIT) break;
   }
   return out;
 }

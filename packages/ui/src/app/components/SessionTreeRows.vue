@@ -300,20 +300,21 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
                  folder is labelled by its session name, which is the only
                  label it has. -->
             <span class="label" :class="{ mono: dir.untracked }">{{ dir.label }}</span>
-            <!-- Counted only from 2 up. Every folder row stands for at least
-                 one session, so a bare `1` says nothing the row has not
-                 already said — the dead field the original count measurement
-                 ruled out.
-                 IMMEDIATELY AFTER THE LABEL, ahead of the agent marks, for the
-                 same reason the root's count moved: a reader scans ONE column
-                 of rows, and a count that hugs its label on the header row
-                 and floats to the right edge on the rows underneath would be
-                 two conventions in one list. The marks follow, and the time
-                 keeps the right edge. -->
-            <span v-if="dir.rows.length > 1" class="folder-count muted">
-              {{ dir.rows.length }}
-            </span>
-            <template v-for="view in badgeViews(dir)" :key="view.kind">
+            <!-- One mark per session that runs a named agent, in row order —
+                 the folder's tab bar folded flat. This slot used to carry the
+                 session count (from 2 up) beside a DEDUPED kind list, two
+                 notations on one row; the user asked for the tabs' notation
+                 outright — "show the icons from tabs here instead of a
+                 number" — so the count is gone and a folder running three
+                 claudes wears three sparks. A shell wears no mark
+                 (agentBadge's silence rule), so the run can be shorter than
+                 the session list, and the row tooltip still counts the
+                 sessions and names them; the run itself is capped in
+                 `agentBadges`, and past it the tooltip is where the overflow
+                 goes.
+                 Keyed by index, not by kind: the kinds repeat now, and a
+                 duplicated key is a Vue warning and broken patching. -->
+            <template v-for="(view, i) in badgeViews(dir)" :key="i">
               <AppIcon
                 v-if="view.mark"
                 :name="view.mark.icon"
