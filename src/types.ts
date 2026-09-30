@@ -14,6 +14,15 @@ export type ShellId = string;
 
 /** A host parsed from ~/.ssh/config or entered manually. */
 export interface HostEntry {
+  /**
+   * Stable host identity, for a host whose platform owns its host list (a
+   * saved host, see `savedHosts.ts`): the key for the default host, trust
+   * pins and connected-host checks, so a rename keeps them. Absent for an
+   * `~/.ssh/config` or synced-account host, whose `Host` alias is already
+   * unique in its source and is its identity. Read it through
+   * `hostEntryId()`, never `name` directly, when identity is the question.
+   */
+  id?: string;
   /** Friendly name from the `Host` directive, or a generated one. */
   name: string;
   hostname: string;

@@ -35,6 +35,7 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
           npm run typecheck
+          npm test
 
   # The Docker-backed tier: build the same fleet images the desktop and
   # Android projects build (tests-docker/ is a byte-identical copy of the

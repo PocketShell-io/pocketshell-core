@@ -40,6 +40,20 @@ The mono font policy accepts a consumer fallback stack. Desktop uses its
 Consolas default; Android should provide the bundled JetBrains Mono stack
 specified by the rewrite plan.
 
-Build and typecheck this source standalone with `npm run build` and
-`npm run typecheck` in this directory (core's CI gates both), or from the
-desktop repo with `npm run build:ui` and `npm run typecheck:ui`.
+Build, typecheck and test this source standalone with `npm run build`,
+`npm run typecheck` and `npm run test` in this directory (core's CI gates all
+three), or from the desktop repo with `npm run build:ui` and
+`npm run typecheck:ui`. `npm run test` covers store and pure-module logic
+(`tests/`); components are rendered by the clients' own suites.
+
+Host list: a platform that reads its hosts (desktop `~/.ssh/config`, the web's
+synced account) implements `ssh.listConfigHosts`. A platform that owns its
+host list (Android) additionally provides the optional `hosts.store` capability,
+a one-to-one bridge onto core's `SavedHostStore`; `stores/hosts.ts` then
+mirrors that store's snapshots and routes create/edit/delete/reorder and the
+default host through it. Identity-bearing decisions compare
+`hostEntryId(host)` — the saved host's stable `id`, or the `Host` alias.
+
+Pinia store ids: every client mounts this UI into an app with its own stores,
+and Pinia merges two stores that share an id. Shared store ids must not reuse a
+client's ids; `tests/storeIds.test.ts` lists the clients' ids and enforces it.

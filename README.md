@@ -29,6 +29,7 @@ Android WebView.
 | `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | UTF-8 framing, serialized insert/submit, submit timing, draft retention and uncertain-send outcomes |
+| `savedHosts` | client-owned host list: stable host IDs, CRUD/order/default/import with validate-before-write, opaque key references, `hostEntryId` |
 | `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
 | `sshExec` | the checked exec: request/connection/generation echo verification, stderr summary, request ids |
 | `usageSource`, `remotePortScan`, `portForwardController` | provider usage, listener scan + cwd labels, and the port-forward reconcile controller, all over `SshCapability` |

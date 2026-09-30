@@ -13,6 +13,7 @@ import { useFilesStore } from './files';
 import { useSessionsStore } from './sessions';
 import { useProjectsStore } from './projects';
 import { useComposerStore } from './composer';
+import { useHostsStore } from './hosts';
 import { errorMessage } from '@pocketshell/core/shared/errors';
 
 /**
@@ -136,7 +137,17 @@ export const useConnectionStore = defineStore('connection', () => {
     await retryNow();
   }
 
+  /**
+   * Fill {@link hosts} from the platform's host source: the platform-owned
+   * saved-host store when it provides one (the hosts store mirrors it into
+   * this list), otherwise the host list it reads (`~/.ssh/config`, the
+   * synced account).
+   */
   async function loadHosts(): Promise<void> {
+    if (api.hosts?.store) {
+      await useHostsStore().load();
+      return;
+    }
     hosts.value = await api.ssh.listConfigHosts();
   }
 

@@ -43,6 +43,8 @@ import type {
   ReposCloneOptions,
   ReposListRequest,
   ReposListResult,
+  SavedHostInput,
+  SavedHostSnapshot,
   SessionSummary,
   ShellId,
   StageAttachmentsResult,
@@ -58,6 +60,22 @@ import type {
 } from '@pocketshell/core';
 import type { ZoomCommand } from '@pocketshell/core/shared/zoomKeys';
 
+
+/**
+ * A platform-owned host list: Android keeps its hosts in core's
+ * SavedHostStore and bridges it here one-to-one. Every call answers with the
+ * store's full snapshot, so the UI never keeps a second copy of the list, its
+ * order or the default host. Hosts carry opaque key references only; no key
+ * bytes or passphrases cross this seam in either direction.
+ */
+export interface PlatformHostStore {
+  load: () => Promise<SavedHostSnapshot>;
+  add: (input: SavedHostInput) => Promise<SavedHostSnapshot>;
+  update: (id: string, input: SavedHostInput) => Promise<SavedHostSnapshot>;
+  delete: (id: string) => Promise<SavedHostSnapshot>;
+  setDefault: (id: string | null) => Promise<SavedHostSnapshot>;
+  move: (id: string, index: number) => Promise<SavedHostSnapshot>;
+}
 
 /**
  * The full transport surface the shared UI consumes, generated from the
@@ -247,6 +265,13 @@ export interface PocketShellApi {
     "emptyHint": string;
     /** The platform's way out of an empty list, on its own route. */
     "emptyAction"?: { label: string; route: string };
+    /**
+     * Present only when the platform OWNS its host list rather than reading
+     * one: see {@link PlatformHostStore}. Desktop (~/.ssh/config, edited
+     * outside the app) and the web (the synced account, managed on its own
+     * route) omit it, and the shared UI then offers no create/edit/delete.
+     */
+    "store"?: PlatformHostStore;
     };
 
     // Optional capability: the vscode:// deep link. Remote-SSH resolves the

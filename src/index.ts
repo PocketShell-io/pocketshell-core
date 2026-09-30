@@ -55,6 +55,7 @@ export * from './terminalKeys';
 export * from './sshCapability';
 export * from './connectionController';
 export * from './hostKeyTrustCore';
+export * from './savedHosts';
 export * from './sessionNameParts';
 export * from './sessionIdentity';
 export * from './sessionGrouping';
