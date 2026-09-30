@@ -93,22 +93,26 @@ export function workspaceRootsCliForConnection(api: WorkspaceRootsApi, connectio
 export function execWithDeadline(
   exec: (command: string) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>,
   setTimer: (callback: () => void, milliseconds: number) => unknown = setTimeout,
+  clearTimer: (timer: unknown) => void = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 ): HostCliTransport['exec'] {
   return (command, timeoutMs) => new Promise<HostCliExecOutcome>((resolve, reject) => {
     let settled = false;
-    setTimer(() => {
+    const timer = setTimer(() => {
       if (settled) return;
       settled = true;
       resolve({ exitCode: null, stdout: '', stderr: '', timedOut: true });
     }, timeoutMs);
+    // A fast answer releases the deadline instead of leaving it pending.
+    const finish = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      clearTimer(timer);
+      return true;
+    };
     exec(command).then((outcome) => {
-      if (settled) return;
-      settled = true;
-      resolve({ ...outcome, timedOut: false });
+      if (finish()) resolve({ ...outcome, timedOut: false });
     }, (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
+      if (finish()) reject(error);
     });
   });
 }
@@ -167,26 +171,57 @@ export class WorkspaceRootOrderStore {
   }
 }
 
-/** Host identities whose previous-client roots were already restored once. */
+/**
+ * Host identities whose previous-client roots were already restored once.
+ *
+ * FAILS CLOSED: a record that cannot be read counts as "every host already
+ * restored". Treating it as empty would re-register roots the user removed on
+ * purpose, which is the one thing a one-time restore must never do. The
+ * unreadable value is preserved beside it, never overwritten, and reported —
+ * the same handling the root order gets.
+ */
 export class RestoredWorkspaceRootsLedger {
-  constructor(private readonly storage: WorkspaceStringStorage) {}
+  /** Why the record could not be read; the restore is skipped while set. */
+  readonly loadError: string | null;
 
-  private read(): string[] {
+  constructor(private readonly storage: WorkspaceStringStorage, now: () => number = Date.now) {
+    let loadError: string | null = null;
+    const raw = storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY);
+    if (raw !== null && this.parse(raw) === null) {
+      loadError = 'The workspace roots restore record is unreadable, so roots saved on this device were not '
+        + 'restored again; the unreadable copy was kept.';
+      try {
+        storage.setItem(`${WORKSPACE_ROOTS_RESTORED_STORAGE_KEY}.unreadable-${now()}`, raw);
+      } catch {
+        loadError = 'The workspace roots restore record is unreadable and could not be preserved; '
+          + 'roots saved on this device were not restored again.';
+      }
+    }
+    this.loadError = loadError;
+  }
+
+  private parse(raw: string): string[] | null {
     try {
-      const value: unknown = JSON.parse(this.storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY) ?? '[]');
-      return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+      const value: unknown = JSON.parse(raw);
+      return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
     } catch {
-      return [];
+      return null;
     }
   }
 
+  private read(): string[] | null {
+    const raw = this.storage.getItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY);
+    return raw === null ? [] : this.parse(raw);
+  }
+
   has(hostIdentity: string): boolean {
-    return this.read().includes(hostIdentity);
+    const current = this.read();
+    return current === null || current.includes(hostIdentity);
   }
 
   add(hostIdentity: string): void {
     const current = this.read();
-    if (current.includes(hostIdentity)) return;
+    if (current === null || current.includes(hostIdentity)) return;
     this.storage.setItem(WORKSPACE_ROOTS_RESTORED_STORAGE_KEY, JSON.stringify([...current, hostIdentity]));
   }
 }
@@ -285,6 +320,12 @@ export class HostWorkspaceRoots {
     }
     if (previous?.hostIdentity !== selection.hostIdentity) {
       this.state = emptyState(selection.hostIdentity, this.order.get(selection.hostIdentity).rootOrder);
+    } else {
+      // Same host, new connection (a reconnect): the rows stay, but whatever
+      // was in flight belongs to the old epoch and can no longer finish here.
+      // Release it now so the controls do not stay locked, and let the
+      // superseded reply trigger a re-list (see `settleSuperseded`).
+      this.state = { ...this.state, mutating: false, mutationError: null, notice: null };
     }
     await this.refresh();
   }
@@ -306,6 +347,15 @@ export class HostWorkspaceRoots {
     }
   }
 
+  /**
+   * A reply that arrived after its epoch ended. The host may well have applied
+   * the command, so re-list rather than guess — but only while the SAME host
+   * is still selected; another host's view must not hear about it at all.
+   */
+  private async settleSuperseded(selection: WorkspaceRootsSelection): Promise<void> {
+    if (this.selection?.hostIdentity === selection.hostIdentity) await this.refresh();
+  }
+
   private async restorePrevious(
     selection: WorkspaceRootsSelection,
     memberships: readonly WorkspaceMembership[],
@@ -317,6 +367,10 @@ export class HostWorkspaceRoots {
     if (this.order.seed(identity, { rootOrder: previous.rootOrder })) {
       this.set({ rootOrder: this.order.get(identity).rootOrder });
     }
+    if (this.restored.loadError) {
+      this.set({ mutationError: this.restored.loadError });
+      return;
+    }
     if (this.restored.has(identity)) return;
     const home = homeFromWorkspaceMemberships(memberships);
     const keyOf = (path: string) => directoryKey(normaliseRootPath(path) ?? path, home);
@@ -327,7 +381,10 @@ export class HostWorkspaceRoots {
     try {
       for (const root of missing) {
         const listing = await selection.cli.addWorkspace(identity, root);
-        if (epoch !== this.epoch) return;
+        if (epoch !== this.epoch) {
+          await this.settleSuperseded(selection);
+          return;
+        }
         latest = listing.workspaces;
       }
       this.restored.add(identity);
@@ -339,7 +396,10 @@ export class HostWorkspaceRoots {
           : this.state.notice,
       });
     } catch (error) {
-      if (epoch !== this.epoch) return;
+      if (epoch !== this.epoch) {
+        await this.settleSuperseded(selection);
+        return;
+      }
       this.set({
         memberships: latest,
         mutating: false,
@@ -385,11 +445,17 @@ export class HostWorkspaceRoots {
     this.set({ mutating: true, mutationError: null, notice: null });
     try {
       const listing = await run(selection.cli);
-      if (epoch !== this.epoch) return false;
+      if (epoch !== this.epoch) {
+        await this.settleSuperseded(selection);
+        return false;
+      }
       this.set({ memberships: listing.workspaces, mutating: false, status: 'ready', error: null, notice: success });
       return true;
     } catch (error) {
-      if (epoch !== this.epoch) return false;
+      if (epoch !== this.epoch) {
+        await this.settleSuperseded(selection);
+        return false;
+      }
       this.set({ mutating: false, mutationError: describe(error) });
       return false;
     }
