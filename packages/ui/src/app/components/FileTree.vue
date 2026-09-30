@@ -427,6 +427,29 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
           </span>
         </span>
         <span class="strip-actions">
+          <!-- Back and Forward walk the tab's browsing trail (stores/files.ts):
+               every directory this tab has stood in, one index, the browser's
+               rule for a move made from the middle. At the head of the cluster
+               because they are the strip's only undo — every other control
+               here acts on the folder you are IN, these answer the one you
+               were at — and disabled rather than hidden at either end, so the
+               pair never shuffles position as the trail grows and shrinks. -->
+          <button
+            class="icon-btn sm"
+            :disabled="!files.canGoBack"
+            title="Back to the previous folder"
+            @click="files.goBack(connId!)"
+          >
+            <AppIcon name="arrow-left" :size="14" />
+          </button>
+          <button
+            class="icon-btn sm"
+            :disabled="!files.canGoForward"
+            title="Forward to the next folder"
+            @click="files.goForward(connId!)"
+          >
+            <AppIcon name="arrow-right" :size="14" />
+          </button>
           <!-- Conditional, not summonable like search: a folder without env
                files has no editor to offer, and an always-present control
                would spend the strip's scarce width on a permanent no. -->
