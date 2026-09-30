@@ -37,7 +37,12 @@ import { useSettingsStore } from './settings';
  * before its write, so an editor gets the store's own message without a
  * round trip; the platform validates again, and its rejection wins.
  */
-export const useHostsStore = defineStore('hosts', () => {
+// The id is 'sharedHosts', not 'hosts': Pinia keys stores by id within one
+// app, and a client mounting this UI may already own a 'hosts' store (the web
+// app's account host list does). Two definitions under one id silently hand
+// both callers whichever was created first. Keep shared-UI store ids unique
+// against every client's own `defineStore` ids.
+export const useHostsStore = defineStore('sharedHosts', () => {
   const settings = useSettingsStore();
   /** The platform store's hosts, credential references included, in its order. */
   const saved = shallowRef<SavedHost[]>([]);

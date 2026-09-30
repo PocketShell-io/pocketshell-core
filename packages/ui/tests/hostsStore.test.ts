@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPinia, setActivePinia } from 'pinia';
+import { createPinia, defineStore, setActivePinia } from 'pinia';
 import {
   SavedHostStore,
   SavedHostStoreError,
@@ -219,5 +219,55 @@ describe('shared hosts store on a platform that reads its hosts', () => {
     expect(useSettingsStore().defaultHost).toBeNull();
 
     await expect(hosts.add(input('devbox'))).rejects.toThrow(/cannot be edited here/);
+  });
+});
+
+describe('shared hosts store id', () => {
+  const config: HostEntry = {
+    name: 'hetzner', hostname: '135.181.114.209', port: 22, user: 'alexey', identityFile: null,
+    proxyJump: null, forwardAgent: false, localForwards: [], remoteForwards: [], fromConfig: true,
+  };
+
+  /**
+   * A client's own options store under the id 'hosts' — the web app's shape
+   * (pocketshell-web src/stores/hosts.ts). The web mounts the shared picker at
+   * `/` with this store live, so a shared store registered under the same id
+   * would be handed this one (or hand its own to the web), and each side
+   * would lose its API.
+   */
+  const useClientHostsStore = defineStore('hosts', {
+    state: () => ({ hosts: [config] as HostEntry[], unlocked: false }),
+    actions: {
+      unlock(): void { this.unlocked = true; },
+    },
+  });
+
+  it('keeps its own API when a client already registered a "hosts" store first', async () => {
+    platform({}, [config]);
+    const client = useClientHostsStore();
+    const shared = useHostsStore();
+    // Identity compared as a boolean: a failing toBe would try to diff two
+    // live Pinia stores, which are circular and exhaust the worker's heap.
+    expect(Object.is(shared, client)).toBe(false);
+    expect(typeof shared.isDefault).toBe('function');
+    expect(typeof shared.toggleDefault).toBe('function');
+    expect(shared.defaultHostKey).toBeNull();
+    await shared.toggleDefault(config);
+    expect(shared.defaultHostKey).toBe('hetzner');
+    expect(shared.isDefault(config)).toBe(true);
+    // The client's store is untouched and still its own.
+    expect(client.hosts?.map((host) => host.name)).toEqual(['hetzner']);
+    client.unlock();
+    expect(client.unlocked).toBe(true);
+  });
+
+  it('leaves the client store intact when the shared store is created first', () => {
+    platform({}, [config]);
+    const shared = useHostsStore();
+    const client = useClientHostsStore();
+    expect(Object.is(client, shared)).toBe(false);
+    expect(client.hosts?.map((host) => host.name)).toEqual(['hetzner']);
+    expect(typeof client.unlock).toBe('function');
+    expect(typeof shared.isDefault).toBe('function');
   });
 });

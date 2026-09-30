@@ -53,3 +53,7 @@ a one-to-one bridge onto core's `SavedHostStore`; `stores/hosts.ts` then
 mirrors that store's snapshots and routes create/edit/delete/reorder and the
 default host through it. Identity-bearing decisions compare
 `hostEntryId(host)` — the saved host's stable `id`, or the `Host` alias.
+
+Pinia store ids: every client mounts this UI into an app with its own stores,
+and Pinia merges two stores that share an id. Shared store ids must not reuse a
+client's ids; `tests/storeIds.test.ts` lists the clients' ids and enforces it.
