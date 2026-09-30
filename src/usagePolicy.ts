@@ -99,8 +99,19 @@ export function usageThresholdState(
   if (!worst) return 'ok';
   const percent = usageWindowPercent(worst);
   if (percent === null) return 'ok';
-  if (percent >= USAGE_EXCEEDED_PERCENT) return 'exceeded';
-  if (percent >= USAGE_CRITICAL_PERCENT) return 'critical';
-  if (percent >= warnPercent) return 'approaching';
+  return usagePercentThresholdState(percent, warnPercent);
+}
+
+/**
+ * One meter's state from its used percentage: the user-tunable warning band,
+ * then the fixed critical (95 %) and exceeded (100 %) bands.
+ */
+export function usagePercentThresholdState(
+  usedPercent: number,
+  warnPercent = USAGE_DEFAULT_WARN_PERCENT,
+): UsageThresholdState {
+  if (usedPercent >= USAGE_EXCEEDED_PERCENT) return 'exceeded';
+  if (usedPercent >= USAGE_CRITICAL_PERCENT) return 'critical';
+  if (usedPercent >= warnPercent) return 'approaching';
   return 'ok';
 }

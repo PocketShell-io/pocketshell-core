@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseUsageNdjson } from '../src/usageParsers.js';
 import {
+  usagePercentThresholdState,
   usageDisplayName,
   usageIsBlocked,
   usageIsNearLimit,
@@ -114,5 +115,14 @@ describe('usage display and quota policy over transport rows', () => {
     expect(records[1]!.resets_expire_at).toBe('2026-10-05T04:19:54Z');
     expect(records[4]!.resets_expire_at).toBeNull();
     expect(records[5]!.resets_expire_at).toBe('2026-10-18T09:47:03Z');
+  });
+
+  it('grades one meter by the configured warning threshold with fixed critical and exceeded bands', () => {
+    expect(usagePercentThresholdState(64, 65)).toBe('ok');
+    expect(usagePercentThresholdState(65, 65)).toBe('approaching');
+    expect(usagePercentThresholdState(79)).toBe('ok');
+    expect(usagePercentThresholdState(80)).toBe('approaching');
+    expect(usagePercentThresholdState(95, 50)).toBe('critical');
+    expect(usagePercentThresholdState(100, 50)).toBe('exceeded');
   });
 });
