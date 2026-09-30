@@ -87,7 +87,7 @@
 .range-control {
   flex: none;
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 72px;
+  grid-template-columns: minmax(120px, 1fr) 88px;
   align-items: center;
   gap: var(--sp-2);
   min-height: 44px;
@@ -98,8 +98,13 @@
 }
 .range-control output {
   font-family: var(--font-mono);
+  font-size: var(--fs-200);
   text-align: right;
   color: var(--fg);
+}
+/* The grace choices carry a short explanation; give the select room for it. */
+select.control {
+  max-width: 22rem;
 }
 /* Narrow (phone) screens: stack label over control instead of squeezing both. */
 @media (max-width: 480px) {

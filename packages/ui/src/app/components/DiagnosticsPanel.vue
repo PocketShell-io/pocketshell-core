@@ -184,6 +184,13 @@ async function clearAll(): Promise<void> {
 </template>
 
 <style scoped>
+.row-hint {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--fs-200);
+  line-height: var(--lh-200);
+  color: var(--fg-secondary);
+}
 .diagnostics {
   display: flex;
   flex-direction: column;
