@@ -150,8 +150,12 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
   //
   // Geometry: Simple Icons (CC0) paths, verbatim, for claude, codex (the
   // OpenAI knot) and opencode; grok redrawn from the mark in grok.com's own
-  // favicon, rescaled 512→24 (both strokes are absolute-command paths, so the
-  // rescale is a straight coordinate multiply). They are trademarks and are
+  // favicon, rescaled 512→24 and then normalized to fill the canvas the way
+  // Simple Icons normalizes its own entries — the favicon carries padding of
+  // its own, and the straight multiply brought it across, leaving the loop
+  // reading a size smaller than its neighbours in the same box (both strokes
+  // are absolute-command paths, so the rescale is a straight coordinate
+  // multiply). They are trademarks and are
   // worn nominatively — to say WHICH agent a session runs, the way a
   // dependencies file names a product — which is the answer to the
   // "licensing and fidelity trap" that the previous arbitrary Feather marks
@@ -171,11 +175,12 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
     ],
     filled: true,
   },
-  // The two strokes of the Grok loop, as two subpaths of one mark.
+  // The two strokes of the Grok loop, as two subpaths of one mark, scaled to
+  // fill the canvas like the Simple Icons entries above.
   'brand-grok': {
     paths: [
-      'M9.866 14.661L16.1 9.862C16.406 9.626 16.842 9.718 16.988 10.084C17.754 12.011 17.412 14.327 15.887 15.917C14.362 17.507 12.241 17.856 10.302 17.062L8.183 18.085C11.222 20.25 14.911 19.715 17.217 17.309C19.045 15.401 19.612 12.802 19.082 10.457L19.087 10.462C18.319 7.018 19.276 5.642 21.236 2.827C21.282 2.76 21.329 2.693 21.375 2.625L18.796 5.315V5.306L9.865 14.662',
-      'M8.58 15.827C6.399 13.654 6.775 10.292 8.636 8.353C10.012 6.918 12.266 6.333 14.234 7.194L16.348 6.176C15.967 5.889 15.479 5.58 14.919 5.363C12.388 4.277 9.358 4.818 7.3 6.962C5.321 9.026 4.699 12.199 5.767 14.908C6.566 16.932 5.257 18.363 3.939 19.808C3.471 20.32 3.003 20.833 2.625 21.375L8.578 15.829',
+      'M9.268 15.406L17.248 9.263C17.64 8.961 18.198 9.079 18.385 9.548C19.365 12.014 18.927 14.979 16.975 17.014C15.023 19.049 12.308 19.496 9.827 18.479L7.114 19.789C11.004 22.56 15.726 21.875 18.678 18.796C21.018 16.353 21.743 13.027 21.065 10.025L21.071 10.031C20.088 5.623 21.313 3.862 23.822 0.259C23.881 0.173 23.941 0.087 24 0L20.699 3.443V3.432L9.267 15.407',
+      'M7.622 16.899C4.831 14.117 5.312 9.814 7.694 7.332C9.455 5.495 12.34 4.746 14.86 5.848L17.565 4.545C17.078 4.178 16.453 3.782 15.736 3.505C12.497 2.115 8.618 2.807 5.984 5.551C3.451 8.193 2.655 12.255 4.022 15.722C5.044 18.313 3.369 20.145 1.682 21.994C1.083 22.65 0.484 23.306 0 24L7.62 16.901',
     ],
     filled: true,
   },
