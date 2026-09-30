@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
-import { composerTiming, USAGE_DEFAULT_WARN_PERCENT } from '@pocketshell/core';
+import { composerTiming } from '@pocketshell/core';
 import { coerceSettings, settingsDefaults, useSettingsStore } from '../src/app/stores/settings';
 import { registerSettingsSection, settingsSections } from '../src/app/settingsSections';
 import { provideApi } from '../src/app/ipc';
@@ -13,7 +13,7 @@ describe('shared settings: lifecycle, advanced and usage preferences', () => {
     expect(settingsDefaults()).toMatchObject({
       backgroundGraceMs: 90_000,
       reconnectOnReturn: true,
-      usageWarnPercent: USAGE_DEFAULT_WARN_PERCENT,
+      usageWarnPercent: null,
       submitEnterDelayMs: composerTiming.submitDelayMs,
     });
   });
@@ -22,7 +22,8 @@ describe('shared settings: lifecycle, advanced and usage preferences', () => {
     expect(coerceSettings({ backgroundGraceMs: 600_000, reconnectOnReturn: false, usageWarnPercent: 67, submitEnterDelayMs: 174, theme: 'dark' }))
       .toMatchObject({ backgroundGraceMs: 600_000, reconnectOnReturn: false, usageWarnPercent: 65, submitEnterDelayMs: 150 });
     expect(coerceSettings({ backgroundGraceMs: 45_000, reconnectOnReturn: 'no', usageWarnPercent: 'x', submitEnterDelayMs: null }))
-      .toMatchObject({ backgroundGraceMs: 90_000, reconnectOnReturn: true, usageWarnPercent: 80, submitEnterDelayMs: 250 });
+      .toMatchObject({ backgroundGraceMs: 90_000, reconnectOnReturn: true, usageWarnPercent: null, submitEnterDelayMs: 250 });
+    expect(coerceSettings({ usageWarnPercent: null }).usageWarnPercent).toBeNull();
   });
 
   it('resets only the Advanced values together', () => {
@@ -34,7 +35,7 @@ describe('shared settings: lifecycle, advanced and usage preferences', () => {
     store.set('backgroundGraceMs', 600_000);
     expect(store.advancedIsDefault).toBe(false);
     store.resetAdvancedDefaults();
-    expect(store.usageWarnPercent).toBe(USAGE_DEFAULT_WARN_PERCENT);
+    expect(store.usageWarnPercent).toBeNull();
     expect(store.submitEnterDelayMs).toBe(composerTiming.submitDelayMs);
     expect(store.backgroundGraceMs).toBe(600_000);
     expect(store.advancedIsDefault).toBe(true);

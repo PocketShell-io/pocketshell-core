@@ -15,7 +15,7 @@
 import { computed, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { formatDiagnosticReportsForSharing, type DiagnosticReport } from '@pocketshell/core';
-import { api } from '../ipc';
+import { diagnosticsCapability, listDiagnosticReports } from '../platformCapabilities';
 
 const reports = ref<DiagnosticReport[]>([]);
 const loading = ref(false);
@@ -35,12 +35,12 @@ const SOURCE_LABELS: Record<DiagnosticReport['source'], string> = {
 const hasReports = computed(() => reports.value.length > 0);
 
 async function load(): Promise<void> {
-  const diagnostics = api.diagnostics;
+  const diagnostics = diagnosticsCapability();
   if (!diagnostics) return;
   loading.value = true;
   loadError.value = null;
   try {
-    reports.value = await diagnostics.list();
+    reports.value = (await listDiagnosticReports(diagnostics)) ?? [];
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -65,7 +65,7 @@ function fileNameFor(subject: string): string {
 }
 
 async function share(target: readonly DiagnosticReport[], subject: string): Promise<void> {
-  const diagnostics = api.diagnostics;
+  const diagnostics = diagnosticsCapability();
   if (!diagnostics || target.length === 0) return;
   status.value = null;
   try {
@@ -80,7 +80,7 @@ async function share(target: readonly DiagnosticReport[], subject: string): Prom
 }
 
 async function removeReport(report: DiagnosticReport): Promise<void> {
-  const diagnostics = api.diagnostics;
+  const diagnostics = diagnosticsCapability();
   if (!diagnostics) return;
   if (armedDeleteId.value !== report.id) {
     armedDeleteId.value = report.id;
@@ -102,7 +102,7 @@ async function removeReport(report: DiagnosticReport): Promise<void> {
 }
 
 async function clearAll(): Promise<void> {
-  const diagnostics = api.diagnostics;
+  const diagnostics = diagnosticsCapability();
   if (!diagnostics) return;
   if (!clearArmed.value) {
     clearArmed.value = true;

@@ -20,11 +20,10 @@ import {
   DEFAULT_BACKGROUND_GRACE_MS,
   DEFAULT_RECONNECT_ON_RETURN,
   DEFAULT_SUBMIT_ENTER_DELAY_MS,
-  USAGE_DEFAULT_WARN_PERCENT,
   isLaunchableKind,
   parseBackgroundGraceMs,
   parseSubmitEnterDelayMs,
-  parseUsageWarnPercent,
+  parseUsageWarnPercentSetting,
   type LaunchableKind,
 } from '@pocketshell/core';
 import {
@@ -287,10 +286,11 @@ export interface AppSettings {
   reconnectOnReturn: boolean;
   /**
    * The used-quota percentage at which the usage panel calls a provider
-   * "approaching limit" (0.5.x `usage_warn_threshold_percent`, 50–95 %).
-   * Critical (95 %) and exceeded (100 %) are fixed.
+   * "approaching limit" (0.5.x `usage_warn_threshold_percent`, 50–95 %), or
+   * null — the default — for "not set", which keeps the shipped meter colours
+   * (core `usageMeterTone`). Critical (95 %) and exceeded (100 %) are fixed.
    */
-  usageWarnPercent: number;
+  usageWarnPercent: number | null;
   /**
    * Pause between a composer body and its submit Enter, in ms (0.5.x
    * `agent_submit_enter_delay_ms`, 0–1000). Raise it only if an agent leaves
@@ -510,7 +510,7 @@ const SETTING_SPECS: SettingSpecs = {
   syncSelectedHosts: { default: [], parse: asAliasList },
   backgroundGraceMs: { default: DEFAULT_BACKGROUND_GRACE_MS, parse: parseBackgroundGraceMs },
   reconnectOnReturn: { default: DEFAULT_RECONNECT_ON_RETURN, parse: asBoolean },
-  usageWarnPercent: { default: USAGE_DEFAULT_WARN_PERCENT, parse: parseUsageWarnPercent },
+  usageWarnPercent: { default: null, parse: parseUsageWarnPercentSetting },
   submitEnterDelayMs: { default: DEFAULT_SUBMIT_ENTER_DELAY_MS, parse: parseSubmitEnterDelayMs },
 };
 
