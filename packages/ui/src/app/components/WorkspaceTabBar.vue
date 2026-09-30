@@ -589,6 +589,15 @@ function onRenameInput(event: Event): void {
  */
 .tab-agent {
   color: var(--fg-muted);
+  /* Flex centering squares an icon on the label's LINE BOX, but a line box's
+     centre is not the ink's centre: the glyphs hang from a baseline below the
+     box's middle (ascent runs further below centre than descent above it), so
+     a centred icon rides high — measured 1.75px at 13px Segoe UI against the
+     x-height's midpoint, the label's optical centre. The nudge lands within a
+     quarter pixel of it while keeping the box on whole device pixels at 2x.
+     Transform, not margin: under `align-items: center` a margin is centred
+     along with the box and delivers only half its value. */
+  transform: translateY(1.5px);
 }
 .tab.active .tab-agent {
   color: var(--accent);
@@ -597,6 +606,10 @@ function onRenameInput(event: Event): void {
   display: inline-flex;
   align-items: center;
   color: var(--fg-muted);
+  /* The same optical centring as `.tab-agent` — the `×` rides the same line
+     box, so it rides the same 1.75px high against the label. The hover square
+     travels with the glyph, which is what keeps the two concentric. */
+  transform: translateY(1.5px);
   border-radius: var(--r-sm);
   /* A 12px glyph is under the fair-hit-target floor, and one of these buttons
      now fronts the stop confirmation — the padding buys the hover square some
