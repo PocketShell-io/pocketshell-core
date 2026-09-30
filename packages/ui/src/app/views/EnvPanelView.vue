@@ -412,11 +412,10 @@ onMounted(load);
 }
 /* The value field keeps a 40ch home — wide enough for a whole secret — and
    is the first thing to yield on a narrow dock (`min-width: 0`); its text
-   pins to the right edge, so masked dots wait against the eye and a revealed
-   value lands where the dots were — the reveal never moves the secret across
-   the row. The ghost-field treatment is the Ports table's — invisible at
-   rest, surfaced on hover/focus with a WCAG-legal boundary once it looks
-   like a control. */
+   reads from the left like the key beside it, the column's shared x coming
+   from the field's fixed basis. The ghost-field treatment is the Ports
+   table's — invisible at rest, surfaced on hover/focus with a WCAG-legal
+   boundary once it looks like a control. */
 .c-value {
   flex: 0 1 40ch;
   min-width: 0;
@@ -433,10 +432,6 @@ onMounted(load);
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: var(--fs-200);
-}
-/* Values read from the right, the eye's edge; key names from the left. */
-.value-input {
-  text-align: right;
 }
 .value-input::placeholder,
 .key-input::placeholder {
