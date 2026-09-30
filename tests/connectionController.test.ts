@@ -103,6 +103,8 @@ class FakeCapability {
   createAppliedTag: string | null = null;
   killAfterApplyFailure = false;
   nextWriteError: unknown = null;
+  nextExecError: unknown = null;
+  readonly hostCommands = new Map<string, { exitCode: number | null; stdout: string; stderr?: string }>();
   private connectionOrdinal = 0;
   private ptyOrdinal = 0;
   private readonly graceScheduled = new Set<string>();
@@ -164,6 +166,23 @@ class FakeCapability {
 
   exec = async (options: SshExecOptions): Promise<SshExecResult> => {
     this.execCommands.push(options.command);
+    if (this.nextExecError) {
+      const error = this.nextExecError;
+      this.nextExecError = null;
+      throw error;
+    }
+    const scripted = this.hostCommands.get(options.command);
+    if (scripted) {
+      return {
+        requestId: options.requestId,
+        connectionId: options.connectionId,
+        generationId: options.generationId,
+        exitCode: scripted.exitCode,
+        stdout: scripted.stdout,
+        stderr: scripted.stderr ?? '',
+        timedOut: false,
+      };
+    }
     if (options.command.includes('sessions list')) {
       return {
         requestId: options.requestId,
@@ -584,6 +603,30 @@ describe('JS connection and session policy', () => {
     expect(capability.writeCalls[0]?.dataBase64).toBe(base64(new TextEncoder().encode('ls\n')));
     expect(capability.resizeCalls[0]).toMatchObject({ sequence: 2, cols: 120, rows: 36 });
     expect(received).toHaveBeenCalledOnce();
+  });
+
+  it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: false, reason: 'not-connected' });
+
+    await connectAndList(controller);
+    capability.hostCommands.set('printf %s "$HOME"', { exitCode: 0, stdout: '/home/testuser' });
+    capability.hostCommands.set('false', { exitCode: 1, stdout: '' });
+    expect(await controller.runHostCommand('printf %s "$HOME"', 1_000)).toEqual({
+      ok: true,
+      value: { exitCode: 0, stdout: '/home/testuser', stderr: '', timedOut: false },
+    });
+    // A non-zero exit is an answer, not a transport failure.
+    expect(await controller.runHostCommand('false', 1_000)).toMatchObject({ ok: true, value: { exitCode: 1 } });
+    expect(capability.connectCalls).toHaveLength(1);
+
+    const originalConnection = controller.getSnapshot().connectionId;
+    capability.nextExecError = new SshCapabilityError('socket closed', 'CONNECTION_LOST');
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: false, reason: 'failed' });
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    expect(controller.getSnapshot().connectionId).not.toBe(originalConnection);
   });
 
   it('reconnects after a real transport-state event and reattaches the selected session', async () => {
