@@ -38,36 +38,50 @@ function termRank(label: string): number {
 }
 
 /**
- * The resets count, read from whichever detail key the provider's record
- * speaks (codex `reset_credits_available`, grok `resets_available`) and
- * taken only when it is a real number — a string or absent key means the
- * provider has nothing to say, which is null's job.
+ * The resets count. quse 0.0.16 normalized every provider's banked resets
+ * into one detail spelling — `banked_resets_available`, beside the unified
+ * `banked_resets` list — so the count is read there first; the per-provider
+ * keys of the pinned 0.4.44 helper's quse (codex `reset_credits_available`,
+ * grok `resets_available`) are the fallback for hosts that still run it.
+ * Only a real number counts — a string or absent key means the provider has
+ * nothing to say, which is null's job.
  */
 function resetsAvailable(details: Record<string, unknown> | undefined): number | null {
-  const n = details?.['reset_credits_available'] ?? details?.['resets_available'];
+  const n =
+    details?.['banked_resets_available'] ??
+    details?.['reset_credits_available'] ??
+    details?.['resets_available'];
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
 /**
- * The soonest expiry across the provider's reset credits. The arrays ride
- * beside the counts under one detail key per provider (codex `reset_credits`,
- * grok `resets`), each entry an `{expires_at}`; entries the provider no
- * longer counts as available are skipped, so the date always belongs to a
- * credit the count is actually talking about.
+ * The soonest expiry across the provider's banked resets. The arrays ride
+ * beside the counts: quse 0.0.16's `banked_resets`, whose entries are
+ * `{expires_at, available, label}`, and beside it the per-provider arrays of
+ * the pinned 0.4.44 helper's quse (codex `reset_credits`, grok `resets`),
+ * each entry an `{expires_at}`. Entries the provider no longer counts as
+ * available are skipped, so the date always belongs to a reset the count is
+ * actually talking about.
  */
 function resetsExpireAt(details: Record<string, unknown> | undefined): string | null {
-  const credits = details?.['reset_credits'] ?? details?.['resets'];
+  const credits =
+    details?.['banked_resets'] ?? details?.['reset_credits'] ?? details?.['resets'];
   if (!Array.isArray(credits)) return null;
   let soonest: { t: number; iso: string } | null = null;
   for (const credit of credits) {
     if (!credit || typeof credit !== 'object') continue;
-    const { status, expires_at: expiresAt } = credit as {
+    const { available, status, expires_at: expiresAt } = credit as {
+      available?: unknown;
       status?: unknown;
       expires_at?: unknown;
     };
-    // Grok's entries carry no status at all; only a positive one (spent)
-    // disqualifies an entry.
-    if (typeof status === 'string' && status !== 'available') continue;
+    // The unified entries carry a boolean; the legacy codex ones a string
+    // status; the legacy grok ones neither at all. Only a marker that says
+    // otherwise disqualifies an entry.
+    if (typeof available === 'boolean' && !available) continue;
+    if (typeof available !== 'boolean' && typeof status === 'string' && status !== 'available') {
+      continue;
+    }
     if (typeof expiresAt !== 'string') continue;
     const t = Date.parse(expiresAt);
     if (!Number.isFinite(t)) continue;

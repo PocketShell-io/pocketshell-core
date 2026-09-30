@@ -39,17 +39,20 @@ export interface UsageRow {
   error: string | null;
   details: Record<string, unknown>;
   /**
-   * How many "full reset" credits the provider reports (codex's reset
-   * credits, grok's restok tokens) — null when the provider has no such
-   * concept, 0 when it does and the credit is spent. The helper spells the
-   * count under two different detail keys, one per provider; this is the
-   * normalized view of both, so consumers print one field.
+   * How many "full reset" credits the provider reports — codex's reset
+   * credits, grok's restok tokens, zai's banked weekly resets, claude's
+   * banked resets — null when the provider has no such concept, 0 when it
+   * does and the credit is spent. quse 0.0.16 reports one count per provider
+   * under `banked_resets_available`; the pinned 0.4.44 helper's quse spells
+   * it under two per-provider detail keys. This is the normalized view of
+   * all three, so consumers print one field.
    */
   resets_available: number | null;
   /**
    * When the soonest of those credits is withdrawn — the `expires_at` each
-   * entry of the per-provider credit arrays carries (codex `reset_credits`,
-   * grok `resets`). Null when the provider names no expiry the parser can
+   * entry of the provider's credit arrays carries (`banked_resets` for quse
+   * 0.0.16, codex `reset_credits` and grok `resets` for the pinned 0.4.44
+   * helper's quse). Null when the provider names no expiry the parser can
    * read, so the note degrades to the bare count.
    */
   resets_expire_at: string | null;

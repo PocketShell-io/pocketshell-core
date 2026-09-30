@@ -17,6 +17,17 @@ const fixture = readFileSync(
   'utf8',
 );
 
+/**
+ * Captured verbatim from the quse build (0.0.16) that unified every
+ * provider's banked resets into one `banked_resets` shape — the provider's
+ * own records, flattened by the helper's passthrough boundary into the
+ * per-provider NDJSON.
+ */
+const bankedFixture = readFileSync(
+  new URL('./fixtures/usage/quse-0.0.16-banked-usage.ndjson', import.meta.url),
+  'utf8',
+);
+
 function row(status: string, remaining: number | null): UsageRow {
   return {
     provider: 'codex',
@@ -89,5 +100,19 @@ describe('usage display and quota policy over transport rows', () => {
     const records = parseUsageNdjson(partial);
     expect(records).toHaveLength(1);
     expect(usageThresholdState(records[0]!)).toBe('critical');
+  });
+
+  it('reads the unified banked_resets shape, and dates the count with its soonest entry', () => {
+    const records = parseUsageNdjson(bankedFixture);
+    // Every provider now carries the count under `banked_resets_available` —
+    // claude and zai included, which the 0.0.15 shape could not speak for.
+    expect(records.map((r) => r.resets_available)).toEqual([0, 3, null, null, 0, 5]);
+    // The count is dated with the soonest AVAILABLE entry's expiry — zai's
+    // five banked weekly resets expire across two dates; the earliest one is
+    // the note's. A spent (available: false) entry must not date it: grok's
+    // count is 0 and its array empty, so no expiry either way.
+    expect(records[1]!.resets_expire_at).toBe('2026-10-05T04:19:54Z');
+    expect(records[4]!.resets_expire_at).toBeNull();
+    expect(records[5]!.resets_expire_at).toBe('2026-10-18T09:47:03Z');
   });
 });
