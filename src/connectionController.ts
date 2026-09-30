@@ -116,6 +116,9 @@ const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
 /** Ten minutes: the longest background grace any PocketShell client offers. */
 export const DEFAULT_MAX_BACKGROUND_GRACE_MS = 10 * 60_000;
 /** The status line a user sees after declining automatic reconnect on return. */
+/** Phases in which a connection still serves the user; `reconnect()` leaves them alone. */
+const USABLE_PHASES: ReadonlySet<ConnectionPhase> = new Set(['connected', 'listing', 'attaching', 'live']);
+
 export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShell was in the background. Reconnect to resume.';
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 const PTY_READ_WAIT_MS = 250;
@@ -522,6 +525,46 @@ export class ConnectionController {
     }
   }
 
+  /** How many dials one recovery ladder makes before the controller gives up (`lost`). */
+  get maxReconnectAttempts(): number {
+    return this.retryDelaysMs.length;
+  }
+
+  /**
+   * Explicitly resume a host connection: the user's Retry after the ladder
+   * gave up, or after a declined automatic reconnect on return from the
+   * background (`returnToForeground({ reconnect: false })`). The one
+   * reconnect entry point (#2954, D28 — one reconnect owner):
+   *
+   * - A ladder already running is joined, never doubled: a Retry pressed
+   *   while the controller is re-dialling waits for that recovery.
+   * - A still-usable connection (connected, listing, attaching, live) is
+   *   left alone.
+   * - Otherwise it runs ONE fresh ladder with the full budget, re-attaching
+   *   the previously selected session.
+   *
+   * Background grace is not a Retry target: foreground reconciliation owns
+   * that transport (`returnToForeground`).
+   */
+  async reconnect(): Promise<ConnectionActionResult> {
+    this.assertLive();
+    if (!this.host) {
+      return { ok: false, reason: 'not-connected', message: 'There is no host to reconnect to.' };
+    }
+    const running = this.reconnectTask;
+    const usable = this.connection !== null && USABLE_PHASES.has(this.snapshot.phase);
+    if (running) {
+      await running;
+    } else if (this.snapshot.phase === 'background') {
+      return { ok: false, reason: 'failed', message: 'The connection is in background grace; it reconnects on return.' };
+    } else if (!usable) {
+      await this.reconnectAndAttach('reconnect requested');
+    }
+    const phase = this.snapshot.phase;
+    if (this.connection && phase !== 'lost' && phase !== 'reconnecting') return { ok: true, value: undefined };
+    return { ok: false, reason: 'failed', message: this.snapshot.error ?? 'Reconnect failed.' };
+  }
+
   async enterBackground(graceMs: number): Promise<void> {
     this.assertLive();
     if (!this.connection) return;
@@ -570,18 +613,6 @@ export class ConnectionController {
     }
     if (reconnect) await this.reconnectAndAttach('connection was spent during background grace');
     else await this.releaseSpentConnection();
-  }
-
-  /**
-   * Explicitly resume a host connection that was lost (after declined
-   * automatic reconnect or an exhausted retry ladder), reattaching the
-   * previously selected session. A no-op while a connection is still usable.
-   */
-  async reconnect(): Promise<void> {
-    this.assertLive();
-    if (!this.host) return;
-    if (this.connection && ['connected', 'listing', 'attaching', 'live'].includes(this.snapshot.phase)) return;
-    await this.reconnectAndAttach('reconnect requested');
   }
 
   /** Release a grace-spent transport without dialing, and wait for {@link reconnect}. */

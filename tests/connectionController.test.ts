@@ -117,8 +117,12 @@ class FakeCapability {
     return { remove: async () => { this.listeners.delete(listener); } };
   };
 
+  /** While true every dial fails the way an unreachable host does (retryable). */
+  refuseDials = false;
+
   connect = async (options: SshConnectOptions): Promise<SshConnectResult> => {
     this.connectCalls.push(options);
+    if (this.refuseDials) throw new SshCapabilityError('Connection refused', 'SSH_IO');
     if (verifyHostKeyTrustPin(options.expectedHostKey, HOST_KEY) !== 'trusted') {
       throw new SshCapabilityError('Host key needs a user decision.', 'HOST_KEY_REJECTED', HOST_KEY);
     }
@@ -395,7 +399,7 @@ function trustStore(initial: HostKeyTrustPin | null = null) {
 function controllerFor(
   capability: FakeCapability,
   trusted = trustStore(),
-  options: { now?: () => number; maxBackgroundGraceMs?: number } = {},
+  options: { now?: () => number; maxBackgroundGraceMs?: number; retryDelaysMs?: readonly number[] } = {},
 ) {
   let id = 0;
   const controller = new ConnectionController({
@@ -972,5 +976,71 @@ describe('JS connection and session policy', () => {
     await controller.close();
     const afterClose = await capability.resourceSnapshot('snapshot-after-close');
     expect(afterClose).toMatchObject({ connections: 0, ptys: 0, sftpClients: 0, forwards: 0 });
+  });
+
+  it('stays given up after its ladder, and a Retry runs exactly one more ladder that re-attaches the session (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0, 0] });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    expect(controller.maxReconnectAttempts).toBe(3);
+
+    capability.refuseDials = true;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(controller.getSnapshot().error).toMatch(/after 3 attempts/);
+    // A give-up is final until someone asks: the controller never restarts itself.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+
+    // Two presses while one recovery is on the wire: one ladder, one dial.
+    capability.refuseDials = false;
+    const [first, second] = await Promise.all([controller.reconnect(), controller.reconnect()]);
+    expect(first).toEqual({ ok: true, value: undefined });
+    expect(second).toEqual({ ok: true, value: undefined });
+    expect(capability.connectCalls).toHaveLength(1 + 3 + 1);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', retryAttempt: 0, error: null });
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+
+    // A Retry on a healthy transport is a no-op, not a re-dial.
+    expect(await controller.reconnect()).toEqual({ ok: true, value: undefined });
+    expect(capability.connectCalls).toHaveLength(1 + 3 + 1);
+  });
+
+  it('joins a running recovery ladder instead of starting a second one (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 20, 20] });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+
+    capability.refuseDials = true;
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2);
+    expect(controller.getSnapshot().phase).not.toBe('lost');
+    const retry = controller.reconnect();
+    capability.refuseDials = false;
+    expect(await retry).toEqual({ ok: true, value: undefined });
+    // Drop + refused first attempt + the ladder's own second attempt; the
+    // Retry added nothing.
+    expect(capability.connectCalls).toHaveLength(3);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+  });
+
+  it('reports why a Retry could not recover and needs a host to retry against (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0] });
+    controllers.push(controller);
+    expect(await controller.reconnect()).toMatchObject({ ok: false, reason: 'not-connected' });
+    await connectAndList(controller);
+    capability.refuseDials = true;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(await controller.reconnect()).toMatchObject({ ok: false, reason: 'failed', message: expect.stringMatching(/after 1 attempts/) });
+    expect(capability.connectCalls).toHaveLength(1 + 1 + 1);
   });
 });
