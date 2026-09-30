@@ -106,6 +106,14 @@
  *     gate reads past the `(<` to the address-so-far, and terminalPaths reads
  *     the angle-bracket destination — after its label, or alone where the
  *     wrapper split the label from its destination.
+ *   - the inspector transcript borders every row of a message block with a
+ *     `│` at column 0 and pads the text three columns past it, and its
+ *     wrapper cut a long localhost address after the query's `?` — `│
+ *     …/inspect.html?` / `│ projectUrl=…`. Twice refused: rule 2 took only
+ *     `/` and `-` tails, and the gutter read only `│ ` — one padding column —
+ *     so even a `?`-admitting tail would have left two padding cells in the
+ *     stream to tear the token apart. The gutter absorbs the border's padding
+ *     run ({@link GUTTER}) and rule 2 takes the `?` tail rule 1b takes.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -259,14 +267,17 @@ const WRAP_SHORTFALL = 4;
  * `▏ Webpage_3.pdf`.
  *
  * Box-drawing and the left partial blocks only, with the trailing spaces the
- * TUIs actually emit — one for the box-drawing forms, up to four for the bars,
- * whose border sits left of the text it decorates. ASCII `|` is deliberately
- * NOT here: `| ` starts a markdown table row and appears in the middle of
- * shell pipelines, and admitting it would let this rule glue together two rows
- * of a table. A bar RUN never matches either — the class must be followed by a
- * space, so `▌▌▌▌ 40%` stops being a gutter at its own second bar.
+ * TUIs actually emit — up to four for either. The bars' border sits left of
+ * the text it decorates, and the inspector transcript's block border pads its
+ * text three columns past the `│`; the padding is the renderer's LAYOUT, not
+ * token content, and what the guards must judge is the content after it. ASCII
+ * `|` is deliberately NOT here: `| ` starts a markdown table row and appears
+ * in the middle of shell pipelines, and admitting it would let this rule glue
+ * together two rows of a table. A bar RUN never matches either — the class
+ * must be followed by a space, so `▌▌▌▌ 40%` stops being a gutter at its own
+ * second bar.
  */
-const GUTTER = /^ {0,8}(?:[│┃] |[▏▎▍▌▋▊▉] {1,4})/;
+const GUTTER = /^ {0,8}(?:[│┃] {1,4}|[▏▎▍▌▋▊▉] {1,4})/;
 
 /**
  * The hanging indent a transcript renderer puts in front of the wrapped rows of
@@ -661,17 +672,19 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   //
   // Three conditions, each guarding a different way of being wrong:
   //
-  //   - the tail ends with `/` or `-`. A TUI that wraps its own text breaks
-  //     either at a boundary it chose — `…/` is the break point that leaves a
-  //     path visibly unfinished — or mid-token at a hyphen, like every wrapper
-  //     in this file's reports: the Space Bunny transcript's bar-marked block
-  //     carried `▏ …/20260929-162110-01-` with `▏ Webpage_3.pdf` below, and
-  //     until the hyphen was admitted here the join ran past the unrecognised
-  //     bar and glued it into the token (`…01-▏`, a path that opens nothing).
-  //     The hyphen is the same break-opportunity trace rule 1b reads, and the
-  //     head and fit guards below still refuse everything else. Without the
-  //     slash half, `  │ wrote /tmp/out` followed by `  │ done` would join
-  //     into `/tmp/outdone`.
+  //   - the tail ends with `/`, `-` or `?`. A TUI that wraps its own text
+  //     breaks either at a boundary it chose — `…/` is the break point that
+  //     leaves a path visibly unfinished — or mid-token at a hyphen, like every
+  //     wrapper in this file's reports — or, for a web address, after the
+  //     query separator: the inspector report's bordered transcript carried
+  //     `│ …/inspect.html?` over `│ projectUrl=…`. The `?` is the same
+  //     opportunity rule 1b takes and needs no URL test of its own: a path
+  //     cannot carry one — terminalPaths forbids `?` outright — so the glued
+  //     token is web material or nothing, and the detectors below decide
+  //     which. The hyphen is the same break-opportunity trace rule 1b reads,
+  //     and the head and fit guards below still refuse everything else.
+  //     Without the slash half, `  │ wrote /tmp/out` followed by `  │ done`
+  //     would join into `/tmp/outdone`.
   //   - the continuation does not itself start with `/`. `…/` plus `/x` is not
   //     a path anyone wrote; it is two paths, and the second one is whole
   //     already.
@@ -689,7 +702,7 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   //     row, the estimate falls back to the block itself and this guard stops
   //     constraining — the tail and head checks then carry the rule alone,
   //     the same price rule 1b pays for surviving resizes.
-  if (!tail.endsWith('/') && !tail.endsWith('-')) return null;
+  if (!tail.endsWith('/') && !tail.endsWith('-') && !tail.endsWith('?')) return null;
   const rest = next.text.slice(gutter[0].length);
   const head = /^\S+/.exec(rest)?.[0] ?? '';
   if (head === '' || head.startsWith('/')) return null;
