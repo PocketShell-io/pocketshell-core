@@ -1970,6 +1970,79 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     expect((await controller.writeTerminalBytes(session('s5'), new TextEncoder().encode('x'))).ok).toBe(true);
   });
 
+  it.each([
+    ['typing into it', (controller: ConnectionController) => controller.writeTerminalBytes(session('s1'), new TextEncoder().encode('w'))],
+    ['resizing it (a pane shown again pushes its size)', (controller: ConnectionController) => controller.resizeTerminal(session('s1'), 90, 30)],
+    ['focusing it (a tab shown again)', async (controller: ConnectionController) => controller.focusSession(session('s1'))],
+  ])('counts %s as focus, so the bound evicts the untouched terminal instead', async (_label, use) => {
+    const capability = new FakeCapability();
+    capability.sessions.push(...['s1', 's2', 's3', 's4'].map((name) => session(name)));
+    const { controller } = controllerFor(capability, trustStore(PIN), { maxOpenPtys: 3 });
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of ['s1', 's2', 's3']) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    const opens = capability.openPtyCalls.length;
+    await use(controller);
+    expect(capability.openPtyCalls).toHaveLength(opens);
+    expect((await controller.attachSession(session('s4'))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s1', 's3', 's4']);
+  });
+
+  it('re-selects a terminal already open on the current generation without a second PTY while a recovery is still attaching another', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const betaGate = deferred<void>();
+    const openPty = capability.openPty;
+    let generation = 0;
+    capability.openPty = async (options) => {
+      if (options.command.includes("'beta'") && generation === 1) await betaGate.promise;
+      return openPty(options);
+    };
+    const opensBefore = capability.openPtyCalls.length;
+    generation = 1;
+    capability.emitLost();
+    // alpha is re-opened; beta's open is held on the wire (not yet recorded).
+    await waitFor(() => capability.openPtyCalls.length === opensBefore + 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha'");
+    expect(controller.getSnapshot().phase).toBe('attaching');
+    // alpha is already open on the new generation: re-selecting it opens nothing.
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(opensBefore + 1);
+    betaGate.resolve();
+    await waitFor(() => controller.getSnapshot().phase === 'live');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
+    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+  });
+
+  it('keeps a terminal whose read failed while backgrounded, and re-attaches it exactly once when grace expired', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of ['alpha', 'beta']) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    await waitFor(() => ['alpha', 'beta'].every((name) => capability.pendingReadsFor(channelOf(capability, name)) === 1));
+    await controller.enterBackground(10_000);
+    const opensBefore = capability.openPtyCalls.length;
+
+    capability.failRead(channelOf(capability, 'beta'), new Error('PTY output sequence gap: synthetic'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(controller.getSnapshot().phase).toBe('background');
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
+
+    const snapshot = controller.getSnapshot();
+    capability.emitGraceExpired({ connectionId: snapshot.connectionId!, generationId: snapshot.generationId! });
+    now += 10_001;
+    await controller.returnToForeground();
+    await waitFor(() => controller.getSnapshot().phase === 'live');
+    const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
+    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
+  });
+
   it('takes the PTY bound from the caller first, then the platform budget, then the default', async () => {
     const attachAll = async (capability: FakeCapability, options: { maxOpenPtys?: number } = {}) => {
       const names = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];

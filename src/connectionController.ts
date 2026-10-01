@@ -562,6 +562,19 @@ export class ConnectionController {
   }
 
   /**
+   * The consumer is looking at `session`'s terminal (a tab became visible,
+   * or was repainted): it becomes the most recently focused, so it is the
+   * last one the channel bound evicts. Asks the host nothing and moves no
+   * bytes; returns whether the session has an open terminal (#2955).
+   */
+  focusSession(session: SessionRow): boolean {
+    const record = this.findTerminal(session);
+    if (!record) return false;
+    record.focusedAt = ++this.focusClock;
+    return true;
+  }
+
+  /**
    * Close `session`'s PTY and keep the connection and every other terminal.
    * The consumer is gone (a closed tab, a left workspace); the next
    * `attachSession` of it opens a fresh attach, whose aplexer snapshot
@@ -769,6 +782,8 @@ export class ConnectionController {
     if (!record) {
       return { ok: false, reason: 'not-connected', message: 'Attach a session before sending terminal input.' };
     }
+    // Typing into a terminal is using it: it is the last one to evict.
+    record.focusedAt = ++this.focusClock;
     const selectedPty = record.pty;
     return this.withTerminalOperation(record, async () => {
       const pty = record.pty;
@@ -821,6 +836,8 @@ export class ConnectionController {
     if (!record) {
       return { ok: false, reason: 'not-connected', message: 'Attach a session before resizing the terminal.' };
     }
+    // A pane pushes its size when it becomes visible: that is a focus.
+    record.focusedAt = ++this.focusClock;
     const selectedPty = record.pty;
     return this.withTerminalOperation(record, async () => {
       const pty = record.pty;
