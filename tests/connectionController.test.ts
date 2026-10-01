@@ -1436,6 +1436,56 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     expect(capability.connectCalls).toHaveLength(1);
   });
 
+  it('reconnects once and re-attaches the session when an EOF probe answers lost, before any native lost event (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const channelId = [...capability.ptys.keys()].at(-1)!;
+    const recorder = recordReconnectEntries(controller);
+    const answer = capability.getConnectionState;
+    let probes = 0;
+    // The connection stays in the fake's map; only the probe says it is gone,
+    // the way Android reports a real drop (and no native lost event arrives).
+    capability.getConnectionState = async (ref) => {
+      probes += 1;
+      if (probes === 1) return { requestId: ref.requestId, state: 'lost' as const };
+      return answer(ref);
+    };
+
+    capability.emitOutput(channelId, new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(recorder.phases.slice(0, recorder.phases.indexOf('reconnecting'))).toEqual(['live']);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(1);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    expect(controller.getSnapshot().error).toBeNull();
+    expect(capability.openPtyCalls).toHaveLength(2);
+  });
+
+  it('skips an EOF probe answer for a different request and asks again (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const channelId = [...capability.ptys.keys()].at(-1)!;
+    const answer = capability.getConnectionState;
+    let probes = 0;
+    capability.getConnectionState = async (ref) => {
+      probes += 1;
+      // A stale answer that says lost must not count.
+      if (probes === 1) return { requestId: 'someone-else', state: 'lost' as const };
+      return answer(ref);
+    };
+
+    capability.emitOutput(channelId, new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(probes).toBe(2);
+    expect(controller.getSnapshot().error).toBe('Session “alpha” ended.');
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
   it('refuses a Retry during background grace without dialling (#2954)', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
