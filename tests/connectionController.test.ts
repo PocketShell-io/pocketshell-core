@@ -8,6 +8,8 @@ import {
 import {
   ConnectionController,
   DEFAULT_MAX_BACKGROUND_GRACE_MS,
+  DEFAULT_MAX_OPEN_PTYS,
+  PTY_CHANNEL_RESERVE,
   RECONNECT_DECLINED_MESSAGE,
   type HostKeyTrustStore,
 } from '../src/connectionController';
@@ -104,6 +106,21 @@ class FakeCapability {
   killAfterApplyFailure = false;
   nextWriteError: unknown = null;
   nextExecError: unknown = null;
+  /** The platform's stated channel budget (SshCapability.maxChannelsPerConnection). */
+  maxChannelsPerConnection: number | undefined = undefined;
+  /** When set, the fake refuses a channel past this many per connection, as the Android plugin does. */
+  channelLimit: number | null = null;
+  private execsInFlight = new Map<string, number>();
+  private channelsOn(connectionId: string): number {
+    let count = this.execsInFlight.get(connectionId) ?? 0;
+    for (const pty of this.ptys.values()) if (pty.connectionId === connectionId) count += 1;
+    return count;
+  }
+  private acquireChannel(connectionId: string): void {
+    if (this.channelLimit !== null && this.channelsOn(connectionId) >= this.channelLimit) {
+      throw new SshCapabilityError(`Connection has ${this.channelLimit} open channels.`, 'CHANNEL_LIMIT');
+    }
+  }
   readonly hostCommands = new Map<string, { exitCode: number | null; stdout: string; stderr?: string }>();
   private connectionOrdinal = 0;
   private ptyOrdinal = 0;
@@ -172,6 +189,16 @@ class FakeCapability {
   };
 
   exec = async (options: SshExecOptions): Promise<SshExecResult> => {
+    this.acquireChannel(options.connectionId);
+    this.execsInFlight.set(options.connectionId, (this.execsInFlight.get(options.connectionId) ?? 0) + 1);
+    try {
+      return await this.execOnChannel(options);
+    } finally {
+      this.execsInFlight.set(options.connectionId, (this.execsInFlight.get(options.connectionId) ?? 1) - 1);
+    }
+  };
+
+  private execOnChannel = async (options: SshExecOptions): Promise<SshExecResult> => {
     this.execCommands.push(options.command);
     if (this.nextExecError) {
       const error = this.nextExecError;
@@ -250,6 +277,7 @@ class FakeCapability {
 
   openPty = async (options: SshPtyOpenOptions) => {
     this.openPtyCalls.push(options);
+    this.acquireChannel(options.connectionId);
     const pty: SshPtyRef = {
       connectionId: options.connectionId,
       generationId: options.generationId,
@@ -406,6 +434,7 @@ function controllerFor(
     now?: () => number;
     maxBackgroundGraceMs?: number;
     retryDelaysMs?: readonly number[];
+    maxOpenPtys?: number;
     delay?: (milliseconds: number) => Promise<void>;
   } = {},
 ) {
@@ -526,7 +555,7 @@ describe('JS connection and session policy', () => {
     expect(changedTrust.store.record).not.toHaveBeenCalled();
   });
 
-  it('routes list and attach through HostCliCore and switches sessions on one SSH connection', async () => {
+  it('routes list and attach through HostCliCore and attaches sessions side by side on one SSH connection', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
@@ -535,25 +564,28 @@ describe('JS connection and session policy', () => {
     expect(capability.execCommands[0]).toBe('pocketshell sessions list --json');
     expect(controller.getSnapshot().sessions.map((row) => row.name)).toEqual(['alpha', 'beta']);
     const connectedCount = capability.connectCalls.length;
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     const firstPty = controller.getSnapshot().selectedSession;
     expect(firstPty?.name).toBe('alpha');
     expect(capability.openPtyCalls[0]?.command).toContain('pocketshell sessions attach --');
     expect(capability.openPtyCalls[0]?.command).toContain("'alpha'");
 
-    expect((await controller.switchSession(session('beta'))).ok).toBe(true);
-    expect(capability.closePtyCalls).toHaveLength(1);
+    expect((await controller.attachSession(session('beta'))).ok).toBe(true);
+    // Attaching beta keeps alpha's PTY (#2955).
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect(capability.ptys.size).toBe(2);
     expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
     expect(capability.connectCalls).toHaveLength(connectedCount);
     expect(capability.openPtyCalls[1]?.command).toContain("'beta'");
   });
 
-  it('does not let old queued operations or resize errors poison a new PTY', async () => {
+  it('does not let old queued operations or resize errors poison a fresh attach of the same session', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
     const resizeGate = deferred<void>();
     const resizeStarted = deferred<void>();
@@ -562,43 +594,47 @@ describe('JS connection and session policy', () => {
       await resizeGate.promise;
       throw new Error(`The closed PTY ${options.channelId} cannot be resized.`);
     };
-    const resize = controller.resizeTerminal(37, 15);
+    const resize = controller.resizeTerminal(session('alpha'), 37, 15);
     await resizeStarted.promise;
-    const queuedWrite = controller.writeTerminalBytes(new TextEncoder().encode('old-session-input'));
-    const switchResult = controller.switchSession(session('beta'));
-    expect((await switchResult).ok).toBe(true);
+    const queuedWrite = controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('old-session-input'));
+    // The pane closes alpha's shell and re-joins it: a fresh PTY.
+    await controller.detachSession(session('alpha'));
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     expect(capability.closePtyCalls).toHaveLength(1);
 
     resizeGate.resolve();
     expect(await resize).toMatchObject({ ok: false, reason: 'superseded' });
     expect(await queuedWrite).toMatchObject({ ok: false, reason: 'superseded' });
     expect(capability.writeCalls).toHaveLength(0);
-    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
     expect(controller.getSnapshot().phase).toBe('live');
   });
 
-  it('ignores an old native write failure after switching PTYs', async () => {
+  it('ignores an old native write failure after the same session was attached afresh', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
     const writeGate = deferred<void>();
     const writeStarted = deferred<void>();
+    const writePty = capability.writePty;
     capability.writePty = async () => {
       writeStarted.resolve();
       await writeGate.promise;
       throw new Error('The old PTY was closed.');
     };
-    const oldWrite = controller.writeTerminalBytes(new TextEncoder().encode('old input'));
+    const oldWrite = controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('old input'));
     await writeStarted.promise;
-    expect((await controller.switchSession(session('beta'))).ok).toBe(true);
+    await controller.detachSession(session('alpha'));
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
     writeGate.resolve();
     expect(await oldWrite).toMatchObject({ ok: false, reason: 'superseded' });
-    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
-    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', error: null, selectedSession: { name: 'alpha' } });
+    capability.writePty = writePty;
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('new'))).ok).toBe(true);
   });
 
   it('treats empty terminal input as a no-op without consuming a PTY sequence', async () => {
@@ -606,11 +642,11 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
-    expect(await controller.writeTerminalBytes(new Uint8Array())).toMatchObject({ ok: true, value: { sequence: 0 } });
+    expect(await controller.writeTerminalBytes(session('alpha'), new Uint8Array())).toMatchObject({ ok: true, value: { sequence: 0 } });
     expect(capability.writeCalls).toHaveLength(0);
-    expect((await controller.writeTerminalBytes(new TextEncoder().encode('x'))).ok).toBe(true);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('x'))).ok).toBe(true);
     expect(capability.writeCalls[0]?.sequence).toBe(1);
     expect(controller.getSnapshot().phase).toBe('live');
   });
@@ -620,7 +656,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     await waitFor(() => capability.openPtyCalls.length === 1 && capability.ptys.size === 1);
     const channelId = [...capability.ptys.keys()][0];
     expect(channelId).toBeTruthy();
@@ -642,8 +678,8 @@ describe('JS connection and session policy', () => {
     gate.resolve();
     await waitFor(() => capability.pendingReadsFor(channelId!) === 1);
 
-    const writes = controller.writeTerminalBytes(new TextEncoder().encode('ls\n'));
-    const resize = controller.resizeTerminal(120, 36);
+    const writes = controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('ls\n'));
+    const resize = controller.resizeTerminal(session('alpha'), 120, 36);
     expect((await writes).ok).toBe(true);
     expect((await resize).ok).toBe(true);
     expect(capability.writeCalls).toHaveLength(1);
@@ -654,22 +690,25 @@ describe('JS connection and session policy', () => {
     expect(received).toHaveBeenCalledOnce();
   });
 
-  it('opens each attach at the consumer geometry and reattaches at the last size after a drop', async () => {
+  it('opens each attach at the consumer geometry and reattaches each terminal at its own last size after a drop', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
 
-    expect((await controller.switchSession(session('alpha'), { cols: 50, rows: 30 })).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'), { cols: 50, rows: 30 })).ok).toBe(true);
     expect(capability.openPtyCalls[0]).toMatchObject({ cols: 50, rows: 30 });
-    expect((await controller.resizeTerminal(60, 20)).ok).toBe(true);
+    expect((await controller.resizeTerminal(session('alpha'), 60, 20)).ok).toBe(true);
     // An invalid size never replaces the known-good one.
-    expect((await controller.switchSession(session('beta'), { cols: 0, rows: 20 })).ok).toBe(true);
+    expect((await controller.attachSession(session('beta'), { cols: 0, rows: 20 })).ok).toBe(true);
     expect(capability.openPtyCalls[1]).toMatchObject({ cols: 60, rows: 20 });
+    expect((await controller.resizeTerminal(session('beta'), 70, 25)).ok).toBe(true);
 
     capability.emitLost();
-    await waitFor(() => capability.openPtyCalls.length === 3 && controller.getSnapshot().phase === 'live');
-    expect(capability.openPtyCalls[2]).toMatchObject({ cols: 60, rows: 20 });
+    await waitFor(() => capability.openPtyCalls.length === 4 && controller.getSnapshot().phase === 'live');
+    const reopened = capability.openPtyCalls.slice(2);
+    expect(reopened.find((call) => call.command.includes("'alpha'"))).toMatchObject({ cols: 60, rows: 20 });
+    expect(reopened.find((call) => call.command.includes("'beta'"))).toMatchObject({ cols: 70, rows: 25 });
   });
 
   it('detaches the attached PTY so re-selecting the same session attaches afresh', async () => {
@@ -677,18 +716,18 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     // Re-selecting the live session is a no-op...
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     expect(capability.openPtyCalls).toHaveLength(1);
 
-    await controller.detachSession();
+    await controller.detachSession(session('alpha'));
     expect(capability.closePtyCalls).toHaveLength(1);
-    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', selectedSession: null });
-    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(false);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', selectedSession: null, terminals: [] });
+    expect((await controller.writeTerminalBytes(session('alpha'), new Uint8Array([65]))).ok).toBe(false);
 
     // ...but after a detach it opens a new attach (and with it a repaint).
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     expect(capability.openPtyCalls).toHaveLength(2);
     expect(capability.connectCalls).toHaveLength(1);
   });
@@ -698,15 +737,16 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
     // The pane of the old tab closes its shell while the new tab attaches.
-    const detaching = controller.detachSession();
-    const switching = controller.switchSession(session('beta'));
+    const detaching = controller.detachSession(session('alpha'));
+    const switching = controller.attachSession(session('beta'));
     await Promise.all([detaching, switching]);
     expect((await switching).ok).toBe(true);
     expect(controller.getSnapshot()).toMatchObject({ phase: 'live', selectedSession: { name: 'beta' } });
-    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['beta']);
+    expect((await controller.writeTerminalBytes(session('beta'), new Uint8Array([65]))).ok).toBe(true);
   });
 
   it('does not re-attach a session whose consumer detached while the reconnect was running', async () => {
@@ -714,11 +754,11 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
 
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
-    await controller.detachSession();
+    await controller.detachSession(session('alpha'));
     await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
     expect(capability.openPtyCalls).toHaveLength(1);
     expect(controller.getSnapshot().selectedSession).toBeNull();
@@ -729,13 +769,13 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
-    await controller.detachSession();
+    await controller.detachSession(session('alpha'));
     await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
     // The user opens a session again: live.
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     expect(controller.getSnapshot().phase).toBe('live');
     const opensBefore = capability.openPtyCalls.length;
     // A second, unrelated transport drop must re-attach the live session.
@@ -775,7 +815,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId;
 
     capability.emitLost();
@@ -791,7 +831,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId;
 
     await controller.enterBackground(10_000);
@@ -814,7 +854,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId;
 
     await controller.enterBackground(DEFAULT_MAX_BACKGROUND_GRACE_MS);
@@ -833,7 +873,7 @@ describe('JS connection and session policy', () => {
     const { controller: cappedController } = controllerFor(capped, trustStore(PIN), { now: () => now, maxBackgroundGraceMs: 300_000 });
     controllers.push(cappedController);
     await connectAndList(cappedController);
-    await cappedController.switchSession(session('alpha'));
+    await cappedController.attachSession(session('alpha'));
     await cappedController.enterBackground(600_000);
     expect(capped.scheduledDeadlines.at(-1)).toBe(now + 300_000);
     await cappedController.enterBackground(Number.NaN);
@@ -846,7 +886,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId;
 
     await controller.enterBackground(10_000);
@@ -882,7 +922,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId!;
 
     await controller.enterBackground(60_000);
@@ -911,7 +951,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const originalConnection = controller.getSnapshot().connectionId;
     const originalGeneration = controller.getSnapshot().generationId;
     expect(originalConnection).toBeTruthy();
@@ -1010,10 +1050,10 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     capability.nextWriteError = new SshCapabilityError('SSH transport was lost during write.', 'CONNECTION_LOST');
 
-    expect((await controller.writeTerminalBytes(new TextEncoder().encode('command\n'))).ok).toBe(false);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('command\n'))).ok).toBe(false);
     await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
     expect(capability.writeCalls).toHaveLength(1);
     expect((await controller.getResourceSnapshot()).ptys).toBe(1);
@@ -1028,7 +1068,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0, 0] });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     expect(controller.maxReconnectAttempts).toBe(3);
 
     capability.refuseDials = true;
@@ -1060,7 +1100,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 20, 20] });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
 
     capability.refuseDials = true;
     capability.emitLost();
@@ -1096,7 +1136,7 @@ describe('JS connection and session policy', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     capability.refuseLogins = { code: 'AUTH_FAILED', message: 'Exhausted available authentication methods' };
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'lost');
@@ -1159,7 +1199,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
     await waitFor(() => capability.pendingReads.length === 1);
     return controller;
   }
@@ -1223,7 +1263,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const teardown = holdTransportTeardown(capability);
     loseNextCreateResponse(capability);
 
-    const resize = controller.resizeTerminal(100, 30);
+    const resize = controller.resizeTerminal(session('alpha'), 100, 30);
     await closeStarted.promise;
     const create = controller.createSession('created-once');
     await teardown.started.promise;
@@ -1259,7 +1299,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const teardown = holdTransportTeardown(capability);
     loseNextCreateResponse(capability);
 
-    const write = controller.writeTerminalBytes(new TextEncoder().encode('\x1b[0n'));
+    const write = controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('\x1b[0n'));
     await closeStarted.promise;
     const create = controller.createSession('created-once');
     await teardown.started.promise;
@@ -1356,7 +1396,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
       return openPty(options);
     };
 
-    const staleSwitch = controller.switchSession(session('beta'));
+    const staleSwitch = controller.attachSession(session('beta'));
     await openStarted.promise;
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
@@ -1435,7 +1475,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const channelId = [...capability.ptys.keys()].at(-1)!;
     let probes = 0;
     capability.getConnectionState = async () => {
@@ -1456,7 +1496,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const channelId = [...capability.ptys.keys()].at(-1)!;
     const answer = capability.getConnectionState;
     let probes = 0;
@@ -1478,7 +1518,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const channelId = [...capability.ptys.keys()].at(-1)!;
     const recorder = recordReconnectEntries(controller);
     const answer = capability.getConnectionState;
@@ -1505,7 +1545,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     const channelId = [...capability.ptys.keys()].at(-1)!;
     const answer = capability.getConnectionState;
     let probes = 0;
@@ -1528,7 +1568,7 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     const { controller } = controllerFor(capability, trustStore(PIN));
     controllers.push(controller);
     await connectAndList(controller);
-    await controller.switchSession(session('alpha'));
+    await controller.attachSession(session('alpha'));
     await controller.enterBackground(60_000);
     expect(controller.getSnapshot().phase).toBe('background');
 
@@ -1547,5 +1587,479 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(controller.getSnapshot().error).toBe('Session “alpha” ended.');
     expect(capability.connectCalls).toHaveLength(1);
+  });
+});
+
+describe('one PTY per attached session (pocketshell#2955)', () => {
+  const controllers: ConnectionController[] = [];
+
+  afterEach(async () => {
+    await Promise.all(controllers.splice(0).map((controller) => controller.close()));
+  });
+
+  function recordPhases(controller: ConnectionController) {
+    const phases: string[] = [controller.getSnapshot().phase];
+    controller.subscribe((snapshot) => {
+      if (phases.at(-1) !== snapshot.phase) phases.push(snapshot.phase);
+    });
+    return { phases, ladders: () => phases.filter((phase) => phase === 'reconnecting').length };
+  }
+
+  function recordOutput(controller: ConnectionController) {
+    const output: Array<[string, string]> = [];
+    controller.subscribeTerminalOutput((row, bytes) => {
+      output.push([row.name, new TextDecoder().decode(bytes)]);
+    });
+    return { output, of: (name: string) => output.filter(([row]) => row === name).map(([, text]) => text).join('') };
+  }
+
+  /** The newest channel attached to `name`. */
+  function channelOf(capability: FakeCapability, name: string): string {
+    const index = capability.openPtyCalls.map((call) => call.command.includes(`'${name}'`)).lastIndexOf(true);
+    if (index < 0) throw new Error(`no PTY opened for ${name}`);
+    return `pty-${index + 1}`;
+  }
+
+  async function liveOn(names: string[], options: { retryDelaysMs?: readonly number[] } = {}) {
+    const capability = new FakeCapability();
+    capability.sessions.push(session('gamma'));
+    const { controller } = controllerFor(capability, trustStore(PIN), options);
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of names) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    await waitFor(() => names.every((name) => capability.pendingReadsFor(channelOf(capability, name)) === 1));
+    return { capability, controller };
+  }
+
+  it('attaches concurrent sessions on their own PTYs and routes each one\'s output with its session', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    const output = recordOutput(controller);
+
+    const [alpha, beta] = await Promise.all([
+      controller.attachSession(session('alpha')),
+      controller.attachSession(session('beta')),
+    ]);
+    expect(alpha.ok && beta.ok).toBe(true);
+    // A second attach of the same session while the first is in flight joins it.
+    expect((await Promise.all([controller.attachSession(session('alpha')), controller.attachSession(session('alpha'))]))
+      .every((result) => result.ok)).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect(capability.ptys.size).toBe(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().terminals.map((row) => row.name).sort()).toEqual(['alpha', 'beta']);
+
+    const alphaChannel = channelOf(capability, 'alpha');
+    const betaChannel = channelOf(capability, 'beta');
+    expect(alphaChannel).not.toBe(betaChannel);
+    await waitFor(() => capability.pendingReadsFor(alphaChannel) === 1 && capability.pendingReadsFor(betaChannel) === 1);
+    capability.emitOutput(betaChannel, new TextEncoder().encode('B1 '));
+    capability.emitOutput(alphaChannel, new TextEncoder().encode('A1 '));
+    capability.emitOutput(betaChannel, new TextEncoder().encode('B2 '));
+    await waitFor(() => output.of('alpha') === 'A1 ' && output.of('beta') === 'B1 B2 ');
+    expect(output.output).toHaveLength(3);
+
+    // Re-selecting a live session is a focus change: no attach, no repaint.
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+  });
+
+  it('keeps an interleaved write order and sequence per PTY, never queueing one terminal behind another', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const alphaChannel = channelOf(capability, 'alpha');
+    const betaChannel = channelOf(capability, 'beta');
+    const alphaGate = deferred<void>();
+    const alphaStarted = deferred<void>();
+    const writePty = capability.writePty;
+    const sent: Array<[string, string]> = [];
+    capability.writePty = async (options) => {
+      sent.push([options.channelId, atob(options.dataBase64)]);
+      if (options.channelId === alphaChannel && options.sequence === 1) {
+        alphaStarted.resolve();
+        await alphaGate.promise;
+      }
+      return writePty(options);
+    };
+    const text = (value: string) => new TextEncoder().encode(value);
+
+    const a1 = controller.writeTerminalBytes(session('alpha'), text('a1'));
+    await alphaStarted.promise;
+    const b1 = controller.writeTerminalBytes(session('beta'), text('b1'));
+    const a2 = controller.writeTerminalBytes(session('alpha'), text('a2'));
+    const b2 = controller.writeTerminalBytes(session('beta'), text('b2'));
+    const resizeA = controller.resizeTerminal(session('alpha'), 90, 30);
+    // beta is not held up by alpha's stalled write...
+    expect(await b1).toEqual({ ok: true, value: { sequence: 1 } });
+    expect(await b2).toEqual({ ok: true, value: { sequence: 2 } });
+    // ...while alpha's later operations wait for alpha's first.
+    expect(sent).toEqual([[alphaChannel, 'a1'], [betaChannel, 'b1'], [betaChannel, 'b2']]);
+    expect(capability.resizeCalls).toHaveLength(0);
+    alphaGate.resolve();
+    expect(await a1).toEqual({ ok: true, value: { sequence: 1 } });
+    expect(await a2).toEqual({ ok: true, value: { sequence: 2 } });
+    expect(await resizeA).toEqual({ ok: true, value: { sequence: 3 } });
+
+    const perChannel = (channel: string) => capability.writeCalls
+      .filter((call) => call.channelId === channel)
+      .map((call) => [call.sequence, atob(call.dataBase64)]);
+    expect(perChannel(alphaChannel)).toEqual([[1, 'a1'], [2, 'a2']]);
+    expect(perChannel(betaChannel)).toEqual([[1, 'b1'], [2, 'b2']]);
+    expect(capability.resizeCalls).toEqual([expect.objectContaining({ channelId: alphaChannel, sequence: 3 })]);
+  });
+
+  it('re-attaches every open PTY exactly once on one reconnect after a drop', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta', 'gamma']);
+    const recorder = recordPhases(controller);
+    const opensBefore = capability.openPtyCalls.length;
+    controller.subscribe(() => undefined);
+    await controller.attachSession(session('beta')); // focus beta before the drop
+
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      expect(reopened.filter((command) => command.includes(`'${name}'`)), name).toHaveLength(1);
+    }
+    expect(reopened).toHaveLength(3);
+    expect(recorder.ladders(), recorder.phases.join(' -> ')).toBe(1);
+    expect(capability.ptys.size).toBe(3);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta', 'gamma']);
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      expect((await controller.writeTerminalBytes(session(name), new TextEncoder().encode(name))).ok, name).toBe(true);
+    }
+  });
+
+  it('runs ONE ladder when every PTY of a dying transport reports EOF, re-attaching each once', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta', 'gamma']);
+    const recorder = recordPhases(controller);
+    const opensBefore = capability.openPtyCalls.length;
+    const [connectionId, generationId] = [...capability.connections.entries()][0]!;
+    capability.connections.delete(connectionId);
+    for (const name of ['alpha', 'beta', 'gamma']) capability.emitOutput(channelOf(capability, name), new Uint8Array(), true);
+    // The native lost event lands after the channels' EOFs.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const listener of (capability as unknown as { listeners: Set<(event: SshConnectionStateEvent) => void> }).listeners) {
+      listener({ connectionId, generationId, state: 'lost', reason: 'socket reset after channels closed' });
+    }
+
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.openPtyCalls.length === opensBefore + 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(recorder.ladders(), recorder.phases.join(' -> ')).toBe(1);
+    // Never "the session ended" for a link that failed.
+    expect(recorder.phases.slice(0, recorder.phases.indexOf('reconnecting'))).toEqual(['live']);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.openPtyCalls).toHaveLength(opensBefore + 3);
+    expect(controller.getSnapshot().terminals).toHaveLength(3);
+  });
+
+  it('ignores a late read, write or lost event of an old generation on every PTY', async () => {
+    const capability = new FakeCapability();
+    // The first read of each first-generation PTY is answered only after the
+    // reconnect, with bytes at a sequence the re-attached PTY would accept:
+    // only the per-terminal pump token can tell it is stale.
+    const lateReads = new Map<string, { options: SshPtyReadOptions; resolve: (value: SshPtyReadResult) => void }>();
+    const readPty = capability.readPty;
+    let holdFirstGeneration = true;
+    capability.readPty = (options) => {
+      if (holdFirstGeneration && !lateReads.has(options.channelId)) {
+        return new Promise((resolve) => { lateReads.set(options.channelId, { options, resolve }); });
+      }
+      return readPty(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of ['alpha', 'beta']) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    await waitFor(() => lateReads.size === 2);
+    holdFirstGeneration = false;
+    const output = recordOutput(controller);
+    const oldSnapshot = controller.getSnapshot();
+    const oldChannels = [...lateReads.keys()];
+    // An old write that will complete late.
+    const writeGate = deferred<void>();
+    const writePty = capability.writePty;
+    capability.writePty = async (options) => {
+      if (oldChannels.includes(options.channelId)) await writeGate.promise;
+      return writePty(options);
+    };
+    const lateWrite = controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('late'));
+
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2
+      && ['alpha', 'beta'].every((name) => capability.pendingReadsFor(channelOf(capability, name)) === 1));
+    const recovered = controller.getSnapshot();
+    const revisionBefore = recovered.revision;
+
+    for (const { options, resolve } of lateReads.values()) {
+      expect(options.sequence).toBe(0);
+      resolve({
+        requestId: options.requestId,
+        connectionId: options.connectionId,
+        generationId: options.generationId,
+        channelId: options.channelId,
+        sequence: 1,
+        dataBase64: base64(new TextEncoder().encode('STALE')),
+        eof: true,
+      });
+    }
+    writeGate.resolve();
+    expect(await lateWrite).toMatchObject({ ok: false, reason: 'superseded' });
+    for (const listener of (capability as unknown as { listeners: Set<(event: SshConnectionStateEvent) => void> }).listeners) {
+      listener({ connectionId: oldSnapshot.connectionId!, generationId: oldSnapshot.generationId!, state: 'lost', reason: 'late' });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(output.output.map(([, text]) => text)).not.toContain('STALE');
+    expect(controller.getSnapshot().revision).toBe(revisionBefore);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', connectionId: recovered.connectionId, error: null });
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
+    expect(capability.connectCalls).toHaveLength(2);
+    for (const name of ['alpha', 'beta']) {
+      capability.emitOutput(channelOf(capability, name), new TextEncoder().encode(`${name}-new`));
+      expect((await controller.writeTerminalBytes(session(name), new TextEncoder().encode(name))).ok, name).toBe(true);
+    }
+    await waitFor(() => output.of('alpha') === 'alpha-new' && output.of('beta') === 'beta-new');
+  });
+
+  it('closes, ends or fails one PTY without touching another', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta', 'gamma']);
+    const output = recordOutput(controller);
+    const alphaChannel = channelOf(capability, 'alpha');
+
+    // Detach beta: only beta's PTY closes.
+    await controller.detachSession(session('beta'));
+    expect(capability.closePtyCalls.map((call) => call.channelId)).toEqual([channelOf(capability, 'beta')]);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect((await controller.writeTerminalBytes(session('beta'), new TextEncoder().encode('x'))).ok).toBe(false);
+
+    // gamma's session ends on a healthy transport: only gamma goes.
+    capability.emitOutput(channelOf(capability, 'gamma'), new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().terminals.length === 1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', error: 'Session “gamma” ended.' });
+    expect(capability.connectCalls).toHaveLength(1);
+
+    // alpha still streams and types.
+    capability.emitOutput(alphaChannel, new TextEncoder().encode('alive'));
+    await waitFor(() => output.of('alpha') === 'alive');
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('ok'))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+
+    // A failed write on a re-attached beta leaves alpha live.
+    expect((await controller.attachSession(session('beta'))).ok).toBe(true);
+    capability.nextWriteError = new Error('PTY write refused.');
+    expect((await controller.writeTerminalBytes(session('beta'), new TextEncoder().encode('bad'))).ok).toBe(false);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(capability.connectCalls).toHaveLength(1);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('still'))).ok).toBe(true);
+
+    // The last terminal's detach leaves the connection, not a live phase.
+    await controller.detachSession(session('alpha'));
+    await controller.detachSession(session('beta'));
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', selectedSession: null, terminals: [] });
+  });
+
+  it('re-attaches only the terminals still open when one is detached during the reconnect, and later reconnects re-attach the rest', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const connectGate = deferred<void>();
+    const connectStarted = deferred<void>();
+    const connect = capability.connect;
+    let hold = true;
+    capability.connect = async (options) => {
+      if (hold) {
+        hold = false;
+        connectStarted.resolve();
+        await connectGate.promise;
+      }
+      return connect(options);
+    };
+    const opensBefore = capability.openPtyCalls.length;
+    capability.emitLost();
+    await connectStarted.promise;
+    await controller.detachSession(session('beta'));
+    connectGate.resolve();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(capability.openPtyCalls.slice(opensBefore).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
+
+    // The detach belonged to THAT reconnect only: the next one re-attaches alpha.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'live');
+    expect(capability.openPtyCalls.slice(opensBefore + 1).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+  });
+
+  it('drops a terminal whose session vanished during the reconnect and keeps the others live', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    capability.sessions.splice(capability.sessions.findIndex((row) => row.name === 'beta'), 1);
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+
+    capability.sessions.splice(capability.sessions.findIndex((row) => row.name === 'alpha'), 1);
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(controller.getSnapshot().error).toBe('Session “alpha” no longer exists on 127.0.0.1.');
+  });
+
+  it('drops a PTY whose output read failed on a healthy transport, so re-selecting it attaches afresh while the others stay live', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const output = recordOutput(controller);
+    const alphaChannel = channelOf(capability, 'alpha');
+    const betaChannel = channelOf(capability, 'beta');
+    const opensBefore = capability.openPtyCalls.length;
+
+    capability.failRead(betaChannel, new Error('PTY output sequence gap: synthetic'));
+    await waitFor(() => controller.getSnapshot().terminals.length === 1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', error: 'PTY output sequence gap: synthetic' });
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(capability.closePtyCalls.map((call) => call.channelId)).toContain(betaChannel);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    // Re-selecting beta is a fresh attach (a new PTY and its repaint), not a no-op on the dead one.
+    expect((await controller.attachSession(session('beta'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(opensBefore + 1);
+    const newBeta = channelOf(capability, 'beta');
+    expect(newBeta).not.toBe(betaChannel);
+    await waitFor(() => capability.pendingReadsFor(newBeta) === 1);
+    capability.emitOutput(newBeta, new TextEncoder().encode('beta-again'));
+    capability.emitOutput(alphaChannel, new TextEncoder().encode('alpha-still'));
+    await waitFor(() => output.of('beta') === 'beta-again' && output.of('alpha') === 'alpha-still');
+    expect((await controller.writeTerminalBytes(session('beta'), new TextEncoder().encode('b'))).ok).toBe(true);
+    expect(capability.writeCalls.at(-1)?.channelId).toBe(newBeta);
+  });
+
+  it('bounds open PTYs below the platform channel budget, evicting the least recently focused, and keeps host commands working', async () => {
+    const capability = new FakeCapability();
+    const names = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'];
+    capability.sessions.push(...names.map((name) => session(name)));
+    capability.maxChannelsPerConnection = 8;
+    capability.channelLimit = 8;
+    capability.hostCommands.set('true', { exitCode: 0, stdout: '' });
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    for (const name of names) expect((await controller.attachSession(session(name))).ok, name).toBe(true);
+    // 8 channels, 3 kept for execs and forwards: at most 5 PTYs.
+    expect(capability.ptys.size).toBe(8 - PTY_CHANNEL_RESERVE);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's5', 's6', 's7', 's8']);
+    expect(capability.openPtyCalls).toHaveLength(8);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
+    expect((await controller.refreshSessions()).ok).toBe(true);
+
+    // Focusing s4 makes s5 the least recently focused; opening s1 again evicts s5.
+    expect((await controller.attachSession(session('s4'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(8);
+    expect((await controller.attachSession(session('s1'))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's6', 's7', 's8', 's1']);
+    expect(capability.openPtyCalls).toHaveLength(9);
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1'");
+    expect(capability.ptys.size).toBe(5);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
+    // The evicted terminal re-attaches (a fresh PTY) when it is looked at again.
+    expect((await controller.attachSession(session('s5'))).ok).toBe(true);
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5'");
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's7', 's8', 's1', 's5']);
+    expect((await controller.writeTerminalBytes(session('s5'), new TextEncoder().encode('x'))).ok).toBe(true);
+  });
+
+  it.each([
+    ['typing into it', (controller: ConnectionController) => controller.writeTerminalBytes(session('s1'), new TextEncoder().encode('w'))],
+    ['resizing it (a pane shown again pushes its size)', (controller: ConnectionController) => controller.resizeTerminal(session('s1'), 90, 30)],
+    ['focusing it (a tab shown again)', async (controller: ConnectionController) => controller.focusSession(session('s1'))],
+  ])('counts %s as focus, so the bound evicts the untouched terminal instead', async (_label, use) => {
+    const capability = new FakeCapability();
+    capability.sessions.push(...['s1', 's2', 's3', 's4'].map((name) => session(name)));
+    const { controller } = controllerFor(capability, trustStore(PIN), { maxOpenPtys: 3 });
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of ['s1', 's2', 's3']) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    const opens = capability.openPtyCalls.length;
+    await use(controller);
+    expect(capability.openPtyCalls).toHaveLength(opens);
+    expect((await controller.attachSession(session('s4'))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s1', 's3', 's4']);
+  });
+
+  it('re-selects a terminal already open on the current generation without a second PTY while a recovery is still attaching another', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const betaGate = deferred<void>();
+    const openPty = capability.openPty;
+    let generation = 0;
+    capability.openPty = async (options) => {
+      if (options.command.includes("'beta'") && generation === 1) await betaGate.promise;
+      return openPty(options);
+    };
+    const opensBefore = capability.openPtyCalls.length;
+    generation = 1;
+    capability.emitLost();
+    // alpha is re-opened; beta's open is held on the wire (not yet recorded).
+    await waitFor(() => capability.openPtyCalls.length === opensBefore + 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha'");
+    expect(controller.getSnapshot().phase).toBe('attaching');
+    // alpha is already open on the new generation: re-selecting it opens nothing.
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(opensBefore + 1);
+    betaGate.resolve();
+    await waitFor(() => controller.getSnapshot().phase === 'live');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
+    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+  });
+
+  it('keeps a terminal whose read failed while backgrounded, and re-attaches it exactly once when grace expired', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    for (const name of ['alpha', 'beta']) expect((await controller.attachSession(session(name))).ok).toBe(true);
+    await waitFor(() => ['alpha', 'beta'].every((name) => capability.pendingReadsFor(channelOf(capability, name)) === 1));
+    await controller.enterBackground(10_000);
+    const opensBefore = capability.openPtyCalls.length;
+
+    capability.failRead(channelOf(capability, 'beta'), new Error('PTY output sequence gap: synthetic'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(controller.getSnapshot().phase).toBe('background');
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
+
+    const snapshot = controller.getSnapshot();
+    capability.emitGraceExpired({ connectionId: snapshot.connectionId!, generationId: snapshot.generationId! });
+    now += 10_001;
+    await controller.returnToForeground();
+    await waitFor(() => controller.getSnapshot().phase === 'live');
+    const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
+    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
+  });
+
+  it('takes the PTY bound from the caller first, then the platform budget, then the default', async () => {
+    const attachAll = async (capability: FakeCapability, options: { maxOpenPtys?: number } = {}) => {
+      const names = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
+      capability.sessions.push(...names.map((name) => session(name)));
+      const { controller } = controllerFor(capability, trustStore(PIN), options);
+      controllers.push(controller);
+      await connectAndList(controller);
+      for (const name of names) expect((await controller.attachSession(session(name))).ok).toBe(true);
+      return controller.getSnapshot().terminals.length;
+    };
+    expect(await attachAll(new FakeCapability())).toBe(DEFAULT_MAX_OPEN_PTYS);
+    const budgeted = new FakeCapability();
+    budgeted.maxChannelsPerConnection = 5;
+    expect(await attachAll(budgeted)).toBe(2);
+    const tight = new FakeCapability();
+    tight.maxChannelsPerConnection = 2;
+    expect(await attachAll(tight)).toBe(1);
+    expect(await attachAll(new FakeCapability(), { maxOpenPtys: 3 })).toBe(3);
   });
 });

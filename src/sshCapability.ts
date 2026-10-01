@@ -180,6 +180,14 @@ export interface SshPortForwardRef extends SshConnectionRef {
  * after these physical operations report their results.
  */
 export interface SshCapability {
+  /**
+   * How many SSH channels the platform opens on one connection before it
+   * refuses with `CHANNEL_LIMIT` — PTYs, execs and forwards share it. A
+   * platform with a fixed budget (Android's plugin: 8) states it so the
+   * controller bounds its PTYs and keeps exec headroom; absent means the
+   * controller's default PTY bound applies (#2955).
+   */
+  readonly maxChannelsPerConnection?: number;
   addListener(
     eventName: 'connectionState',
     listenerFunc: (event: SshConnectionStateEvent) => void,
