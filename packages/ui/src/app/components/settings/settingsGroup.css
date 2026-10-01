@@ -72,6 +72,9 @@
   font-weight: var(--fw-medium);
   line-height: 1;
   cursor: pointer;
+  /* The On/Off word and icon are the tap feedback; WebView's default blue
+     tap flash painted the whole switch as a filled bar. */
+  -webkit-tap-highlight-color: transparent;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
