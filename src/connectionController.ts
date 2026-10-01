@@ -1,5 +1,5 @@
 import { HostCliCore } from './hostCliCore';
-import { HostCliFailed, type HostCliTransport } from './hostCliCommon';
+import { HostCliFailed, type HostCliExecOutcome, type HostCliTransport } from './hostCliCommon';
 import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
 import {
   acceptedHostKeyPin,
@@ -120,6 +120,21 @@ export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShe
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 const PTY_READ_WAIT_MS = 250;
 const PTY_READ_MAX_BYTES = 32_768;
+const DEFAULT_TERMINAL_GEOMETRY = { cols: 80, rows: 24 } as const;
+
+/** The terminal size a PTY is opened at. */
+export interface TerminalGeometry {
+  cols: number;
+  rows: number;
+}
+
+function validGeometry(geometry: TerminalGeometry | undefined): TerminalGeometry | null {
+  if (!geometry) return null;
+  const { cols, rows } = geometry;
+  return Number.isInteger(cols) && Number.isInteger(rows) && cols >= 1 && rows >= 1 && cols <= 1000 && rows <= 1000
+    ? { cols, rows }
+    : null;
+}
 
 function defaultId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
@@ -199,6 +214,15 @@ export class ConnectionController {
   private ptyOperationQueue: Promise<void> = Promise.resolve();
   private ptyPumpToken = 0;
   private selectionToken = 0;
+  /** The size the terminal consumer last asked for; every (re)attach opens at it. */
+  private terminalGeometry: TerminalGeometry = { ...DEFAULT_TERMINAL_GEOMETRY };
+  /** Counts reconnects; each run of runReconnect gets its own number. */
+  private reconnectGeneration = 0;
+  /**
+   * The reconnect that was running when the consumer detached. Only THAT
+   * reconnect re-attaches nothing; any later one re-attaches as usual.
+   */
+  private detachedReconnectGeneration: number | null = null;
   private graceDeadlineEpochMs: number | null = null;
   private reconnectTask: Promise<void> | null = null;
   private disposed = false;
@@ -389,7 +413,19 @@ export class ConnectionController {
     }
   }
 
-  async switchSession(session: SessionRow): Promise<ConnectionActionResult<SessionRow>> {
+  /**
+   * Attach `session` on the one PTY. `geometry` is the consumer's terminal
+   * size: the PTY is OPENED at it, so aplexer renders its attach snapshot
+   * (the repaint of the session's live screen) at the size the user sees,
+   * instead of at 80x24 followed by a resize the workload may never answer
+   * (#2936). Later reconnect re-attaches reuse the last known size.
+   */
+  async switchSession(
+    session: SessionRow,
+    geometry?: TerminalGeometry,
+  ): Promise<ConnectionActionResult<SessionRow>> {
+    const requested = validGeometry(geometry);
+    if (requested) this.terminalGeometry = requested;
     const hostCli = this.hostCli;
     const connection = this.connection;
     if (!hostCli || !connection || !this.host) {
@@ -414,8 +450,8 @@ export class ConnectionController {
         ...connection,
         requestId: openRequestId,
         command: hostCli.buildAttachCommand(selected.name),
-        cols: 80,
-        rows: 24,
+        cols: this.terminalGeometry.cols,
+        rows: this.terminalGeometry.rows,
         term: 'xterm-256color',
       });
       if (opened.requestId !== openRequestId || opened.generationId !== connection.generationId || intent !== this.selectionToken) {
@@ -433,6 +469,55 @@ export class ConnectionController {
       const message = error instanceof Error ? error.message : String(error);
       this.setSnapshot({ phase: 'error', error: message });
       if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY attach failed after transport loss');
+      return { ok: false, reason: 'failed', message };
+    }
+  }
+
+  /**
+   * Close the attached session's PTY and keep the connection. The terminal
+   * consumer is gone (a closed tab, a left workspace); the next
+   * `switchSession` — including of the SAME session — opens a fresh attach,
+   * whose aplexer snapshot repaints the screen. A reconnect after this does
+   * not re-attach anything (#2936).
+   */
+  async detachSession(): Promise<void> {
+    const selection = ++this.selectionToken;
+    await this.closeCurrentPty();
+    // A selection made while the PTY was closing owns the state now; a late
+    // "connected, nothing selected" would demote its live attach.
+    if (selection !== this.selectionToken) return;
+    if (this.reconnectTask) this.detachedReconnectGeneration = this.reconnectGeneration;
+    if (!this.disposed && this.connection && this.snapshot.phase !== 'reconnecting') {
+      this.setSnapshot({ phase: 'connected', selectedSession: null, error: null });
+    }
+  }
+
+  /**
+   * Run one host command over the current transport generation.
+   *
+   * A platform adapter that exposes a generic exec (the shared app's
+   * `ssh.exec`, bootstrap and usage probes) goes through here rather than
+   * the raw capability, so the controller stays the one owner of the
+   * connection generation and a transport failure observed by the command
+   * starts the same reconnect path as every other operation (#2936, D28).
+   * A non-zero exit is a result, not a failure.
+   */
+  async runHostCommand(
+    command: string,
+    timeoutMs: number,
+  ): Promise<ConnectionActionResult<HostCliExecOutcome>> {
+    const connection = this.connection;
+    if (!connection) {
+      return { ok: false, reason: 'not-connected', message: 'Connect to a host before running a command.' };
+    }
+    try {
+      const outcome = await this.createHostCliTransport(connection).exec(command, timeoutMs);
+      return { ok: true, value: outcome };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (connection === this.connection && this.isCurrentTransportFailure(error)) {
+        this.startReconnect('host command observed a transport failure');
+      }
       return { ok: false, reason: 'failed', message };
     }
   }
@@ -606,6 +691,7 @@ export class ConnectionController {
         if (result.requestId !== requestId || result.sequence !== sequence || result.channelId !== pty.channelId) {
           throw new Error('PTY resize returned a stale operation.');
         }
+        this.terminalGeometry = { cols, rows };
         return { ok: true, value: { sequence } };
       } catch (error) {
         if (this.pty?.channelId !== pty.channelId) {
@@ -845,6 +931,7 @@ export class ConnectionController {
   }
 
   private async runReconnect(host: SshHostTarget, selected: SessionRow | null, reason: string, intent: number): Promise<void> {
+    const generation = ++this.reconnectGeneration;
     const oldPty = this.pty;
     const oldConnection = this.connection;
     this.pty = null;
@@ -883,7 +970,7 @@ export class ConnectionController {
         if (this.snapshot.phase === 'reconnecting') continue;
         return;
       }
-      if (selected) {
+      if (selected && this.detachedReconnectGeneration !== generation) {
         const current = listing.value.sessions.find((row) => sameSession(row, selected));
         if (!current) {
           this.setSnapshot({ phase: 'lost', error: `Session “${selected.name}” no longer exists on ${host.hostname}.` });
@@ -915,8 +1002,8 @@ export class ConnectionController {
         ...connection,
         requestId: openRequestId,
         command: hostCli.buildAttachCommand(session.name),
-        cols: 80,
-        rows: 24,
+        cols: this.terminalGeometry.cols,
+        rows: this.terminalGeometry.rows,
         term: 'xterm-256color',
       });
       if (opened.requestId !== openRequestId || intent !== this.selectionToken || opened.generationId !== connection.generationId) {

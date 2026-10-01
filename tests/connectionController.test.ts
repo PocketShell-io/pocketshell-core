@@ -103,6 +103,8 @@ class FakeCapability {
   createAppliedTag: string | null = null;
   killAfterApplyFailure = false;
   nextWriteError: unknown = null;
+  nextExecError: unknown = null;
+  readonly hostCommands = new Map<string, { exitCode: number | null; stdout: string; stderr?: string }>();
   private connectionOrdinal = 0;
   private ptyOrdinal = 0;
   private readonly graceScheduled = new Set<string>();
@@ -164,6 +166,23 @@ class FakeCapability {
 
   exec = async (options: SshExecOptions): Promise<SshExecResult> => {
     this.execCommands.push(options.command);
+    if (this.nextExecError) {
+      const error = this.nextExecError;
+      this.nextExecError = null;
+      throw error;
+    }
+    const scripted = this.hostCommands.get(options.command);
+    if (scripted) {
+      return {
+        requestId: options.requestId,
+        connectionId: options.connectionId,
+        generationId: options.generationId,
+        exitCode: scripted.exitCode,
+        stdout: scripted.stdout,
+        stderr: scripted.stderr ?? '',
+        timedOut: false,
+      };
+    }
     if (options.command.includes('sessions list')) {
       return {
         requestId: options.requestId,
@@ -584,6 +603,122 @@ describe('JS connection and session policy', () => {
     expect(capability.writeCalls[0]?.dataBase64).toBe(base64(new TextEncoder().encode('ls\n')));
     expect(capability.resizeCalls[0]).toMatchObject({ sequence: 2, cols: 120, rows: 36 });
     expect(received).toHaveBeenCalledOnce();
+  });
+
+  it('opens each attach at the consumer geometry and reattaches at the last size after a drop', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    expect((await controller.switchSession(session('alpha'), { cols: 50, rows: 30 })).ok).toBe(true);
+    expect(capability.openPtyCalls[0]).toMatchObject({ cols: 50, rows: 30 });
+    expect((await controller.resizeTerminal(60, 20)).ok).toBe(true);
+    // An invalid size never replaces the known-good one.
+    expect((await controller.switchSession(session('beta'), { cols: 0, rows: 20 })).ok).toBe(true);
+    expect(capability.openPtyCalls[1]).toMatchObject({ cols: 60, rows: 20 });
+
+    capability.emitLost();
+    await waitFor(() => capability.openPtyCalls.length === 3 && controller.getSnapshot().phase === 'live');
+    expect(capability.openPtyCalls[2]).toMatchObject({ cols: 60, rows: 20 });
+  });
+
+  it('detaches the attached PTY so re-selecting the same session attaches afresh', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    // Re-selecting the live session is a no-op...
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(1);
+
+    await controller.detachSession();
+    expect(capability.closePtyCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', selectedSession: null });
+    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(false);
+
+    // ...but after a detach it opens a new attach (and with it a repaint).
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('lets a selection made while a detach is closing the PTY stay live', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    // The pane of the old tab closes its shell while the new tab attaches.
+    const detaching = controller.detachSession();
+    const switching = controller.switchSession(session('beta'));
+    await Promise.all([detaching, switching]);
+    expect((await switching).ok).toBe(true);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', selectedSession: { name: 'beta' } });
+    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(true);
+  });
+
+  it('does not re-attach a session whose consumer detached while the reconnect was running', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
+    await controller.detachSession();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    expect(capability.openPtyCalls).toHaveLength(1);
+    expect(controller.getSnapshot().selectedSession).toBeNull();
+  });
+
+  it('a later reconnect still re-attaches the session selected after a detach-during-reconnect', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
+    await controller.detachSession();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    // The user opens a session again: live.
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(controller.getSnapshot().phase).toBe('live');
+    const opensBefore = capability.openPtyCalls.length;
+    // A second, unrelated transport drop must re-attach the live session.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && ['live', 'connected', 'lost'].includes(controller.getSnapshot().phase));
+    await new Promise((r) => setTimeout(r, 50));
+    expect({ phase: controller.getSnapshot().phase, selected: controller.getSnapshot().selectedSession?.name ?? null, opens: capability.openPtyCalls.length - opensBefore })
+      .toEqual({ phase: 'live', selected: 'alpha', opens: 1 });
+  });
+
+  it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: false, reason: 'not-connected' });
+
+    await connectAndList(controller);
+    capability.hostCommands.set('printf %s "$HOME"', { exitCode: 0, stdout: '/home/testuser' });
+    capability.hostCommands.set('false', { exitCode: 1, stdout: '' });
+    expect(await controller.runHostCommand('printf %s "$HOME"', 1_000)).toEqual({
+      ok: true,
+      value: { exitCode: 0, stdout: '/home/testuser', stderr: '', timedOut: false },
+    });
+    // A non-zero exit is an answer, not a transport failure.
+    expect(await controller.runHostCommand('false', 1_000)).toMatchObject({ ok: true, value: { exitCode: 1 } });
+    expect(capability.connectCalls).toHaveLength(1);
+
+    const originalConnection = controller.getSnapshot().connectionId;
+    capability.nextExecError = new SshCapabilityError('socket closed', 'CONNECTION_LOST');
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: false, reason: 'failed' });
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    expect(controller.getSnapshot().connectionId).not.toBe(originalConnection);
   });
 
   it('reconnects after a real transport-state event and reattaches the selected session', async () => {
