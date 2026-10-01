@@ -777,6 +777,13 @@ h1 {
 }
 .error {
   font-size: var(--fs-300);
+  /* A refusal can carry long unbroken tokens (SHA256 fingerprints, paths):
+     wrap them inside a phone-width screen instead of running off the edge. */
+  overflow-wrap: anywhere;
+  /* And never wider than the visible screen: on a phone this view's layout
+     can exceed the device width (stage A3), which would carry the wrapped
+     text off-screen with it. */
+  max-width: calc(100vw - 2 * var(--sp-5));
 }
 code {
   background: var(--surface-2);
