@@ -644,6 +644,22 @@ describe('JS connection and session policy', () => {
     expect(capability.connectCalls).toHaveLength(1);
   });
 
+  it('lets a selection made while a detach is closing the PTY stay live', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    // The pane of the old tab closes its shell while the new tab attaches.
+    const detaching = controller.detachSession();
+    const switching = controller.switchSession(session('beta'));
+    await Promise.all([detaching, switching]);
+    expect((await switching).ok).toBe(true);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', selectedSession: { name: 'beta' } });
+    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(true);
+  });
+
   it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));

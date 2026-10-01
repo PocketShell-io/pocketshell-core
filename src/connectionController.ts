@@ -474,8 +474,11 @@ export class ConnectionController {
    * not re-attach anything (#2936).
    */
   async detachSession(): Promise<void> {
-    this.selectionToken += 1;
+    const selection = ++this.selectionToken;
     await this.closeCurrentPty();
+    // A selection made while the PTY was closing owns the state now; a late
+    // "connected, nothing selected" would demote its live attach.
+    if (selection !== this.selectionToken) return;
     if (!this.disposed && this.connection && this.snapshot.phase !== 'reconnecting') {
       this.setSnapshot({ phase: 'connected', selectedSession: null, error: null });
     }
