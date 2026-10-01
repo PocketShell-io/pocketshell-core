@@ -93,7 +93,7 @@ describe('local diagnostic reports', () => {
   });
 
   describe('redacts seeded secrets (review 5920997338)', () => {
-    const SEEDS = ['prodbox', 'SEEDEDPW123', 'SEEDEDTOK456', 'ghp_SEEDEDabcdef123456', 'MIIEvSEEDEDKEYBODY', 'secret-project', 'alexey', 'fe80::1ff:fe23:4567:890a', '2001:db8::8a2e:370:7334', '10.20.30.40', 'hunter2'];
+    const SEEDS = ['devbox', 'prodbox', 'SEEDEDPW123', 'SEEDEDTOK456', 'ghp_SEEDEDabcdef123456', 'MIIEvSEEDEDKEYBODY', 'secret-project', 'alexey', 'fe80::1ff:fe23:4567:890a', '2001:db8::8a2e:370:7334', '10.20.30.40', 'hunter2'];
     it.each([
       ['controller reconnect message', 'Could not reconnect to prodbox.corp.example.com after 5 attempts.'],
       ['controller session message', 'Session “secret-project” no longer exists on prodbox.corp.example.com.'],
@@ -112,8 +112,12 @@ describe('local diagnostic reports', () => {
       ['GitHub token alone', 'token leaked: ghp_SEEDEDabcdef123456'],
       ['ssh URL with user', 'ssh://alexey@prodbox.corp.example.com:22/'],
       ['home path', 'open /home/alexey/secret-project/.env'],
+      ['known term joined by a hyphen', 'branch alexey-work checked out'],
+      ['known term joined by an underscore in a path', 'open /data/alexey_projects/x'],
+      ['known term joined by a hyphen and a slash', 'GET devbox-cache/app.js failed'],
+      ['known multi-word term with a suffix', 'session secret-project-2 ended'],
     ])('%s', (_label, input) => {
-      const out = redactDiagnosticText(input, { knownTerms: ['prodbox', 'alexey'] });
+      const out = redactDiagnosticText(input, { knownTerms: ['prodbox', 'alexey', 'devbox', 'secret-project'] });
       for (const seed of SEEDS) expect(out, `${seed} survived in: ${out}`).not.toContain(seed);
     });
 
@@ -137,7 +141,11 @@ describe('local diagnostic reports', () => {
 
     it('applies known host terms in every report builder and in the share bundle', () => {
       const terms = { knownTerms: ['devbox', 'alexey'] };
-      const runtime = runtimeErrorReport({ id: 'r', at: 0, kind: 'error', error: new Error('lost devbox while alexey typed'), knownTerms: terms.knownTerms });
+      // A FIXED stack: a real one embeds this checkout's path, which can itself contain a term.
+      const error = Object.assign(new Error('lost devbox while alexey typed'), {
+        stack: 'Error: lost devbox while alexey typed\n    at connect (https://localhost/assets/index-abc.js:1:2)',
+      });
+      const runtime = runtimeErrorReport({ id: 'r', at: 0, kind: 'error', error, knownTerms: terms.knownTerms });
       const crash = legacyCrashReport('c', 'x.txt', 'Exception summary: IOException\n\nException\njava.io.IOException: devbox reset', terms);
       const history = legacyDiagnosticHistoryReport('h', '{"event":"lost devbox"}', terms);
       const bundle = formatDiagnosticReportsForSharing([{ id: 'x', source: 'native-crash', at: 0, title: 't', body: 'devbox' }], 0, terms);

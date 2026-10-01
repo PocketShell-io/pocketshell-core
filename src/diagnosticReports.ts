@@ -109,7 +109,10 @@ export function redactDiagnosticText(value: string, options: RedactionOptions = 
   for (const term of options.knownTerms ?? []) {
     const trimmed = term.trim();
     if (trimmed.length < 3) continue;
-    text = text.replace(new RegExp(`(?<![\\w.-])${escapeRegExp(trimmed)}(?![\\w-])`, 'gi'), '<host>');
+    // Only letters and digits continue a term. Separators (`-`, `_`, `.`, `/`)
+    // are boundaries, so `alexey-work`, `alexey_projects` and `devbox-cache/`
+    // lose the term while `alexeyson` keeps its letters.
+    text = text.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'gi'), '<host>');
   }
   return text;
 }
