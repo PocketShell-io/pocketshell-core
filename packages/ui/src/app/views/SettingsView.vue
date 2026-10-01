@@ -61,6 +61,7 @@ import {
 } from '../zoom';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import ShortcutSettings from '../components/ShortcutSettings.vue';
+import SettingsPlatformGroups from '../components/settings/SettingsPlatformGroups.vue';
 
 const connection = useConnectionStore();
 const projects = useProjectsStore();
@@ -656,6 +657,9 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
       <ShortcutSettings />
     </section>
 
+
+    <!-- Connections, Advanced, platform sections, Diagnostics, About. -->
+    <SettingsPlatformGroups />
 
     <section v-if="updatesSupported" class="group">
       <h3 class="group-title">Updates</h3>

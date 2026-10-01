@@ -15,7 +15,7 @@
  * Reporting is deliberately swallow-everything: code that runs because
  * something else already failed must not be able to make things worse.
  */
-import { ref } from 'vue';
+import { ref, type App } from 'vue';
 import { api } from './ipc';
 import { errorMessage } from '@pocketshell/core/shared/errors';
 
@@ -74,7 +74,34 @@ export function recordDiagError(kind: DiagKind, error: unknown): void {
   lastUnhandledErrorAt = Date.now();
   const message = errorMessage(error);
   const stack = error instanceof Error && error.stack ? error.stack : null;
-  pushDiag(kind, message, stack);
+  const errorName = error instanceof Error ? error.name : undefined;
+  pushDiag(kind, message, stack, errorName);
+}
+
+/**
+ * Route every unhandled error the app can see into {@link recordDiagError}:
+ * Vue's own pipeline (render, lifecycle hooks, watchers), unhandled promise
+ * rejections, and window-level `error` events that carry an Error (resource
+ * load failures do not, and are not app errors). One installer so every
+ * platform shell captures the same three sources. Returns an uninstaller.
+ */
+export function installDiagCapture(app: App, target: Window = window): () => void {
+  const previous = app.config.errorHandler;
+  app.config.errorHandler = (err, instance, info): void => {
+    recordDiagError('render', err);
+    previous?.(err, instance, info);
+  };
+  const onRejection = (event: PromiseRejectionEvent): void => recordDiagError('unhandledrejection', event.reason);
+  const onError = (event: ErrorEvent): void => {
+    if (event.error) recordDiagError('error', event.error);
+  };
+  target.addEventListener('unhandledrejection', onRejection);
+  target.addEventListener('error', onError);
+  return () => {
+    app.config.errorHandler = previous;
+    target.removeEventListener('unhandledrejection', onRejection);
+    target.removeEventListener('error', onError);
+  };
 }
 
 /**
@@ -93,9 +120,9 @@ export function recordDiagDetail(kind: DiagKind, message: string, detail: Record
   pushDiag(kind, message, null);
 }
 
-function pushDiag(kind: DiagKind, message: string, stack: string | null): void {
+function pushDiag(kind: DiagKind, message: string, stack: string | null, errorName?: string): void {
   try {
-    api.diag.log({ kind, message, stack: stack ?? undefined });
+    api.diag.log({ kind, message, stack: stack ?? undefined, ...(errorName ? { errorName } : {}) });
   } catch {
     // The log channel is the last resort; if it is dead there is nothing
     // left to fall back to, and throwing here would mask the real error.

@@ -15,7 +15,17 @@ import {
 import { normaliseRootList, normaliseRootPath, SESSION_ROOTS_MAX } from '../sessionRoots';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 import { parseZoomPercent, stepZoomPercent, ZOOM_PERCENT_DEFAULT } from '../zoom';
-import { isLaunchableKind, type LaunchableKind } from '@pocketshell/core';
+import {
+  ADVANCED_SETTING_DEFAULTS,
+  DEFAULT_BACKGROUND_GRACE_MS,
+  DEFAULT_RECONNECT_ON_RETURN,
+  DEFAULT_SUBMIT_ENTER_DELAY_MS,
+  isLaunchableKind,
+  parseBackgroundGraceMs,
+  parseSubmitEnterDelayMs,
+  parseUsageWarnPercentSetting,
+  type LaunchableKind,
+} from '@pocketshell/core';
 import {
   type BindingRefusal,
   type Chord,
@@ -261,6 +271,32 @@ export interface AppSettings {
    * push an empty list and wipe the account.
    */
   syncSelectedHosts: string[];
+  /**
+   * How long a backgrounded app holds its live connection before closing it
+   * (0.5.x `background_grace_millis`). One of core's offered windows, 30 s to
+   * 10 min. Only a platform that suspends in the background reads it (Android);
+   * Settings shows the control only where `api.app.backgroundGrace` is set.
+   */
+  backgroundGraceMs: number;
+  /**
+   * Reconnect and reattach automatically when the app returns after the grace
+   * window closed the connection (0.5.x `reconnect_when_return`). Off leaves
+   * the session waiting for an explicit Reconnect.
+   */
+  reconnectOnReturn: boolean;
+  /**
+   * The used-quota percentage at which the usage panel calls a provider
+   * "approaching limit" (0.5.x `usage_warn_threshold_percent`, 50–95 %), or
+   * null — the default — for "not set", which keeps the shipped meter colours
+   * (core `usageMeterTone`). Critical (95 %) and exceeded (100 %) are fixed.
+   */
+  usageWarnPercent: number | null;
+  /**
+   * Pause between a composer body and its submit Enter, in ms (0.5.x
+   * `agent_submit_enter_delay_ms`, 0–1000). Raise it only if an agent leaves
+   * pasted input unsubmitted. Read per send.
+   */
+  submitEnterDelayMs: number;
 }
 
 /** @see AppSettings.agentLaunchDefaults */
@@ -472,6 +508,10 @@ const SETTING_SPECS: SettingSpecs = {
   // Empty means "no host is synced", which is what a fresh install must say:
   // syncing nothing is the safe default, and the user opt in per host.
   syncSelectedHosts: { default: [], parse: asAliasList },
+  backgroundGraceMs: { default: DEFAULT_BACKGROUND_GRACE_MS, parse: parseBackgroundGraceMs },
+  reconnectOnReturn: { default: DEFAULT_RECONNECT_ON_RETURN, parse: asBoolean },
+  usageWarnPercent: { default: null, parse: parseUsageWarnPercentSetting },
+  submitEnterDelayMs: { default: DEFAULT_SUBMIT_ENTER_DELAY_MS, parse: parseSubmitEnterDelayMs },
 };
 
 const STORAGE_KEY = 'pocketshell.settings.v1';
@@ -825,6 +865,23 @@ export const useSettingsStore = defineStore('settings', () => {
     values.shortcutOverrides = next;
   }
 
+  /**
+   * Settings → Advanced "Reset advanced defaults": the usage warning threshold
+   * and composer Enter delay, together. Theme, text size and grace have their
+   * own groups and user intent, so they are outside it.
+   */
+  function resetAdvancedDefaults(): void {
+    values.usageWarnPercent = ADVANCED_SETTING_DEFAULTS.usageWarnPercent;
+    values.submitEnterDelayMs = ADVANCED_SETTING_DEFAULTS.submitEnterDelayMs;
+  }
+
+  /** Whether any Advanced value differs from its default — the reset button's state. */
+  const advancedIsDefault = computed(
+    () =>
+      values.usageWarnPercent === ADVANCED_SETTING_DEFAULTS.usageWarnPercent &&
+      values.submitEnterDelayMs === ADVANCED_SETTING_DEFAULTS.submitEnterDelayMs,
+  );
+
   /** Put every shortcut back. One assignment, so one persist and one repaint. */
   function resetAllShortcuts(): void {
     values.shortcutOverrides = {};
@@ -850,6 +907,8 @@ export const useSettingsStore = defineStore('settings', () => {
     zoomIn,
     zoomOut,
     resetZoom,
+    resetAdvancedDefaults,
+    advancedIsDefault,
     sessionRootsFor,
     addSessionRoot,
     removeSessionRoot,

@@ -5,7 +5,12 @@ import {
   type HostKeyTrustPin,
   type SessionRow,
 } from '../src';
-import { ConnectionController, type HostKeyTrustStore } from '../src/connectionController';
+import {
+  ConnectionController,
+  DEFAULT_MAX_BACKGROUND_GRACE_MS,
+  RECONNECT_DECLINED_MESSAGE,
+  type HostKeyTrustStore,
+} from '../src/connectionController';
 import { runConnectionControllerContract } from './connectionControllerContract';
 import {
   SshCapabilityError,
@@ -125,7 +130,10 @@ class FakeCapability {
     state: this.connections.has(ref.connectionId) ? 'connected' as const : 'closed' as const,
   });
 
+  readonly closedConnectionIds: string[] = [];
+
   closeConnection = async (ref: SshConnectionRef & { requestId: string }) => {
+    this.closedConnectionIds.push(ref.connectionId);
     this.connections.delete(ref.connectionId);
     for (const [channelId, pty] of this.ptys) {
       if (pty.connectionId === ref.connectionId) this.closePtyRef(pty);
@@ -141,8 +149,11 @@ class FakeCapability {
     return { requestId: options.requestId, cancelled: true };
   };
 
-  scheduleClose = async (ref: SshConnectionRef & { requestId: string }) => {
+  readonly scheduledDeadlines: number[] = [];
+
+  scheduleClose = async (ref: SshConnectionRef & { requestId: string; deadlineEpochMs?: number }) => {
     this.graceScheduled.add(ref.connectionId);
+    if (typeof ref.deadlineEpochMs === 'number') this.scheduledDeadlines.push(ref.deadlineEpochMs);
     return { requestId: ref.requestId };
   };
 
@@ -365,7 +376,7 @@ function trustStore(initial: HostKeyTrustPin | null = null) {
 function controllerFor(
   capability: FakeCapability,
   trusted = trustStore(),
-  options: { now?: () => number } = {},
+  options: { now?: () => number; maxBackgroundGraceMs?: number } = {},
 ) {
   let id = 0;
   const controller = new ConnectionController({
@@ -608,6 +619,98 @@ describe('JS connection and session policy', () => {
     await controller.enterBackground(10_000);
     now += 10_001;
     await controller.returnToForeground();
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+  });
+
+  it('supports a ten-minute background grace by default and clamps longer requests to the configured cap', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const originalConnection = controller.getSnapshot().connectionId;
+
+    await controller.enterBackground(DEFAULT_MAX_BACKGROUND_GRACE_MS);
+    expect(DEFAULT_MAX_BACKGROUND_GRACE_MS).toBe(600_000);
+    expect(capability.scheduledDeadlines.at(-1)).toBe(now + 600_000);
+    now += 599_000;
+    await controller.returnToForeground();
+    expect(controller.getSnapshot().connectionId).toBe(originalConnection);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    await controller.enterBackground(60 * 60_000);
+    expect(capability.scheduledDeadlines.at(-1)).toBe(now + 600_000);
+    await controller.returnToForeground();
+
+    const capped = new FakeCapability();
+    const { controller: cappedController } = controllerFor(capped, trustStore(PIN), { now: () => now, maxBackgroundGraceMs: 300_000 });
+    controllers.push(cappedController);
+    await connectAndList(cappedController);
+    await cappedController.switchSession(session('alpha'));
+    await cappedController.enterBackground(600_000);
+    expect(capped.scheduledDeadlines.at(-1)).toBe(now + 300_000);
+    await cappedController.enterBackground(Number.NaN);
+    expect(capped.scheduledDeadlines.at(-1)).toBe(now);
+  });
+
+  it('waits in lost after grace expiry when reconnect-on-return is off, then reconnects on request', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const originalConnection = controller.getSnapshot().connectionId;
+
+    await controller.enterBackground(10_000);
+    now += 5_000;
+    await controller.returnToForeground({ reconnect: false });
+    expect(controller.getSnapshot().connectionId).toBe(originalConnection);
+    expect(controller.getSnapshot().phase).toBe('live');
+
+    await controller.enterBackground(10_000);
+    now += 10_001;
+    await controller.returnToForeground({ reconnect: false });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'lost',
+      connectionId: null,
+      error: RECONNECT_DECLINED_MESSAGE,
+    });
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    expect(capability.closedConnectionIds).toContain(originalConnection);
+
+    await controller.reconnect();
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().connectionId).not.toBe(originalConnection);
+    expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
+    await controller.reconnect();
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('releases a connection spent inside grace without dialing when reconnect-on-return is off', async () => {
+    const capability = new FakeCapability();
+    let now = 1_000;
+    const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const originalConnection = controller.getSnapshot().connectionId!;
+
+    await controller.enterBackground(60_000);
+    // The transport died while still inside the grace window.
+    capability.connections.delete(originalConnection);
+    now += 5_000;
+    await controller.returnToForeground({ reconnect: false });
+
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', connectionId: null, error: RECONNECT_DECLINED_MESSAGE });
+    expect(capability.closedConnectionIds).toContain(originalConnection);
+    await controller.reconnect();
     expect(capability.connectCalls).toHaveLength(2);
     expect(controller.getSnapshot().phase).toBe('live');
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');

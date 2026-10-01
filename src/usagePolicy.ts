@@ -99,8 +99,43 @@ export function usageThresholdState(
   if (!worst) return 'ok';
   const percent = usageWindowPercent(worst);
   if (percent === null) return 'ok';
-  if (percent >= USAGE_EXCEEDED_PERCENT) return 'exceeded';
-  if (percent >= USAGE_CRITICAL_PERCENT) return 'critical';
-  if (percent >= warnPercent) return 'approaching';
+  return usagePercentThresholdState(percent, warnPercent);
+}
+
+/**
+ * One meter's state from its used percentage: the user-tunable warning band,
+ * then the fixed critical (95 %) and exceeded (100 %) bands.
+ */
+export function usagePercentThresholdState(
+  usedPercent: number,
+  warnPercent = USAGE_DEFAULT_WARN_PERCENT,
+): UsageThresholdState {
+  if (usedPercent >= USAGE_EXCEEDED_PERCENT) return 'exceeded';
+  if (usedPercent >= USAGE_CRITICAL_PERCENT) return 'critical';
+  if (usedPercent >= warnPercent) return 'approaching';
   return 'ok';
 }
+
+export type UsageMeterTone = 'ok' | 'approaching' | 'critical';
+
+/**
+ * A usage meter's colour band from the provider's REMAINING percentage.
+ *
+ * With no user threshold (`warnPercent` null — the default everywhere) the
+ * shipped desktop/web bands are unchanged: more than 50 % left is ok, more
+ * than 20 % left is approaching, anything less is critical. Only a user who
+ * explicitly sets Settings → Advanced "Warn at" gets core's threshold bands:
+ * approaching from that used percentage, critical from 95 % used.
+ */
+export function usageMeterTone(remainingPercent: number, warnPercent: number | null = null): UsageMeterTone {
+  if (warnPercent === null) {
+    if (remainingPercent > 50) return 'ok';
+    if (remainingPercent > 20) return 'approaching';
+    return 'critical';
+  }
+  const state = usagePercentThresholdState(100 - remainingPercent, warnPercent);
+  if (state === 'ok') return 'ok';
+  if (state === 'approaching') return 'approaching';
+  return 'critical';
+}
+

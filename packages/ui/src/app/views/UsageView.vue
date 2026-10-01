@@ -39,9 +39,10 @@
 import { computed, onMounted } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useAgentsStore } from '../stores/agents';
+import { useSettingsStore } from '../stores/settings';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { usageProviderMark } from '@pocketshell/core/shared/agentBadge';
-import type { UsageRow } from '@pocketshell/core';
+import { usageMeterTone, type UsageRow } from '@pocketshell/core';
 
 const props = defineProps<{
   /**
@@ -101,9 +102,19 @@ function windowsOf(row: UsageRow): WindowRow[] {
   }));
 }
 
+const settings = useSettingsStore();
+
+/**
+ * Meter colour from core's `usageMeterTone`, so every client grades a quota
+ * the same way. With Settings → Advanced "Warn at" unset (the default) the
+ * shipped bands stay: green above 50 % left, amber above 20 %, red below. An
+ * explicit threshold switches to core's used-percentage bands. `p` is the
+ * REMAINING percentage the helper reports.
+ */
 function pctColor(p: number): string {
-  if (p > 50) return 'var(--success)';
-  if (p > 20) return 'var(--warning)';
+  const tone = usageMeterTone(p, settings.usageWarnPercent);
+  if (tone === 'ok') return 'var(--success)';
+  if (tone === 'approaching') return 'var(--warning)';
   return 'var(--error)';
 }
 function pctWidth(p: number): string {

@@ -1,0 +1,119 @@
+/* Row metrics shared by the Settings groups that live in their own components.
+   Mirrors SettingsView's own group/row rules; used as <style scoped src>. */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.group-title {
+  margin: 0;
+  font-size: var(--fs-100);
+  line-height: var(--lh-100);
+  font-weight: var(--fw-semibold);
+  color: var(--fg-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.row:last-child {
+  border-bottom: none;
+}
+.row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.row-label {
+  font-size: var(--fs-300);
+  font-weight: var(--fw-medium);
+  color: var(--fg);
+}
+.row-hint {
+  margin: 0;
+  max-width: 46ch;
+  font-size: var(--fs-200);
+  line-height: var(--lh-200);
+  color: var(--fg-secondary);
+}
+.control {
+  flex: none;
+  height: var(--control-h);
+  background: var(--surface-2);
+  /* WCAG 1.4.11: a control's boundary needs >=3:1; --border is 1.49:1. */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--fg);
+  padding: 0 var(--sp-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  max-width: 16rem;
+}
+.switch {
+  flex: none;
+  height: var(--control-h);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.switch.on {
+  color: var(--accent);
+}
+.switch:hover {
+  background: var(--state-hover);
+}
+/* A range slider with its value, for the numeric Advanced settings. 44px keeps
+   it a phone-sized touch target. */
+.range-control {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 88px;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+}
+.range-control input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.range-control output {
+  font-family: var(--font-mono);
+  font-size: var(--fs-200);
+  text-align: right;
+  color: var(--fg);
+}
+/* The grace choices carry a short explanation; give the select room for it. */
+select.control {
+  max-width: 22rem;
+}
+/* Narrow (phone) screens: stack label over control instead of squeezing both. */
+@media (max-width: 480px) {
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  .control {
+    max-width: none;
+  }
+}
