@@ -29,6 +29,7 @@ import type { PaletteCommand } from './commandPalette';
 import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from './folderSort';
 import { sessionIdentityKey } from './sessionIdentity';
 import { useSettingsStore } from './stores/settings';
+import { useWorkspaceRootsStore } from './stores/workspaceRoots';
 import { useConnectionStore } from './stores/connection';
 import { useProjectsStore } from './stores/projects';
 import { useSessionsStore } from './stores/sessions';
@@ -80,6 +81,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
   commands: ComputedRef<PaletteCommand[]>;
 } {
   const settings = useSettingsStore();
+  const workspaceRoots = useWorkspaceRootsStore();
   const connection = useConnectionStore();
   const projects = useProjectsStore();
   const sessions = useSessionsStore();
@@ -102,7 +104,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
    */
   function groupForPath(absPath: string): string {
     const home = projects.home;
-    const configured = resolveRoots(settings.sessionRootsFor(connection.activeHost?.name ?? ''), home);
+    const configured = resolveRoots(workspaceRoots.rootsFor(connection.activeHost?.name ?? '', home), home);
     if (configured.length > 0) {
       return bestRootForPath(absPath, home, configured)?.key ?? 'other';
     }

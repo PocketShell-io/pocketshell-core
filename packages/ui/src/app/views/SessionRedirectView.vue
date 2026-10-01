@@ -25,7 +25,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
 import { useProjectsStore } from '../stores/projects';
 import { useSessionsStore } from '../stores/sessions';
-import { useSettingsStore } from '../stores/settings';
+import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { groupSessionsIntoRoots } from '../sessionTree';
 
 const route = useRoute();
@@ -33,7 +33,7 @@ const router = useRouter();
 const connection = useConnectionStore();
 const projects = useProjectsStore();
 const sessions = useSessionsStore();
-const settings = useSettingsStore();
+const workspaceRoots = useWorkspaceRootsStore();
 
 /**
  * The folder key holding [sessionName], out of the same grouping the panel
@@ -49,7 +49,7 @@ function folderFor(host: string, sessionName: string): string | null {
   for (const root of groupSessionsIntoRoots(
     sessions.sessions,
     projects.home,
-    settings.sessionRootsFor(host),
+    workspaceRoots.rootsFor(host, projects.home),
   )) {
     const dir = root.directories.find((d) =>
       d.rows.some((r) => r.session.name === sessionName),
@@ -72,6 +72,11 @@ onMounted(async () => {
   if (connectionId && !sessions.sessions.length) {
     await sessions.refresh(connectionId);
     await projects.ensureHome(connectionId);
+  }
+  // Host-registered roots decide which folder a session is filed under, so a
+  // cold start waits for this host's listing (a no-op in the Settings mode).
+  if (connectionId && connection.activeHost?.name === host) {
+    await workspaceRoots.bind(connectionId, connection.activeHost);
   }
 
   const folder = session ? folderFor(host, session) : null;
