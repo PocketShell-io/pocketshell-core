@@ -290,13 +290,14 @@ function onRetryNow(): void {
 }
 
 /**
- * What the strip says. The standing sentence names the frozen surfaces because
- * that is the question a dead pane actually poses ("did my session die?" — no,
- * the LINK did, the tmux sessions are fine on the host); after a failed
- * re-dial the store's error replaces it, so the user is never shown a stale
- * "connection lost" over a fresher, more specific failure.
+ * What the strip says: a recovery-owning transport's ladder, the store's
+ * countdown, a failed re-dial's own error (never a stale "connection lost"
+ * over a fresher failure), else the standing sentence naming the frozen
+ * surfaces ("did my session die?" — no, the LINK did).
  */
 const linkLostText = computed(() => {
+  if (connection.transportRetry) return transportRetryText(connection.activeHost?.name, connection.transportRetry);
+  if (autoRetrying.value) return autoRetryText.value;
   if (redial.value === 'failed') return connection.error ?? 'Reconnect failed';
   const reason = connection.transportOwnsRecovery && connection.error !== 'Connection lost' ? connection.error : null;
   return linkDownText(connection.activeHost?.name, reason);
@@ -598,11 +599,7 @@ async function onRefreshUsage(): Promise<void> {
          route back was guessing to navigate to hosts and reconnect by hand. -->
     <p v-if="linkLost" class="link-lost">
       <AppIcon name="alert-triangle" :size="14" />
-      <span class="link-lost-text">{{
-        connection.transportRetry
-          ? transportRetryText(connection.activeHost?.name, connection.transportRetry)
-          : autoRetrying ? autoRetryText : linkLostText
-      }}</span>
+      <span class="link-lost-text">{{ linkLostText }}</span>
       <button
         class="reconnect-btn"
         :disabled="reconnecting"
