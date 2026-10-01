@@ -489,6 +489,43 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().sessionListErrors).toEqual([]);
   });
 
+  it('accepts a first-contact key once without pinning it, and keeps it for its own re-dials only', async () => {
+    const capability = new FakeCapability();
+    const trust = trustStore();
+    const { controller } = controllerFor(capability, trust);
+    controllers.push(controller);
+
+    expect(await controller.connect(host)).toMatchObject({ ok: false, reason: 'trust-required' });
+    expect((await controller.acceptPresentedHostKey({ persist: false })).ok).toBe(true);
+    expect(trust.store.record).not.toHaveBeenCalled();
+    expect(trust.current()).toBeNull();
+    expect(capability.connectCalls.at(-1)?.expectedHostKey).toEqual(PIN);
+
+    // The controller's own recovery dial reuses the once-trusted key: no
+    // second prompt in the middle of a reconnect.
+    const before = capability.connectCalls.length;
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === before + 1 && controller.getSnapshot().phase === 'connected');
+    expect(controller.getSnapshot().trustDecision).toBeNull();
+    expect(trust.current()).toBeNull();
+
+    // A fresh controller (the next connection) knows nothing about it.
+    const next = controllerFor(new FakeCapability(), trust);
+    controllers.push(next.controller);
+    expect(await next.controller.connect(host)).toMatchObject({ ok: false, reason: 'trust-required' });
+  });
+
+  it('never trusts a changed host key for one connection only', async () => {
+    const changedTrust = trustStore({ kind: 'wire-key', keyType: 'ssh-rsa', keyB64: 'different', fingerprintSha256: 'SHA256:different' });
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, changedTrust);
+    controllers.push(controller);
+    expect(await controller.connect(host)).toMatchObject({ ok: false, reason: 'trust-mismatch' });
+    expect(await controller.acceptPresentedHostKey({ persist: false })).toMatchObject({ ok: false, reason: 'trust-mismatch' });
+    expect(capability.connections.size).toBe(0);
+    expect(changedTrust.store.record).not.toHaveBeenCalled();
+  });
+
   it('routes list and attach through HostCliCore and switches sessions on one SSH connection', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
