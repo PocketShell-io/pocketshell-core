@@ -594,6 +594,45 @@ describe('JS connection and session policy', () => {
     expect(received).toHaveBeenCalledOnce();
   });
 
+  it('opens each attach at the consumer geometry and reattaches at the last size after a drop', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    expect((await controller.switchSession(session('alpha'), { cols: 50, rows: 30 })).ok).toBe(true);
+    expect(capability.openPtyCalls[0]).toMatchObject({ cols: 50, rows: 30 });
+    expect((await controller.resizeTerminal(60, 20)).ok).toBe(true);
+    // An invalid size never replaces the known-good one.
+    expect((await controller.switchSession(session('beta'), { cols: 0, rows: 20 })).ok).toBe(true);
+    expect(capability.openPtyCalls[1]).toMatchObject({ cols: 60, rows: 20 });
+
+    capability.emitLost();
+    await waitFor(() => capability.openPtyCalls.length === 3 && controller.getSnapshot().phase === 'live');
+    expect(capability.openPtyCalls[2]).toMatchObject({ cols: 60, rows: 20 });
+  });
+
+  it('detaches the attached PTY so re-selecting the same session attaches afresh', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    // Re-selecting the live session is a no-op...
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(1);
+
+    await controller.detachSession();
+    expect(capability.closePtyCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', selectedSession: null });
+    expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(false);
+
+    // ...but after a detach it opens a new attach (and with it a repaint).
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
   it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));

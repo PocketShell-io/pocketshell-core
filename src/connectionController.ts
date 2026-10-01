@@ -98,6 +98,21 @@ const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 const PTY_READ_WAIT_MS = 250;
 const PTY_READ_MAX_BYTES = 32_768;
+const DEFAULT_TERMINAL_GEOMETRY = { cols: 80, rows: 24 } as const;
+
+/** The terminal size a PTY is opened at. */
+export interface TerminalGeometry {
+  cols: number;
+  rows: number;
+}
+
+function validGeometry(geometry: TerminalGeometry | undefined): TerminalGeometry | null {
+  if (!geometry) return null;
+  const { cols, rows } = geometry;
+  return Number.isInteger(cols) && Number.isInteger(rows) && cols >= 1 && rows >= 1 && cols <= 1000 && rows <= 1000
+    ? { cols, rows }
+    : null;
+}
 
 function defaultId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
@@ -176,6 +191,8 @@ export class ConnectionController {
   private ptyOperationQueue: Promise<void> = Promise.resolve();
   private ptyPumpToken = 0;
   private selectionToken = 0;
+  /** The size the terminal consumer last asked for; every (re)attach opens at it. */
+  private terminalGeometry: TerminalGeometry = { ...DEFAULT_TERMINAL_GEOMETRY };
   private graceDeadlineEpochMs: number | null = null;
   private reconnectTask: Promise<void> | null = null;
   private disposed = false;
@@ -364,7 +381,19 @@ export class ConnectionController {
     }
   }
 
-  async switchSession(session: SessionRow): Promise<ConnectionActionResult<SessionRow>> {
+  /**
+   * Attach `session` on the one PTY. `geometry` is the consumer's terminal
+   * size: the PTY is OPENED at it, so aplexer renders its attach snapshot
+   * (the repaint of the session's live screen) at the size the user sees,
+   * instead of at 80x24 followed by a resize the workload may never answer
+   * (#2936). Later reconnect re-attaches reuse the last known size.
+   */
+  async switchSession(
+    session: SessionRow,
+    geometry?: TerminalGeometry,
+  ): Promise<ConnectionActionResult<SessionRow>> {
+    const requested = validGeometry(geometry);
+    if (requested) this.terminalGeometry = requested;
     const hostCli = this.hostCli;
     const connection = this.connection;
     if (!hostCli || !connection || !this.host) {
@@ -389,8 +418,8 @@ export class ConnectionController {
         ...connection,
         requestId: openRequestId,
         command: hostCli.buildAttachCommand(selected.name),
-        cols: 80,
-        rows: 24,
+        cols: this.terminalGeometry.cols,
+        rows: this.terminalGeometry.rows,
         term: 'xterm-256color',
       });
       if (opened.requestId !== openRequestId || opened.generationId !== connection.generationId || intent !== this.selectionToken) {
@@ -409,6 +438,21 @@ export class ConnectionController {
       this.setSnapshot({ phase: 'error', error: message });
       if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY attach failed after transport loss');
       return { ok: false, reason: 'failed', message };
+    }
+  }
+
+  /**
+   * Close the attached session's PTY and keep the connection. The terminal
+   * consumer is gone (a closed tab, a left workspace); the next
+   * `switchSession` — including of the SAME session — opens a fresh attach,
+   * whose aplexer snapshot repaints the screen. A reconnect after this does
+   * not re-attach anything (#2936).
+   */
+  async detachSession(): Promise<void> {
+    this.selectionToken += 1;
+    await this.closeCurrentPty();
+    if (!this.disposed && this.connection && this.snapshot.phase !== 'reconnecting') {
+      this.setSnapshot({ phase: 'connected', selectedSession: null, error: null });
     }
   }
 
@@ -578,6 +622,7 @@ export class ConnectionController {
         if (result.requestId !== requestId || result.sequence !== sequence || result.channelId !== pty.channelId) {
           throw new Error('PTY resize returned a stale operation.');
         }
+        this.terminalGeometry = { cols, rows };
         return { ok: true, value: { sequence } };
       } catch (error) {
         if (this.pty?.channelId !== pty.channelId) {
@@ -887,8 +932,8 @@ export class ConnectionController {
         ...connection,
         requestId: openRequestId,
         command: hostCli.buildAttachCommand(session.name),
-        cols: 80,
-        rows: 24,
+        cols: this.terminalGeometry.cols,
+        rows: this.terminalGeometry.rows,
         term: 'xterm-256color',
       });
       if (opened.requestId !== openRequestId || intent !== this.selectionToken || opened.generationId !== connection.generationId) {
