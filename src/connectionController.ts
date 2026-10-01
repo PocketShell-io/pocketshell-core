@@ -7,7 +7,7 @@ import {
   type HostKeyTrustPin,
   type PresentedHostKey,
 } from './hostKeyTrustCore';
-import type { SessionRow, SessionsListing } from './hostCliSessions';
+import type { SessionListError, SessionRow, SessionsListing } from './hostCliSessions';
 import {
   isValidSshKeyHandleCredential,
   readSshCapabilityError,
@@ -62,6 +62,12 @@ export interface ConnectionSnapshot {
   connectionId: string | null;
   generationId: string | null;
   sessions: SessionRow[];
+  /**
+   * The host's `errors[]` from the last successful session listing. Non-empty
+   * means the host could not read part of its session state, so `sessions`
+   * may be incomplete — an empty list next to errors is NOT "no sessions".
+   */
+  sessionListErrors: SessionListError[];
   selectedSession: SessionRow | null;
   retryAttempt: number;
   error: string | null;
@@ -154,6 +160,7 @@ export class ConnectionController {
     connectionId: null,
     generationId: null,
     sessions: [],
+    sessionListErrors: [],
     selectedSession: null,
     retryAttempt: 0,
     error: null,
@@ -189,7 +196,11 @@ export class ConnectionController {
   }
 
   getSnapshot(): ConnectionSnapshot {
-    return { ...this.snapshot, sessions: [...this.snapshot.sessions] };
+    return {
+      ...this.snapshot,
+      sessions: [...this.snapshot.sessions],
+      sessionListErrors: [...this.snapshot.sessionListErrors],
+    };
   }
 
   subscribe(listener: (snapshot: ConnectionSnapshot) => void): () => void {
@@ -241,6 +252,7 @@ export class ConnectionController {
         connectionId: null,
         generationId: null,
         sessions: [],
+        sessionListErrors: [],
         selectedSession: null,
         retryAttempt: 0,
         error: null,
@@ -285,7 +297,7 @@ export class ConnectionController {
     this.setSnapshot({ phase: this.snapshot.phase === 'live' ? 'live' : 'listing', error: null });
     try {
       const listing = await cli.listSessions();
-      this.setSnapshot({ sessions: listing.sessions });
+      this.setSnapshot({ sessions: listing.sessions, sessionListErrors: listing.errors });
       this.reconcilePendingMutation(listing);
       return { ok: true, value: listing };
     } catch (error) {
@@ -310,7 +322,7 @@ export class ConnectionController {
     try {
       const created = await cli.createSession(name, options);
       const listing = await cli.listSessions();
-      this.setSnapshot({ sessions: listing.sessions });
+      this.setSnapshot({ sessions: listing.sessions, sessionListErrors: listing.errors });
       return { ok: true, value: created };
     } catch (error) {
       if (isUncertainMutation(error)) {
@@ -334,7 +346,7 @@ export class ConnectionController {
     try {
       await cli.killSession(name);
       const listing = await cli.listSessions();
-      this.setSnapshot({ sessions: listing.sessions });
+      this.setSnapshot({ sessions: listing.sessions, sessionListErrors: listing.errors });
       return { ok: true, value: undefined };
     } catch (error) {
       if (isUncertainMutation(error)) {
@@ -467,6 +479,7 @@ export class ConnectionController {
       connectionId: null,
       generationId: null,
       sessions: [],
+      sessionListErrors: [],
       selectedSession: null,
       retryAttempt: 0,
       error: null,

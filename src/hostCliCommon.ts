@@ -137,11 +137,36 @@ export function parseShape<T>(schema: number, label: string, read: () => T): T {
   }
 }
 
-export function nonZeroExit(command: string, outcome: HostCliExecOutcome): HostCliFailed {
-  const detail = outcome.stderr
+function firstLine(text: string): string {
+  return text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.length > 0) ?? '';
+}
+
+/**
+ * The `error` string of a `{"schema":…,"error":…}` envelope a `--json` verb
+ * printed on stdout, or null when stdout is not such an envelope. Some verbs
+ * (`sessions ack --json`) report their failure there and leave stderr empty.
+ */
+export function jsonErrorDetail(stdout: string): string | null {
+  if (!stdout.trim()) return null;
+  let root: unknown;
+  try {
+    root = JSON.parse(stdout) as unknown;
+  } catch {
+    return null;
+  }
+  return isRecord(root) && typeof root.error === 'string' && root.error.trim() ? root.error : null;
+}
+
+/**
+ * A non-zero exit as a {@link HostCliFailed}. The detail is stderr's first
+ * line; when stderr is empty, `fallbackDetail` (e.g. a stdout JSON error)
+ * stands in so the user is not left with a bare exit code.
+ */
+export function nonZeroExit(command: string, outcome: HostCliExecOutcome, fallbackDetail?: string | null): HostCliFailed {
+  const detail = firstLine(outcome.stderr) || firstLine(fallbackDetail ?? '');
   const shortDetail = detail.length <= 200 ? detail : `${detail.slice(0, 200)}…`;
   return new HostCliFailed(
     command,

@@ -7,6 +7,7 @@ import {
   HostCliModule,
   HostCliTooOld,
   isRecord,
+  jsonErrorDetail,
   nonZeroExit,
   objectArray,
   optionalInteger,
@@ -71,6 +72,34 @@ export interface WarningRow {
   createdAtMs: number | null;
   /** A stable selector the host accepts for acking this warning. */
   ackSelector: string | null;
+}
+
+/**
+ * The warning a client shows when a session listing carried host `errors[]`,
+ * or null when it carried none. Wording matches the Android app it replaces:
+ * "Some sessions may be missing: " plus the distinct host messages.
+ */
+export function sessionListErrorNotice(errors: readonly SessionListError[]): string | null {
+  if (errors.length === 0) return null;
+  const messages = [...new Set(errors.map((error) => error.message.trim()).filter((message) => message.length > 0))];
+  return messages.length > 0
+    ? `Some sessions may be missing: ${messages.join(', ')}`
+    : 'Some sessions may be missing: the host could not read part of its session list.';
+}
+
+/**
+ * Whether a platform's `helper.sessionsListing` answer is a real listing:
+ * `{ sessions: [], errors: [{ message }] }`. The shared session store treats
+ * anything else (an absent capability, a catch-all test double answering
+ * `undefined`) as "no listing capability" and uses `sessionsList` instead.
+ */
+export function isSessionsListResult(value: unknown): value is { sessions: unknown[]; errors: SessionListError[] } {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { sessions?: unknown; errors?: unknown };
+  return Array.isArray(candidate.sessions)
+    && Array.isArray(candidate.errors)
+    && candidate.errors.every((error) =>
+      typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string');
 }
 
 /** Parse the schema-3 output from `pocketshell sessions list --json`. */
@@ -178,7 +207,9 @@ export class HostCliSessions extends HostCliModule {
   async ackWarnings(selector?: string | null): Promise<void> {
     const command = `${this.binary} sessions ack --json${selector == null ? '' : ` -- ${shellQuote(selector)}`}`;
     const outcome = await this.capture(command, ACK_TIMEOUT_MS);
-    if (outcome.exitCode !== 0) throw nonZeroExit(command, outcome);
+    // The CLI reports an ack failure as `{"schema":1,"error":…}` on stdout
+    // with an empty stderr; surface that detail instead of a bare exit code.
+    if (outcome.exitCode !== 0) throw nonZeroExit(command, outcome, jsonErrorDetail(outcome.stdout));
   }
 
   /** A PTY command that replaces the wrapping shell with the attached CLI. */

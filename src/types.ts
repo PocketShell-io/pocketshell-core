@@ -134,6 +134,17 @@ export interface EnvVarRow {
   key: string;
 }
 
+/**
+ * A session listing plus the host's `errors[]` (`pocketshell sessions list
+ * --json`). Non-empty `errors` means the host could not read part of its
+ * session state, so `sessions` may be incomplete — the UI says so instead of
+ * letting an empty list read as "no sessions".
+ */
+export interface SessionsListResult {
+  sessions: SessionSummary[];
+  errors: Array<{ message: string }>;
+}
+
 /** A tmux session row from `pocketshell sessions list`. */
 export interface SessionSummary {
   name: string;

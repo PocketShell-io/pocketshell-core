@@ -1,0 +1,1 @@
+pocketshell: `/does/not/exist --json snapshot` and `/does/not/exist --json list` both failed or returned unreadable JSON
