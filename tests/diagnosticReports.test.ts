@@ -116,9 +116,23 @@ describe('local diagnostic reports', () => {
       ['known term joined by an underscore in a path', 'open /data/alexey_projects/x'],
       ['known term joined by a hyphen and a slash', 'GET devbox-cache/app.js failed'],
       ['known multi-word term with a suffix', 'session secret-project-2 ended'],
+      ['known term followed by a digit', 'connect devbox2 timed out'],
+      ['known user followed by a digit', 'user alexey1 denied'],
+      ['known multi-word term followed by a digit', 'session secret-project2 vanished'],
+      ['known term in CamelCase', 'AlexeyWork pane closed'],
+      ['known term followed by a capital', 'host devboxProd unreachable'],
+      ['known term inside percent-encoding', 'cwd /data%2Falexey%2Fx'],
+      ['known term percent-encoded itself', 'GET /u/%61lexey/%64evbox%2Dcache'],
     ])('%s', (_label, input) => {
       const out = redactDiagnosticText(input, { knownTerms: ['prodbox', 'alexey', 'devbox', 'secret-project'] });
-      for (const seed of SEEDS) expect(out, `${seed} survived in: ${out}`).not.toContain(seed);
+      // Case-insensitive, and on the percent-decoded text too: `AlexeyWork` and
+      // `%61lexey` are the same leak as `alexey`.
+      let decoded = out;
+      try { decoded = decodeURIComponent(out); } catch { decoded = out.replace(/%([0-9a-f]{2})/gi, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))); }
+      for (const seed of SEEDS) {
+        expect(out.toLowerCase(), `${seed} survived in: ${out}`).not.toContain(seed.toLowerCase());
+        expect(decoded.toLowerCase(), `${seed} survived decoded in: ${decoded}`).not.toContain(seed.toLowerCase());
+      }
     });
 
     it('keeps stack frames, file names, versions and times readable', () => {

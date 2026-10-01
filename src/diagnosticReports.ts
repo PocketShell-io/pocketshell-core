@@ -48,6 +48,15 @@ const IDENTITY_KEYS = 'host|hostname|host[_-]?alias|alias|user|username|login|se
 /** File extensions that make a dotted token a file name, not a host. */
 const FILE_EXTENSIONS = new Set(['js', 'mjs', 'cjs', 'ts', 'vue', 'java', 'kt', 'css', 'html', 'json', 'txt', 'png', 'xml', 'map', 'wasm', 'so', 'jsonl', 'log', 'md', 'py', 'sh']);
 
+/** Match `term` case-insensitively, each character literal or as its UTF-8 `%HH` encoding. */
+function knownTermPattern(term: string): RegExp {
+  const parts = [...term].map((char) => {
+    const encoded = [...new TextEncoder().encode(char)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+    return `(?:${escapeRegExp(char)}|${encoded})`;
+  });
+  return new RegExp(parts.join(''), 'gi');
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -109,10 +118,12 @@ export function redactDiagnosticText(value: string, options: RedactionOptions = 
   for (const term of options.knownTerms ?? []) {
     const trimmed = term.trim();
     if (trimmed.length < 3) continue;
-    // Only letters and digits continue a term. Separators (`-`, `_`, `.`, `/`)
-    // are boundaries, so `alexey-work`, `alexey_projects` and `devbox-cache/`
-    // lose the term while `alexeyson` keeps its letters.
-    text = text.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'gi'), '<host>');
+    // A known term is redacted wherever it occurs, case-insensitively, as a
+    // substring: `devbox2`, `alexey1`, `AlexeyWork` and `devboxProd` are the
+    // same leak as `devbox` and `alexey`. Each character may also appear
+    // percent-encoded (`%61lexey`, `/data%2Falexey`). Over-redacting a word
+    // that merely contains a term costs a support report nothing.
+    text = text.replace(knownTermPattern(trimmed), '<host>');
   }
   return text;
 }
