@@ -216,6 +216,8 @@ export class ConnectionController {
   private selectionToken = 0;
   /** The size the terminal consumer last asked for; every (re)attach opens at it. */
   private terminalGeometry: TerminalGeometry = { ...DEFAULT_TERMINAL_GEOMETRY };
+  /** The consumer detached while a reconnect was running: it re-attaches nothing. */
+  private detachedDuringReconnect = false;
   private graceDeadlineEpochMs: number | null = null;
   private reconnectTask: Promise<void> | null = null;
   private disposed = false;
@@ -479,6 +481,7 @@ export class ConnectionController {
     // A selection made while the PTY was closing owns the state now; a late
     // "connected, nothing selected" would demote its live attach.
     if (selection !== this.selectionToken) return;
+    if (this.reconnectTask) this.detachedDuringReconnect = true;
     if (!this.disposed && this.connection && this.snapshot.phase !== 'reconnecting') {
       this.setSnapshot({ phase: 'connected', selectedSession: null, error: null });
     }
@@ -580,6 +583,7 @@ export class ConnectionController {
   private async releaseSpentConnection(): Promise<void> {
     const oldPty = this.pty;
     const oldConnection = this.connection;
+    this.detachedDuringReconnect = false;
     this.pty = null;
     this.connection = null;
     this.hostCli = null;
@@ -961,7 +965,7 @@ export class ConnectionController {
         if (this.snapshot.phase === 'reconnecting') continue;
         return;
       }
-      if (selected) {
+      if (selected && !this.detachedDuringReconnect) {
         const current = listing.value.sessions.find((row) => sameSession(row, selected));
         if (!current) {
           this.setSnapshot({ phase: 'lost', error: `Session “${selected.name}” no longer exists on ${host.hostname}.` });

@@ -660,6 +660,21 @@ describe('JS connection and session policy', () => {
     expect((await controller.writeTerminalBytes(new Uint8Array([65]))).ok).toBe(true);
   });
 
+  it('does not re-attach a session whose consumer detached while the reconnect was running', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
+    await controller.detachSession();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    expect(capability.openPtyCalls).toHaveLength(1);
+    expect(controller.getSnapshot().selectedSession).toBeNull();
+  });
+
   it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
