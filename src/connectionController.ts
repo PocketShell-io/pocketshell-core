@@ -714,6 +714,9 @@ export class ConnectionController {
   ): Promise<ConnectionActionResult<SshConnectionRef>> {
     const generationId = this.createId();
     let expectedHostKey: HostKeyTrustPin | null = null;
+    // Each dial judges itself: a refusal from an earlier ladder must not
+    // colour this one's give-up message.
+    this.lastDialRetryable = true;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
     try {
       expectedHostKey = await this.trustStore.get(host.hostId);
