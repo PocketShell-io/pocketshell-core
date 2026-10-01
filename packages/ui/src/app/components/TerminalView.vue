@@ -65,6 +65,7 @@ import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { sessionIdentityKey } from '../sessionIdentity';
 import { recordDiagDetail } from '../diag';
 import { TerminalPane } from '../terminalPane';
+import { extensionsFor } from '../extensions';
 import type { ConnectionId } from '@pocketshell/core';
 import '@xterm/xterm/css/xterm.css';
 
@@ -162,6 +163,8 @@ let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 /** View-side xterm disposables: link provider, highlighter, OSC 52 handler. */
 let termDisposables: IDisposable[] = [];
+/** Detach functions of the platform's `terminal.inputAdapter` contributions. */
+let inputAdapterDetaches: Array<() => void> = [];
 /**
  * Set once the component is being torn down. The mount hook's continuation
  * after the join (`await pane.open()`) reads this: the join is seconds long —
@@ -632,6 +635,7 @@ onMounted(async () => {
   // whole lifetime, across session re-points (terminalPane.ts documents why
   // per-shell binding leaked keystrokes).
   pane.attach(term, fitAddon, containerEl.value!);
+  attachInputAdapters(term, containerEl.value!);
 
   // Path links, registered AFTER WebLinksAddon above, deliberately: xterm
   // gives an EARLIER provider priority over a later one for the same cells
@@ -715,6 +719,30 @@ onMounted(async () => {
   pane.startProbing();
 });
 
+/**
+ * The platform's input filters (extensions.ts `terminal.inputAdapter`), one
+ * attach per terminal, on xterm's own helper textarea — where keys, IME
+ * composition and paste arrive. None contributed: nothing runs. `sendInput`
+ * goes through `term.input`, so an adapter's bytes take exactly the path a
+ * keystroke takes (the pane's onData route and its input fence).
+ */
+function attachInputAdapters(t: Terminal, element: HTMLElement): void {
+  const textarea = t.textarea;
+  if (!textarea) return;
+  for (const adapter of extensionsFor('terminal.inputAdapter')) {
+    const detach = adapter.attach({
+      textarea,
+      element,
+      // A getter: the terminal outlives session re-points, so a snapshot would go stale.
+      get sessionKey() {
+        return registryKey.value;
+      },
+      sendInput: (data) => t.input(data, true),
+    });
+    if (typeof detach === 'function') inputAdapterDetaches.push(detach);
+  }
+}
+
 function onWindowResize(): void {
   pane.scheduleFit();
 }
@@ -728,6 +756,8 @@ onBeforeUnmount(() => {
   containerEl.value?.removeEventListener('contextmenu', onTerminalContextMenu);
   for (const d of termDisposables) d.dispose();
   termDisposables = [];
+  for (const detach of inputAdapterDetaches) detach();
+  inputAdapterDetaches = [];
   pane.detach();
   term?.dispose();
   term = null;
