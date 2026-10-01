@@ -402,7 +402,12 @@ function trustStore(initial: HostKeyTrustPin | null = null) {
 function controllerFor(
   capability: FakeCapability,
   trusted = trustStore(),
-  options: { now?: () => number; maxBackgroundGraceMs?: number; retryDelaysMs?: readonly number[] } = {},
+  options: {
+    now?: () => number;
+    maxBackgroundGraceMs?: number;
+    retryDelaysMs?: readonly number[];
+    delay?: (milliseconds: number) => Promise<void>;
+  } = {},
 ) {
   let id = 0;
   const controller = new ConnectionController({
@@ -1386,6 +1391,63 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
     expect(controller.getSnapshot().error).toBeNull();
     expect(capability.openPtyCalls).toHaveLength(2);
+  });
+
+  it('reads a PTY EOF as a session end when the transport probe never answers, and never reconnects (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const channelId = [...capability.ptys.keys()].at(-1)!;
+    let probes = 0;
+    capability.getConnectionState = async () => {
+      probes += 1;
+      throw new SshCapabilityError('Bridge call timed out.', 'SSH_ERROR');
+    };
+
+    capability.emitOutput(channelId, new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().phase === 'connected');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(probes).toBe(3);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', error: 'Session “alpha” ended.' });
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('asks the transport again when an EOF probe errors once, then trusts its answer (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { delay: async () => undefined });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    const channelId = [...capability.ptys.keys()].at(-1)!;
+    const answer = capability.getConnectionState;
+    let probes = 0;
+    capability.getConnectionState = async (ref) => {
+      probes += 1;
+      if (probes === 1) throw new SshCapabilityError('Bridge call timed out.', 'SSH_ERROR');
+      return answer(ref);
+    };
+
+    capability.emitOutput(channelId, new Uint8Array(), true);
+    await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(probes).toBe(2);
+    expect(controller.getSnapshot().error).toBe('Session “alpha” ended.');
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('refuses a Retry during background grace without dialling (#2954)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    await controller.enterBackground(60_000);
+    expect(controller.getSnapshot().phase).toBe('background');
+
+    expect(await controller.reconnect()).toMatchObject({ ok: false, reason: 'failed' });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot().phase).toBe('background');
   });
 
   it('still reports a session that ended on a healthy transport as ended, without reconnecting (#2954)', async () => {

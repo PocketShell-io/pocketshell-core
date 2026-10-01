@@ -115,10 +115,13 @@ export type ConnectionActionResult<T = undefined> =
 const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
 /** Ten minutes: the longest background grace any PocketShell client offers. */
 export const DEFAULT_MAX_BACKGROUND_GRACE_MS = 10 * 60_000;
-/** The status line a user sees after declining automatic reconnect on return. */
 /** Phases in which a connection still serves the user; `reconnect()` leaves them alone. */
 const USABLE_PHASES: ReadonlySet<ConnectionPhase> = new Set(['connected', 'listing', 'attaching', 'live']);
+/** How many times a PTY EOF asks the transport whether it is still up before calling the answer unknown. */
+const EOF_PROBE_ATTEMPTS = 3;
+const EOF_PROBE_RETRY_MS = 250;
 
+/** The status line a user sees after declining automatic reconnect on return. */
 export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShell was in the background. Reconnect to resume.';
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 const PTY_READ_WAIT_MS = 250;
@@ -1146,17 +1149,30 @@ export class ConnectionController {
       && current.generationId === connection.generationId;
   }
 
-  /** True when the PTY's transport generation is gone (or no longer answers). */
+  /**
+   * True only when the transport DEFINITIVELY says the PTY's generation is
+   * gone: it is no longer the current generation, or the native state is
+   * `lost`/`closed`. A probe that errors or answers for another request is
+   * retried briefly; if it never answers, the state is unknown and the EOF
+   * reads as what it most likely is — the session ended. Guessing "lost" on
+   * a slow bridge would turn a real session end into a reconnect, and the
+   * native `lost` event still starts recovery if the link really died.
+   */
   private async transportLost(pty: SshPtyRef): Promise<boolean> {
-    const connection = this.connection;
-    if (!connection || connection.generationId !== pty.generationId) return true;
-    try {
-      const requestId = this.createId();
-      const status = await this.capability.getConnectionState({ ...connection, requestId });
-      return status.state !== 'connected';
-    } catch {
-      return true;
+    for (let attempt = 0; attempt < EOF_PROBE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) await this.delay(EOF_PROBE_RETRY_MS);
+      const connection = this.connection;
+      if (!connection || connection.generationId !== pty.generationId) return true;
+      try {
+        const requestId = this.createId();
+        const status = await this.capability.getConnectionState({ ...connection, requestId });
+        if (status.requestId !== requestId) continue;
+        return status.state === 'lost' || status.state === 'closed';
+      } catch {
+        // Unknown: ask again.
+      }
     }
+    return false;
   }
 
   private isCurrentConnect(intent: number): boolean {
