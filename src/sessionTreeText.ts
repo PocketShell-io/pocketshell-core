@@ -113,6 +113,12 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
  * word form for `probing` / `exited`), so the tree does not have to parse
  * display strings back into kinds.
  *
+ * Each badge names the session it stands for. The mark's silhouette already
+ * says the product — a tooltip repeating it spends the hover on what the eye
+ * had — so the row's mark tooltip wears the session NAME instead, which is
+ * the one thing a stacked run of look-alike marks (three claudes) does not
+ * show and a hover is the cheapest place to say.
+ *
  * [order] is the folder's stored manual tab ranking — the same `ps.tabOrder`
  * array `applyTabOrder` arranges the bar with, handed in by the tree so the
  * marks cannot disagree with what the user has dragged. Ranked sessions lead
@@ -146,18 +152,25 @@ const FOLDER_BADGE_LIMIT = 6;
 
 export type AgentBadgeKind = Exclude<SessionAgentKind, 'shell' | 'unknown'>;
 
-export function agentBadges(dir: SessionDirectory, order?: readonly string[]): AgentBadgeKind[] {
+/** One badge of the run: the agent kind, and the session wearing it. */
+export interface AgentBadge {
+  kind: AgentBadgeKind;
+  /** The session whose run this badge stands for — the mark tooltip's text. */
+  session: string;
+}
+
+export function agentBadges(dir: SessionDirectory, order?: readonly string[]): AgentBadge[] {
   const rows =
     order && order.length > 0
       ? [...dir.rows].sort(
           (a, b) => tabRank(order, a.session.name) - tabRank(order, b.session.name),
         )
       : dir.rows;
-  const out: AgentBadgeKind[] = [];
+  const out: AgentBadge[] = [];
   for (const row of rows) {
     const kind = row.session.agentKind;
     if (kind !== 'shell' && kind !== 'unknown' && kind !== null && kind !== undefined) {
-      out.push(kind);
+      out.push({ kind, session: row.session.name });
       if (out.length === FOLDER_BADGE_LIMIT) break;
     }
   }

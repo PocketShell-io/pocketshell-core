@@ -147,13 +147,16 @@ function onSortClick(e: MouseEvent): void {
 /**
  * What one folder row's badge slot shows for a kind. The four engines wear
  * their own brand marks (`agentMark`) at the panel's muted grey — VS Code's
- * treatment of tree adornments: present, named on hover by the mark's
- * tooltip, never competing with the label they qualify. `probing…` and
+ * treatment of tree adornments: present, never competing with the label they
+ * qualify. The mark's tooltip names the SESSION the badge stands for, not the
+ * engine — the silhouette already says codex, and in a stacked run of
+ * look-alike marks the hover is what tells the copies apart. `probing…` and
  * `exited` are detector STATES rather than products, so they keep the word
  * form, dimmed — a logo on those would claim a product that is not running.
  */
 interface AgentBadgeView {
   kind: AgentBadgeKind;
+  session: string;
   mark: AgentMark | null;
   text: string | null;
 }
@@ -163,9 +166,9 @@ function badgeViews(dir: SessionDirectory): AgentBadgeView[] {
   // follows the arrangement the user dragged the workspace's tabs into — the
   // wrapper reads the live store and hands the result over as data, the same
   // as every other prop here.
-  return agentBadges(dir, props.tabOrders[dir.key]).map((kind) => {
+  return agentBadges(dir, props.tabOrders[dir.key]).map(({ kind, session }) => {
     const mark = agentMark(kind);
-    return { kind, mark, text: mark === null ? agentBadge(kind) : null };
+    return { kind, session, mark, text: mark === null ? agentBadge(kind) : null };
   });
 }
 
@@ -395,7 +398,7 @@ function onFolderClick(dir: SessionDirectory): void {
                   v-if="view.mark"
                   :name="view.mark.icon"
                   :size="12"
-                  :title="view.mark.label"
+                  :title="view.session"
                   class="agent-mark"
                 />
                 <span v-else class="agent-badge">{{ view.text }}</span>
