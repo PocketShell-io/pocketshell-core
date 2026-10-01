@@ -675,6 +675,28 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().selectedSession).toBeNull();
   });
 
+  it('a later reconnect still re-attaches the session selected after a detach-during-reconnect', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'reconnecting');
+    await controller.detachSession();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'connected');
+    // The user opens a session again: live.
+    expect((await controller.switchSession(session('alpha'))).ok).toBe(true);
+    expect(controller.getSnapshot().phase).toBe('live');
+    const opensBefore = capability.openPtyCalls.length;
+    // A second, unrelated transport drop must re-attach the live session.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && ['live', 'connected', 'lost'].includes(controller.getSnapshot().phase));
+    await new Promise((r) => setTimeout(r, 50));
+    expect({ phase: controller.getSnapshot().phase, selected: controller.getSnapshot().selectedSession?.name ?? null, opens: capability.openPtyCalls.length - opensBefore })
+      .toEqual({ phase: 'live', selected: 'alpha', opens: 1 });
+  });
+
   it('runs host commands on the current generation and reconnects when one loses the transport', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN));
