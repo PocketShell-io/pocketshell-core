@@ -23,6 +23,7 @@ import { useUpdateStore } from './stores/update';
 import { useSettingsStore } from './stores/settings';
 import DiagBanner from './components/DiagBanner.vue';
 import UpdateBanner from './components/UpdateBanner.vue';
+import HostKeyTrustGate from './components/HostKeyTrustGate.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -128,12 +129,14 @@ onBeforeUnmount(() => {
        dies mid-render reports itself instead of leaving a blank screen) and
        an available update. Then the client's content — the router outlet
        unless the client passes something else (the desktop's account
-       window). -->
+       window). Last, the host-key question (#2953), over everything; it
+       renders nothing on a client without `ssh.onTrustDecision`. -->
   <DiagBanner />
   <UpdateBanner />
   <slot>
     <RouterView />
   </slot>
+  <HostKeyTrustGate />
 </template>
 
 <style>
