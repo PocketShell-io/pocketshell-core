@@ -4,10 +4,12 @@
 // (../folderTree.ts), the sort setting, the session list's loading state and
 // the folder drag (../useFolderDrag.ts). It adds no markup of its own; the
 // rows, their reasoning and their styles live in the view.
+import { computed } from 'vue';
 import { useFolderTree } from '../folderTree';
 import { useSessionsStore } from '../stores/sessions';
 import { useSettingsStore } from '../stores/settings';
 import type { SessionDirectory } from '../sessionTree';
+import { tabOrderFor } from '../tabOrders';
 import { useFolderDrag } from '../useFolderDrag';
 import SessionTreeRowsView from './SessionTreeRowsView.vue';
 
@@ -35,6 +37,26 @@ const emit = defineEmits<{
 // instances reading it. See ../folderTree.ts for why this is not private to
 // either of them.
 const { home, host, roots, filtering, filterQuery } = useFolderTree();
+
+/**
+ * Every drawn folder's stored tab ranking, keyed by folder key — the marks a
+ * row wears are the folder's tab bar folded flat, so the view needs the same
+ * arrangement the workspace's bar applies.
+ *
+ * Read here rather than in the view because the view reads no store
+ * (its header holds that rule); the read is `tabOrderFor`, whose reactive
+ * tick makes this computed — and with it the rows — re-render the moment a
+ * tab drag lands in the workspace. The view receives the result as the plain
+ * data prop it expects.
+ */
+const tabOrders = computed<Record<string, readonly string[]>>(() => {
+  const out: Record<string, readonly string[]> = {};
+  for (const root of roots.value) {
+    for (const dir of root.directories) out[dir.key] = tabOrderFor(host.value, dir.key);
+  }
+  return out;
+});
+
 const sessions = useSessionsStore();
 const settings = useSettingsStore();
 
@@ -59,6 +81,7 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
     :show-sessions="props.showSessions ?? false"
     :dragging="dragging"
     :drop-target="dropTarget"
+    :tab-orders="tabOrders"
     @select="(folder, session) => emit('select', folder, session)"
     @menu="(dir, e) => emit('menu', dir, e)"
     @create="emit('create', $event)"

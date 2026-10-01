@@ -7,6 +7,7 @@
  */
 import type { SessionAgentKind } from './types';
 import type { SessionDirectory, SessionRootFolder } from './sessionTree';
+import { tabRank } from './shared/workspaceTabs';
 
 /** `1 session` / `3 sessions` — the phrase form, which lives only in tooltips. */
 export function sessionCountLabel(count: number): string {
@@ -106,11 +107,21 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
 
 /**
  * The agent badges a folder row wears: ONE PER SESSION that runs a named
- * agent, in row order — the same order the folder's workspace tabs wear
- * theirs (`buildWorkspaceTabs` walks the same rows), so the row reads as its
- * tab bar folded flat. The caller decides how each kind presents (a brand
- * mark for the four engines, the dim word form for `probing` / `exited`), so
- * the tree does not have to parse display strings back into kinds.
+ * agent, in the folder's tab-bar order — the same order the workspace tab bar
+ * wears its tabs, so the row reads as its tab bar folded flat. The caller
+ * decides how each kind presents (a brand mark for the four engines, the dim
+ * word form for `probing` / `exited`), so the tree does not have to parse
+ * display strings back into kinds.
+ *
+ * [order] is the folder's stored manual tab ranking — the same `ps.tabOrder`
+ * array `applyTabOrder` arranges the bar with, handed in by the tree so the
+ * marks cannot disagree with what the user has dragged. Ranked sessions lead
+ * in rank order; unranked ones — a session created after the last drag, a
+ * folder never arranged at all — keep the row order behind them, which is
+ * exactly the resolution `applyTabOrder` gives the bar (`tabRank`'s contract),
+ * so the two surfaces answer a drag with the same order by construction.
+ * Absent or empty [order] is the un-arranged case and walks the rows as they
+ * stand.
  *
  * This replaced a session count beside a deduped kind list: the count said
  * HOW MANY and the deduped marks said WHICH PRODUCTS, two notations on one
@@ -135,9 +146,15 @@ const FOLDER_BADGE_LIMIT = 6;
 
 export type AgentBadgeKind = Exclude<SessionAgentKind, 'shell' | 'unknown'>;
 
-export function agentBadges(dir: SessionDirectory): AgentBadgeKind[] {
+export function agentBadges(dir: SessionDirectory, order?: readonly string[]): AgentBadgeKind[] {
+  const rows =
+    order && order.length > 0
+      ? [...dir.rows].sort(
+          (a, b) => tabRank(order, a.session.name) - tabRank(order, b.session.name),
+        )
+      : dir.rows;
   const out: AgentBadgeKind[] = [];
-  for (const row of dir.rows) {
+  for (const row of rows) {
     const kind = row.session.agentKind;
     if (kind !== 'shell' && kind !== 'unknown' && kind !== null && kind !== undefined) {
       out.push(kind);

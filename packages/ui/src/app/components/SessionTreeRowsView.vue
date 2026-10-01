@@ -61,6 +61,17 @@ const props = withDefaults(
     /** Folder drag state, owned by the wrapper's `useFolderDrag`. */
     dragging?: string | null;
     dropTarget?: FolderDropTarget | null;
+    /**
+     * Every drawn folder's stored tab ranking, keyed by folder key — what the
+     * folder's workspace tab bar applies (`applyTabOrder` over the
+     * `ps.tabOrder` arrangement), so a row's mark run reads as its tab bar
+     * folded flat with the user's dragged order included. A folder with no
+     * entry wears the derived order, exactly as the un-arranged bar does.
+     * Required, not defaulted: a wrapper that cannot produce the map has no
+     * business promising the marks, and a silent `{}` would render an
+     * arranged folder in an order its own bar no longer wears.
+     */
+    tabOrders: Record<string, readonly string[]>;
   }>(),
   {
     activeFolder: null,
@@ -148,7 +159,11 @@ interface AgentBadgeView {
 }
 
 function badgeViews(dir: SessionDirectory): AgentBadgeView[] {
-  return agentBadges(dir).map((kind) => {
+  // The folder's tab ranking rides in as the `tabOrders` prop, so the run
+  // follows the arrangement the user dragged the workspace's tabs into — the
+  // wrapper reads the live store and hands the result over as data, the same
+  // as every other prop here.
+  return agentBadges(dir, props.tabOrders[dir.key]).map((kind) => {
     const mark = agentMark(kind);
     return { kind, mark, text: mark === null ? agentBadge(kind) : null };
   });
@@ -352,8 +367,10 @@ function onFolderClick(dir: SessionDirectory): void {
                  folder is labelled by its session name, which is the only
                  label it has. -->
             <span class="label" :class="{ mono: dir.untracked }">{{ dir.label }}</span>
-            <!-- One mark per session that runs a named agent, in row order —
-                 the folder's tab bar folded flat. This slot used to carry the
+            <!-- One mark per session that runs a named agent, in the folder's
+                 TAB-BAR order — the folder's tab bar folded flat, the user's
+                 dragged arrangement included (the `tabOrders` prop). This
+                 slot used to carry the
                  session count (from 2 up) beside a DEDUPED kind list, two
                  notations on one row; the user asked for the tabs' notation
                  outright — "show the icons from tabs here instead of a

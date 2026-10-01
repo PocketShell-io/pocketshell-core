@@ -8,6 +8,7 @@ import {
   type FilesTabRecord,
   type WorkspaceMemoryRecord,
 } from './workspaceState';
+import { tabOrderFor, writeTabOrderFor } from './tabOrders';
 
 /** What a Files tab carries while it is open. */
 type FilesTabState = FilesTabRecord;
@@ -39,12 +40,16 @@ export interface WorkspaceMemoryDeps {
  * Files tabs are open, and which tab was selected. Owned by this composable's
  * caller — one folder-workspace instance — rather than a Pinia store,
  * deliberately: it is view state with exactly one reader, and no action
- * anywhere else in the app needs to read or write it. A store would buy
- * nothing but a file, and the thing that genuinely IS shared (each Files
- * tab's browsing position) already lives in the files store, keyed by the tab
- * id the map hands out. The map's per-instance lifetime is what carries the
- * state across a folder-to-folder navigation: vue-router reuses the component
- * there, so the composable — and the map with it — survives.
+ * anywhere else in the app needs to read or write it. The one part that
+ * outgrew that argument is the manual tab order — the session panel's folder
+ * rows wear it too (`agentBadges` reads it to keep a row's mark run reading
+ * as its tab bar folded flat) — and it lives in ./tabOrders for exactly that
+ * reason; this composable holds the workspace's window onto it below. A store
+ * would buy nothing but a file, and the thing that genuinely IS shared (each
+ * Files tab's browsing position) already lives in the files store, keyed by
+ * the tab id the map hands out. The map's per-instance lifetime is what
+ * carries the state across a folder-to-folder navigation: vue-router reuses
+ * the component there, so the composable — and the map with it — survives.
  *
  * Keyed by the HOST ALIAS and the folder, so one host's tabs cannot appear on
  * another — and so an entry outlives a reconnect, which a connection-id key
@@ -65,7 +70,6 @@ export function useWorkspaceMemory(deps: WorkspaceMemoryDeps): {
   selected: Ref<string | null>;
   mru: Ref<string[]>;
   tabOrder: Ref<string[]>;
-  loadTabOrder: () => void;
   writeTabOrder: (next: string[]) => void;
   loadFolderState: () => void;
   persist: () => void;
@@ -105,73 +109,28 @@ export function useWorkspaceMemory(deps: WorkspaceMemoryDeps): {
   // -------------------------------------------------------------------------
 
   /**
-   * `localStorage` key for one folder's hand-arranged tab order.
+   * This workspace's hand-arranged tab order, read and written through the
+   * ONE store (./tabOrders) the session panel's folder rows read too.
    *
-   * Two decisions in one string.
-   *
-   * **`localStorage`, not the settings store**, following the precedent the
-   * session panel's width and the file tree's width already set: the settings
-   * store is for preferences a user sets BY NAME in the Settings overlay, and an
-   * arrangement you reach by dragging until it looks right is not one of those.
-   * It is raw layout state, and raw layout state has been going here.
-   *
-   * **Keyed on the HOST ALIAS and the folder, never on the connection id.** A
-   * connection id is an opaque handle minted per connect, so a key built from it
-   * would be a fresh key on every launch and the order would never survive a
-   * restart — and even within one window a re-dial mints a new id, which would
-   * orphan the arrangement. The route's `:name` is the `~/.ssh/config` alias,
-   * which is exactly as stable as the folder path beside it; the workspace's own
-   * memory map and its persisted copy key on the same alias for the same reason.
-   * Same reasoning as the port panel's preference keys, which key on the alias
-   * too.
+   * A writable computed keyed on the host alias and the folder rather than a
+   * ref: the key IS the identity of the value, so when vue-router reuses this
+   * component across a folder-to-folder navigation the order follows the key
+   * by itself. That retires the explicit `loadTabOrder()` the old ref needed
+   * on every folder switch — and the ordering hazard its call site documented
+   * ("BEFORE the refs the tab list is derived from, so `tabs` is never
+   * computed once with this folder's sessions and the previous folder's
+   * arrangement") now cannot arise on this input at all: there is no window
+   * in which the bar can see one folder's arrangement under another folder's
+   * key. The localStorage-key rationale and the validation live with the
+   * store, which is where the panel's reader finds them.
    */
-  function tabOrderKey(): string {
-    return `ps.tabOrder.${deps.hostAlias.value}.${deps.folderKey.value}`;
-  }
-
-  /**
-   * The stored order for this workspace, or `[]` when the user has arranged
-   * nothing.
-   *
-   * Empty is a real and common answer, not a missing one: it means "use the
-   * derived order", which is what `applyTabOrder` does with it.
-   */
-  const tabOrder = ref<string[]>([]);
-
-  function loadTabOrder(): void {
-    tabOrder.value = readTabOrder(tabOrderKey());
-  }
-
-  function readTabOrder(key: string): string[] {
-    if (typeof localStorage === 'undefined') return [];
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw === null) return [];
-      const parsed: unknown = JSON.parse(raw);
-      // Validated rather than trusted. This is user-writable JSON on disk, and a
-      // non-array (or an array of objects) would otherwise reach `applyTabOrder`
-      // and rank tabs by whatever `Map` made of it.
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter((id): id is string => typeof id === 'string');
-    } catch {
-      return [];
-    }
-  }
+  const tabOrder = computed({
+    get: () => tabOrderFor(deps.hostAlias.value, deps.folderKey.value),
+    set: (next) => writeTabOrderFor(deps.hostAlias.value, deps.folderKey.value, next),
+  });
 
   function writeTabOrder(next: string[]): void {
     tabOrder.value = next;
-    if (typeof localStorage === 'undefined') return;
-    try {
-      // An empty order is REMOVED rather than stored as `[]`. "The user has
-      // arranged nothing" and "there is no entry" are the same state, and keeping
-      // one spelling of it means a workspace whose tabs were all closed does not
-      // leave a key behind forever.
-      if (next.length === 0) localStorage.removeItem(tabOrderKey());
-      else localStorage.setItem(tabOrderKey(), JSON.stringify(next));
-    } catch {
-      // Quota, or a locked profile. Losing a tab arrangement on restart beats
-      // throwing out of a drop handler.
-    }
   }
 
   /**
@@ -185,9 +144,11 @@ export function useWorkspaceMemory(deps: WorkspaceMemoryDeps): {
    */
   function loadFolderState(): void {
     const state = remembered();
-    // BEFORE the refs the tab list is derived from, so `tabs` is never computed
-    // once with this folder's sessions and the previous folder's arrangement.
-    loadTabOrder();
+    // The tab order needs no load here — the writable computed above follows
+    // the host/folder key by itself, so the arrangement is already this
+    // folder's own by the time anything derives from it. The rest of the
+    // record lives in a per-workspace map, and THOSE refs need the explicit
+    // swap below before the bar derives from them.
     filesTabs.value = state.filesTabs;
     selected.value = deps.routedTab() ?? state.activeTab;
     mru.value = state.mru;
@@ -282,7 +243,6 @@ export function useWorkspaceMemory(deps: WorkspaceMemoryDeps): {
     selected,
     mru,
     tabOrder,
-    loadTabOrder,
     writeTabOrder,
     loadFolderState,
     persist,

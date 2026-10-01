@@ -248,14 +248,30 @@ export function renamedSessionName(
  * stored order written by an older build — or hand-edited in `localStorage` —
  * cannot interleave the kinds.
  */
+/**
+ * The position [order] — a stored manual ranking of tab ids — assigns [id], or
+ * `Number.POSITIVE_INFINITY` when it assigns none.
+ *
+ * Infinity is the whole semantics of the ranking, so it is defined HERE rather
+ * than at each sort site: a ranked id sorts by its position, an unranked one
+ * sorts after every ranked id, and because the sorts this feeds are stable,
+ * unranked ids keep their derived relative order among themselves. The bar
+ * applies it through {@link applyTabOrder}; the session panel's folder rows
+ * apply the same function to their mark run (`agentBadges`), so the row a
+ * folder wears keeps reading as its tab bar folded flat after a drag.
+ */
+export function tabRank(order: readonly string[], id: string): number {
+  const at = order.indexOf(id);
+  return at === -1 ? Number.POSITIVE_INFINITY : at;
+}
+
 export function applyTabOrder(
   tabs: readonly WorkspaceTab[],
   order: readonly string[],
 ): WorkspaceTab[] {
   if (order.length === 0) return [...tabs];
-  const rank = new Map(order.map((id, i) => [id, i]));
   const byRank = (a: WorkspaceTab, b: WorkspaceTab): number =>
-    (rank.get(a.id) ?? Number.POSITIVE_INFINITY) - (rank.get(b.id) ?? Number.POSITIVE_INFINITY);
+    tabRank(order, a.id) - tabRank(order, b.id);
   return [
     ...tabs.filter((tab) => tab.kind === 'session').sort(byRank),
     ...tabs.filter((tab) => tab.kind === 'files').sort(byRank),
