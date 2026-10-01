@@ -482,10 +482,11 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   const controller = createController(capability, makeTrustStore(pin), { now: () => clock.now });
   await list(controller);
   equal(capability.execCommands[0], 'pocketshell sessions list --json', 'versioned HostCliCore command');
-  check((await controller.switchSession(makeSession('alpha'))).ok, 'attach alpha');
-  check((await controller.switchSession(makeSession('beta'))).ok, 'switch to beta');
-  equal(capability.connectCalls.length, 1, 'session switching reuses SSH connection');
-  equal(capability.closePtyCalls.length, 1, 'session switch closes previous PTY');
+  check((await controller.attachSession(makeSession('alpha'))).ok, 'attach alpha');
+  check((await controller.attachSession(makeSession('beta'))).ok, 'attach beta beside alpha');
+  equal(capability.connectCalls.length, 1, 'attaching another session reuses SSH connection');
+  equal(capability.closePtyCalls.length, 0, 'attaching another session keeps the previous PTY');
+  equal(capability.ptys.size, 2, 'one PTY per attached session');
   check(capability.openPtyCalls[1].command.includes("'beta'"), 'HostCliCore safely builds attach command');
 
   const activePtys = [...capability.ptys.values()];
@@ -502,12 +503,12 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   });
   capability.emitOutput(activePty.channelId, new Uint8Array([104, 101, 108, 108, 111]));
   await outputStartedPromise;
-  equal(capability.pendingReads.length, 0, 'output pump waits for consumer backpressure');
+  equal(capability.pendingReads.filter((pending) => pending.options.channelId === activePty.channelId).length, 0, 'output pump waits for consumer backpressure');
   releaseOutput();
   await waitFor(() => capability.pendingReads.some((pending) => pending.options.channelId === activePty.channelId), 'next PTY read after consumer');
 
-  const write = controller.writeTerminalBytes(new Uint8Array([108, 115, 10]));
-  const resize = controller.resizeTerminal(120, 36);
+  const write = controller.writeTerminalBytes(makeSession('beta'), new Uint8Array([108, 115, 10]));
+  const resize = controller.resizeTerminal(makeSession('beta'), 120, 36);
   check((await write).ok, 'terminal input result');
   check((await resize).ok, 'terminal resize result');
   equal(capability.writeCalls[0].sequence, 1, 'first PTY operation sequence');
@@ -520,7 +521,7 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live', 'transport reconnect and reattach');
   check(controller.getSnapshot().connectionId !== originalConnection, 'reconnect replaces spent connection');
   equal(controller.getSnapshot().selectedSession.name, 'beta', 'reconnect restores selected session identity');
-  equal(capability.openPtyCalls.length, 3, 'reconnect attaches selected session exactly once');
+  equal(capability.openPtyCalls.length, 4, 'reconnect re-attaches each open session exactly once');
   const afterReconnectCalls = capability.connectCalls.length;
   for (const listener of capability.listeners) {
     listener({ connectionId: originalConnection, generationId: originalGeneration, state: 'lost', reason: 'stale event' });
@@ -549,10 +550,12 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   equal(controller.getSnapshot().uncertainMutation.state, 'observed-applied', 'kill reconciles through session listing');
 
   capability.nextWriteError = new Core.SshCapabilityError('Transport ended during PTY write.', 'CONNECTION_LOST');
-  check(!(await controller.writeTerminalBytes(new Uint8Array([101, 99, 104, 111, 10]))).ok, 'uncertain input reports failure');
+  check(!(await controller.writeTerminalBytes(makeSession('beta'), new Uint8Array([101, 99, 104, 111, 10]))).ok, 'uncertain input reports failure');
   await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === afterReconnectCalls + 2, 'reconnect after uncertain PTY write');
   equal(capability.writeCalls.length, 2, 'uncertain terminal input is never resent');
   const stillLive = await controller.getResourceSnapshot();
+  // alpha was killed on the host above: the reconnect drops it and re-attaches beta only.
+  equal(controller.getSnapshot().terminals.map((row: any) => row.name), ['beta'], 'a killed session is not re-attached');
   equal(stillLive.ptys, 1, 'reattached PTY exists before close');
   await controller.close();
   check(capability.cancelCalls.some((call) => call.target.kind === 'connection'), 'close cancels active generation');
