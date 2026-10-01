@@ -115,6 +115,12 @@ export type ConnectionActionResult<T = undefined> =
 const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
 /** Ten minutes: the longest background grace any PocketShell client offers. */
 export const DEFAULT_MAX_BACKGROUND_GRACE_MS = 10 * 60_000;
+/** Phases in which a connection still serves the user; `reconnect()` leaves them alone. */
+const USABLE_PHASES: ReadonlySet<ConnectionPhase> = new Set(['connected', 'listing', 'attaching', 'live']);
+/** How many times a PTY EOF asks the transport whether it is still up before calling the answer unknown. */
+const EOF_PROBE_ATTEMPTS = 3;
+const EOF_PROBE_RETRY_MS = 250;
+
 /** The status line a user sees after declining automatic reconnect on return. */
 export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShell was in the background. Reconnect to resume.';
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
@@ -340,7 +346,8 @@ export class ConnectionController {
 
   async refreshSessions(): Promise<ConnectionActionResult<SessionsListing>> {
     const cli = this.hostCli;
-    if (!cli || !this.connection) {
+    const connection = this.connection;
+    if (!cli || !connection) {
       return { ok: false, reason: 'not-connected', message: 'Connect to a host before listing sessions.' };
     }
     this.setSnapshot({ phase: this.snapshot.phase === 'live' ? 'live' : 'listing', error: null });
@@ -351,6 +358,10 @@ export class ConnectionController {
       return { ok: true, value: listing };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // A list that fails on a transport the controller has already replaced
+      // (a reconnect or grace expiry is in progress) is stale: it must not
+      // rewrite the phase that transition owns or start another reconnect.
+      if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       if (isUncertainMutation(error) || this.isCurrentTransportFailure(error)) {
         this.startReconnect('session list lost its transport');
       }
@@ -440,7 +451,7 @@ export class ConnectionController {
     const intent = ++this.selectionToken;
     this.setSnapshot({ phase: 'attaching', error: null, selectedSession: selected });
     await this.closeCurrentPty();
-    if (intent !== this.selectionToken || connection !== this.connection) {
+    if (intent !== this.selectionToken || !this.isCurrentGeneration(connection)) {
       return { ok: false, reason: 'failed', message: 'Session selection was superseded.' };
     }
 
@@ -467,6 +478,10 @@ export class ConnectionController {
       return { ok: true, value: selected };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // An attach that fails after a reconnect replaced its transport is stale.
+      if (intent !== this.selectionToken || !this.isCurrentGeneration(connection)) {
+        return { ok: false, reason: 'failed', message: 'Session selection was superseded.' };
+      }
       this.setSnapshot({ phase: 'error', error: message });
       if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY attach failed after transport loss');
       return { ok: false, reason: 'failed', message };
@@ -522,6 +537,46 @@ export class ConnectionController {
     }
   }
 
+  /** How many dials one recovery ladder makes before the controller gives up (`lost`). */
+  get maxReconnectAttempts(): number {
+    return this.retryDelaysMs.length;
+  }
+
+  /**
+   * Explicitly resume a host connection: the user's Retry after the ladder
+   * gave up, or after a declined automatic reconnect on return from the
+   * background (`returnToForeground({ reconnect: false })`). The one
+   * reconnect entry point (#2954, D28 — one reconnect owner):
+   *
+   * - A ladder already running is joined, never doubled: a Retry pressed
+   *   while the controller is re-dialling waits for that recovery.
+   * - A still-usable connection (connected, listing, attaching, live) is
+   *   left alone.
+   * - Otherwise it runs ONE fresh ladder with the full budget, re-attaching
+   *   the previously selected session.
+   *
+   * Background grace is not a Retry target: foreground reconciliation owns
+   * that transport (`returnToForeground`).
+   */
+  async reconnect(): Promise<ConnectionActionResult> {
+    this.assertLive();
+    if (!this.host) {
+      return { ok: false, reason: 'not-connected', message: 'There is no host to reconnect to.' };
+    }
+    const running = this.reconnectTask;
+    const usable = this.connection !== null && USABLE_PHASES.has(this.snapshot.phase);
+    if (running) {
+      await running;
+    } else if (this.snapshot.phase === 'background') {
+      return { ok: false, reason: 'failed', message: 'The connection is in background grace; it reconnects on return.' };
+    } else if (!usable) {
+      await this.reconnectAndAttach('reconnect requested');
+    }
+    const phase = this.snapshot.phase;
+    if (this.connection && phase !== 'lost' && phase !== 'reconnecting') return { ok: true, value: undefined };
+    return { ok: false, reason: 'failed', message: this.snapshot.error ?? 'Reconnect failed.' };
+  }
+
   async enterBackground(graceMs: number): Promise<void> {
     this.assertLive();
     if (!this.connection) return;
@@ -570,18 +625,6 @@ export class ConnectionController {
     }
     if (reconnect) await this.reconnectAndAttach('connection was spent during background grace');
     else await this.releaseSpentConnection();
-  }
-
-  /**
-   * Explicitly resume a host connection that was lost (after declined
-   * automatic reconnect or an exhausted retry ladder), reattaching the
-   * previously selected session. A no-op while a connection is still usable.
-   */
-  async reconnect(): Promise<void> {
-    this.assertLive();
-    if (!this.host) return;
-    if (this.connection && ['connected', 'listing', 'attaching', 'live'].includes(this.snapshot.phase)) return;
-    await this.reconnectAndAttach('reconnect requested');
   }
 
   /** Release a grace-spent transport without dialing, and wait for {@link reconnect}. */
@@ -661,11 +704,15 @@ export class ConnectionController {
           return { ok: false, reason: 'superseded', message: 'The selected PTY changed while terminal input was sent.' };
         }
         const message = error instanceof Error ? error.message : String(error);
-        await this.abandonPty(pty);
+        // Detach the PTY and start any reconnect before awaiting its native
+        // close: a reconnect that starts while the close is in flight must not
+        // be overwritten by this stale failure afterwards (#2943).
+        const closed = this.abandonPty(pty);
         this.setSnapshot({ phase: 'error', error: message });
         if (this.isCurrentTransportFailure(error) || readSshCapabilityError(error).code === 'OPERATION_UNCERTAIN') {
           this.startReconnect('terminal input result was uncertain');
         }
+        await closed;
         return { ok: false, reason: 'failed', message };
       }
     });
@@ -698,9 +745,11 @@ export class ConnectionController {
           return { ok: false, reason: 'superseded', message: 'The selected PTY changed while terminal resize ran.' };
         }
         const message = error instanceof Error ? error.message : String(error);
-        await this.abandonPty(pty);
+        // See writeTerminalBytes: never report this failure after awaiting the close.
+        const closed = this.abandonPty(pty);
         this.setSnapshot({ phase: 'error', error: message });
         if (this.isCurrentTransportFailure(error)) this.startReconnect('terminal resize observed a transport failure');
+        await closed;
         return { ok: false, reason: 'failed', message };
       }
     });
@@ -729,6 +778,9 @@ export class ConnectionController {
   ): Promise<ConnectionActionResult<SshConnectionRef>> {
     const generationId = this.createId();
     let expectedHostKey: HostKeyTrustPin | null = null;
+    // Each dial judges itself: a refusal from an earlier ladder must not
+    // colour this one's give-up message.
+    this.lastDialRetryable = true;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
     try {
       expectedHostKey = await this.trustStore.get(host.hostId);
@@ -882,6 +934,9 @@ export class ConnectionController {
         if (result.sequence === this.ptyReadSequence + 1) {
           const bytes = base64ToBytes(result.dataBase64);
           for (const listener of this.outputListeners) await listener(session, bytes, pty.generationId);
+          // A reconnect or session switch can supersede this PTY while its
+          // output consumers run; its EOF must not then rewrite the phase.
+          if (pumpToken !== this.ptyPumpToken || selection !== this.selectionToken) return;
           this.ptyReadSequence = result.sequence;
         }
         if (result.eof) {
@@ -891,6 +946,17 @@ export class ConnectionController {
             // event arrives. Keep the lifecycle state in the background so
             // the app still runs the foreground reconciliation path.
             const backgrounded = this.snapshot.phase === 'background';
+            // A dying transport closes its channels first, so the EOF can
+            // beat the native `lost` event. That is the link failing, not
+            // the session ending: ask the transport before saying "ended",
+            // and recover the same session (#2954, D28).
+            if (!backgrounded && (await this.transportLost(pty))) {
+              if (pumpToken === this.ptyPumpToken && selection === this.selectionToken) {
+                this.startReconnect('PTY closed because its transport was lost');
+              }
+              return;
+            }
+            if (pumpToken !== this.ptyPumpToken || selection !== this.selectionToken) return;
             this.setSnapshot({
               phase: backgrounded ? 'background' : 'connected',
               error: `Session “${session.name}” ended.`,
@@ -986,7 +1052,15 @@ export class ConnectionController {
       }
     }
     if (this.isCurrentConnect(intent)) {
-      this.setSnapshot({ phase: 'lost', error: `Could not reconnect to ${host.hostname} after ${this.retryDelaysMs.length} attempts.` });
+      // Name the dials actually made: a refused login (not retryable) ends
+      // the ladder early, and says why.
+      const attempts = this.snapshot.retryAttempt;
+      const refusal = !this.lastDialRetryable ? this.snapshot.error?.trim() : '';
+      const cause = refusal ? ` ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}` : '';
+      this.setSnapshot({
+        phase: 'lost',
+        error: `Could not reconnect to ${host.hostname} after ${attempts} attempt${attempts === 1 ? '' : 's'}.${cause}`,
+      });
     }
   }
 
@@ -1060,6 +1134,45 @@ export class ConnectionController {
     await this.capability.cancelOperation({ requestId, target }).then((result) => {
       if (result.requestId !== requestId) throw new Error('SSH cancel returned a stale request.');
     }).catch(() => undefined);
+  }
+
+  /**
+   * Whether an operation's connection is still the controller's current
+   * generation. Anything observed on a superseded generation (a reconnect or
+   * grace expiry replaced it) is stale and must not touch the phase or start
+   * another reconnect (#2982).
+   */
+  private isCurrentGeneration(connection: SshConnectionRef | null): boolean {
+    const current = this.connection;
+    return !!connection && !!current
+      && current.connectionId === connection.connectionId
+      && current.generationId === connection.generationId;
+  }
+
+  /**
+   * True only when the transport DEFINITIVELY says the PTY's generation is
+   * gone: it is no longer the current generation, or the native state is
+   * `lost`/`closed`. A probe that errors or answers for another request is
+   * retried briefly; if it never answers, the state is unknown and the EOF
+   * reads as what it most likely is — the session ended. Guessing "lost" on
+   * a slow bridge would turn a real session end into a reconnect, and the
+   * native `lost` event still starts recovery if the link really died.
+   */
+  private async transportLost(pty: SshPtyRef): Promise<boolean> {
+    for (let attempt = 0; attempt < EOF_PROBE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) await this.delay(EOF_PROBE_RETRY_MS);
+      const connection = this.connection;
+      if (!connection || connection.generationId !== pty.generationId) return true;
+      try {
+        const requestId = this.createId();
+        const status = await this.capability.getConnectionState({ ...connection, requestId });
+        if (status.requestId !== requestId) continue;
+        return status.state === 'lost' || status.state === 'closed';
+      } catch {
+        // Unknown: ask again.
+      }
+    }
+    return false;
   }
 
   private isCurrentConnect(intent: number): boolean {

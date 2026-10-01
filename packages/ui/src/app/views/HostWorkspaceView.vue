@@ -41,6 +41,7 @@ import { useSettingsStore } from '../stores/settings';
 import { windowTitle } from '@pocketshell/core/shared/windowTitle';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { MAX_ATTEMPTS } from '@pocketshell/core/shared/reconnectBackoff';
+import { linkDownText, transportRetryText } from '../linkLostText';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import PopupMenu from '../components/PopupMenu.vue';
@@ -240,8 +241,8 @@ const linkLost = computed(
   () => connection.state === 'lost' || redial.value !== 'none' || connection.recovering,
 );
 
-/** True while the re-dial is on the wire — the button says so and disarms. */
-const reconnecting = computed(() => connection.state === 'connecting');
+/** True while a re-dial is on the wire (a recovery-owning transport's ladder included). */
+const reconnecting = computed(() => connection.state === 'connecting' || connection.transportRetry !== null);
 
 /** True while the store's automatic retry is scheduled — the button is "Retry now". */
 const autoRetrying = computed(() => connection.autoRetry !== null);
@@ -289,16 +290,17 @@ function onRetryNow(): void {
 }
 
 /**
- * What the strip says. The standing sentence names the frozen surfaces because
- * that is the question a dead pane actually poses ("did my session die?" — no,
- * the LINK did, the tmux sessions are fine on the host); after a failed
- * re-dial the store's error replaces it, so the user is never shown a stale
- * "connection lost" over a fresher, more specific failure.
+ * What the strip says: a recovery-owning transport's ladder, the store's
+ * countdown, a failed re-dial's own error (never a stale "connection lost"
+ * over a fresher failure), else the standing sentence naming the frozen
+ * surfaces ("did my session die?" — no, the LINK did).
  */
 const linkLostText = computed(() => {
+  if (connection.transportRetry) return transportRetryText(connection.activeHost?.name, connection.transportRetry);
+  if (autoRetrying.value) return autoRetryText.value;
   if (redial.value === 'failed') return connection.error ?? 'Reconnect failed';
-  const host = connection.activeHost?.name;
-  return `Connection to ${host ?? 'the host'} was lost. The sessions and terminals on screen are frozen until you reconnect.`;
+  const reason = connection.transportOwnsRecovery && connection.error !== 'Connection lost' ? connection.error : null;
+  return linkDownText(connection.activeHost?.name, reason);
 });
 
 /**
@@ -597,7 +599,7 @@ async function onRefreshUsage(): Promise<void> {
          route back was guessing to navigate to hosts and reconnect by hand. -->
     <p v-if="linkLost" class="link-lost">
       <AppIcon name="alert-triangle" :size="14" />
-      <span class="link-lost-text">{{ autoRetrying ? autoRetryText : linkLostText }}</span>
+      <span class="link-lost-text">{{ linkLostText }}</span>
       <button
         class="reconnect-btn"
         :disabled="reconnecting"
