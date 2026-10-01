@@ -8,6 +8,8 @@ import {
 import {
   ConnectionController,
   DEFAULT_MAX_BACKGROUND_GRACE_MS,
+  DEFAULT_MAX_OPEN_PTYS,
+  PTY_CHANNEL_RESERVE,
   RECONNECT_DECLINED_MESSAGE,
   type HostKeyTrustStore,
 } from '../src/connectionController';
@@ -104,6 +106,21 @@ class FakeCapability {
   killAfterApplyFailure = false;
   nextWriteError: unknown = null;
   nextExecError: unknown = null;
+  /** The platform's stated channel budget (SshCapability.maxChannelsPerConnection). */
+  maxChannelsPerConnection: number | undefined = undefined;
+  /** When set, the fake refuses a channel past this many per connection, as the Android plugin does. */
+  channelLimit: number | null = null;
+  private execsInFlight = new Map<string, number>();
+  private channelsOn(connectionId: string): number {
+    let count = this.execsInFlight.get(connectionId) ?? 0;
+    for (const pty of this.ptys.values()) if (pty.connectionId === connectionId) count += 1;
+    return count;
+  }
+  private acquireChannel(connectionId: string): void {
+    if (this.channelLimit !== null && this.channelsOn(connectionId) >= this.channelLimit) {
+      throw new SshCapabilityError(`Connection has ${this.channelLimit} open channels.`, 'CHANNEL_LIMIT');
+    }
+  }
   readonly hostCommands = new Map<string, { exitCode: number | null; stdout: string; stderr?: string }>();
   private connectionOrdinal = 0;
   private ptyOrdinal = 0;
@@ -172,6 +189,16 @@ class FakeCapability {
   };
 
   exec = async (options: SshExecOptions): Promise<SshExecResult> => {
+    this.acquireChannel(options.connectionId);
+    this.execsInFlight.set(options.connectionId, (this.execsInFlight.get(options.connectionId) ?? 0) + 1);
+    try {
+      return await this.execOnChannel(options);
+    } finally {
+      this.execsInFlight.set(options.connectionId, (this.execsInFlight.get(options.connectionId) ?? 1) - 1);
+    }
+  };
+
+  private execOnChannel = async (options: SshExecOptions): Promise<SshExecResult> => {
     this.execCommands.push(options.command);
     if (this.nextExecError) {
       const error = this.nextExecError;
@@ -250,6 +277,7 @@ class FakeCapability {
 
   openPty = async (options: SshPtyOpenOptions) => {
     this.openPtyCalls.push(options);
+    this.acquireChannel(options.connectionId);
     const pty: SshPtyRef = {
       connectionId: options.connectionId,
       generationId: options.generationId,
@@ -406,6 +434,7 @@ function controllerFor(
     now?: () => number;
     maxBackgroundGraceMs?: number;
     retryDelaysMs?: readonly number[];
+    maxOpenPtys?: number;
     delay?: (milliseconds: number) => Promise<void>;
   } = {},
 ) {
@@ -1840,5 +1869,87 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'lost');
     expect(controller.getSnapshot().error).toBe('Session “alpha” no longer exists on 127.0.0.1.');
+  });
+
+  it('drops a PTY whose output read failed on a healthy transport, so re-selecting it attaches afresh while the others stay live', async () => {
+    const { capability, controller } = await liveOn(['alpha', 'beta']);
+    const output = recordOutput(controller);
+    const alphaChannel = channelOf(capability, 'alpha');
+    const betaChannel = channelOf(capability, 'beta');
+    const opensBefore = capability.openPtyCalls.length;
+
+    capability.failRead(betaChannel, new Error('PTY output sequence gap: synthetic'));
+    await waitFor(() => controller.getSnapshot().terminals.length === 1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', error: 'PTY output sequence gap: synthetic' });
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(capability.closePtyCalls.map((call) => call.channelId)).toContain(betaChannel);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    // Re-selecting beta is a fresh attach (a new PTY and its repaint), not a no-op on the dead one.
+    expect((await controller.attachSession(session('beta'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(opensBefore + 1);
+    const newBeta = channelOf(capability, 'beta');
+    expect(newBeta).not.toBe(betaChannel);
+    await waitFor(() => capability.pendingReadsFor(newBeta) === 1);
+    capability.emitOutput(newBeta, new TextEncoder().encode('beta-again'));
+    capability.emitOutput(alphaChannel, new TextEncoder().encode('alpha-still'));
+    await waitFor(() => output.of('beta') === 'beta-again' && output.of('alpha') === 'alpha-still');
+    expect((await controller.writeTerminalBytes(session('beta'), new TextEncoder().encode('b'))).ok).toBe(true);
+    expect(capability.writeCalls.at(-1)?.channelId).toBe(newBeta);
+  });
+
+  it('bounds open PTYs below the platform channel budget, evicting the least recently focused, and keeps host commands working', async () => {
+    const capability = new FakeCapability();
+    const names = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'];
+    capability.sessions.push(...names.map((name) => session(name)));
+    capability.maxChannelsPerConnection = 8;
+    capability.channelLimit = 8;
+    capability.hostCommands.set('true', { exitCode: 0, stdout: '' });
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+
+    for (const name of names) expect((await controller.attachSession(session(name))).ok, name).toBe(true);
+    // 8 channels, 3 kept for execs and forwards: at most 5 PTYs.
+    expect(capability.ptys.size).toBe(8 - PTY_CHANNEL_RESERVE);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's5', 's6', 's7', 's8']);
+    expect(capability.openPtyCalls).toHaveLength(8);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
+    expect((await controller.refreshSessions()).ok).toBe(true);
+
+    // Focusing s4 makes s5 the least recently focused; opening s1 again evicts s5.
+    expect((await controller.attachSession(session('s4'))).ok).toBe(true);
+    expect(capability.openPtyCalls).toHaveLength(8);
+    expect((await controller.attachSession(session('s1'))).ok).toBe(true);
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's6', 's7', 's8', 's1']);
+    expect(capability.openPtyCalls).toHaveLength(9);
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1'");
+    expect(capability.ptys.size).toBe(5);
+    expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
+    // The evicted terminal re-attaches (a fresh PTY) when it is looked at again.
+    expect((await controller.attachSession(session('s5'))).ok).toBe(true);
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5'");
+    expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's7', 's8', 's1', 's5']);
+    expect((await controller.writeTerminalBytes(session('s5'), new TextEncoder().encode('x'))).ok).toBe(true);
+  });
+
+  it('takes the PTY bound from the caller first, then the platform budget, then the default', async () => {
+    const attachAll = async (capability: FakeCapability, options: { maxOpenPtys?: number } = {}) => {
+      const names = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
+      capability.sessions.push(...names.map((name) => session(name)));
+      const { controller } = controllerFor(capability, trustStore(PIN), options);
+      controllers.push(controller);
+      await connectAndList(controller);
+      for (const name of names) expect((await controller.attachSession(session(name))).ok).toBe(true);
+      return controller.getSnapshot().terminals.length;
+    };
+    expect(await attachAll(new FakeCapability())).toBe(DEFAULT_MAX_OPEN_PTYS);
+    const budgeted = new FakeCapability();
+    budgeted.maxChannelsPerConnection = 5;
+    expect(await attachAll(budgeted)).toBe(2);
+    const tight = new FakeCapability();
+    tight.maxChannelsPerConnection = 2;
+    expect(await attachAll(tight)).toBe(1);
+    expect(await attachAll(new FakeCapability(), { maxOpenPtys: 3 })).toBe(3);
   });
 });

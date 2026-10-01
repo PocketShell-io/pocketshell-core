@@ -105,6 +105,14 @@ export interface ConnectionControllerOptions {
    * Android client offered; a longer request is clamped to it.
    */
   maxBackgroundGraceMs?: number;
+  /**
+   * Most PTYs open at once on the connection. Defaults to the capability's
+   * `maxChannelsPerConnection` minus {@link PTY_CHANNEL_RESERVE} (exec,
+   * listing and forward headroom), or {@link DEFAULT_MAX_OPEN_PTYS} when the
+   * platform states no budget. Past it the least recently focused terminal
+   * is evicted (#2955).
+   */
+  maxOpenPtys?: number;
 }
 
 /** How `returnToForeground` treats a connection the grace window spent. */
@@ -124,6 +132,10 @@ export type ConnectionActionResult<T = undefined> =
   | { ok: false; reason: 'trust-required' | 'trust-mismatch' | 'not-connected' | 'not-found' | 'superseded' | 'failed'; message: string };
 
 const DEFAULT_RETRY_DELAYS_MS = [0, 250, 500, 1_000, 2_000] as const;
+/** PTYs open at once when neither the caller nor the platform states a channel budget. */
+export const DEFAULT_MAX_OPEN_PTYS = 5;
+/** Channels kept free of PTYs for host-CLI execs (listing, usage, bootstrap) and forwards. */
+export const PTY_CHANNEL_RESERVE = 3;
 /** Ten minutes: the longest background grace any PocketShell client offers. */
 export const DEFAULT_MAX_BACKGROUND_GRACE_MS = 10 * 60_000;
 /** Phases in which a connection still serves the user; `reconnect()` leaves them alone. */
@@ -183,6 +195,8 @@ interface TerminalRecord {
   pumpToken: number;
   /** Bumped by every (re)attach and by detach; a stale attach closes what it opened. */
   attachToken: number;
+  /** When the consumer last attached or focused it; the smallest is evicted first. */
+  focusedAt: number;
   /** A consumer attach in flight: a second attach of the same session joins it. */
   attaching: Promise<ConnectionActionResult<SessionRow>> | null;
 }
@@ -224,6 +238,8 @@ export class ConnectionController {
   private readonly createId: () => string;
   private readonly retryDelaysMs: readonly number[];
   private readonly maxBackgroundGraceMs: number;
+  private readonly maxOpenPtys: number;
+  private focusClock = 0;
   private readonly listeners = new Set<(snapshot: ConnectionSnapshot) => void>();
   private readonly outputListeners = new Set<TerminalOutputHandler>();
   private readonly listenerReady: Promise<SshListenerHandle>;
@@ -267,6 +283,7 @@ export class ConnectionController {
     this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     const cap = options.maxBackgroundGraceMs ?? DEFAULT_MAX_BACKGROUND_GRACE_MS;
     this.maxBackgroundGraceMs = Number.isFinite(cap) && cap >= 0 ? cap : DEFAULT_MAX_BACKGROUND_GRACE_MS;
+    this.maxOpenPtys = resolveMaxOpenPtys(options.maxOpenPtys, this.capability.maxChannelsPerConnection);
     this.listenerReady = this.capability.addListener('connectionState', (event) => {
       this.onConnectionState(event);
     });
@@ -476,13 +493,23 @@ export class ConnectionController {
     if (!listed) return { ok: false, reason: 'not-found', message: `Session “${session.name}” is no longer in the host list.` };
 
     let record = this.findTerminal(listed);
+    if (record) record.focusedAt = ++this.focusClock;
     if (record?.attaching) return record.attaching;
-    if (record?.pty && record.pty.generationId === connection.generationId && this.snapshot.phase === 'live') {
+    if (record?.pty && record.pty.generationId === connection.generationId) {
       if (requested) record.geometry = requested;
       this.setSnapshot({ selectedSession: record.session });
       return { ok: true, value: record.session };
     }
     if (!record) {
+      // The channel budget: a new terminal past the bound evicts the least
+      // recently focused one. Its host session stays; its consumer sees the
+      // terminal leave and re-attaches when it is next looked at.
+      while (this.terminals.length >= this.maxOpenPtys) {
+        const evicted = this.leastRecentlyFocused();
+        if (!evicted) break;
+        const pty = this.removeTerminal(evicted);
+        if (pty) void this.closePtyRef(pty);
+      }
       record = {
         session: listed,
         pty: null,
@@ -492,6 +519,7 @@ export class ConnectionController {
         operationQueue: Promise.resolve(),
         pumpToken: 0,
         attachToken: 0,
+        focusedAt: ++this.focusClock,
         attaching: null,
       };
       this.terminals.push(record);
@@ -1089,9 +1117,22 @@ export class ConnectionController {
       // grace-expired event reaches this controller. Preserve background
       // until foreground decides whether to reuse or reconnect the transport.
       const backgrounded = this.snapshot.phase === 'background';
-      const othersLive = this.terminals.some((other) => other !== record && other.pty !== null);
-      this.setSnapshot({ phase: backgrounded ? 'background' : othersLive ? 'live' : 'error', error: message });
-      if (this.isCurrentTransportFailure(error)) this.startReconnect('PTY output reader observed a transport failure');
+      const transportFailure = this.isCurrentTransportFailure(error);
+      if (backgrounded || transportFailure) {
+        // The terminal stays open: foreground or the reconnect re-attaches it.
+        record.pty = null;
+        record.pumpToken += 1;
+        void this.closePtyRef(pty);
+        this.setSnapshot({ phase: backgrounded ? 'background' : this.hasLiveTerminal() ? 'live' : 'error', error: message });
+        if (transportFailure) this.startReconnect('PTY output reader observed a transport failure');
+        return;
+      }
+      // This PTY failed on a healthy transport: it is done. The terminal
+      // leaves the open set, so its consumer sees it exit and the next
+      // attach of the session opens a fresh PTY; the other terminals stay.
+      const failed = this.removeTerminal(record, { keepSelection: true });
+      this.setSnapshot({ phase: this.hasLiveTerminal() ? 'live' : 'error', error: message });
+      if (failed) await this.closePtyRef(failed);
     }
   }
 
@@ -1234,6 +1275,14 @@ export class ConnectionController {
     }
     this.setSnapshot({ phase: 'live', selectedSession: focus?.session ?? null, error: failure, retryAttempt: 0 });
     return 'done';
+  }
+
+  private leastRecentlyFocused(): TerminalRecord | null {
+    let oldest: TerminalRecord | null = null;
+    for (const record of this.terminals) {
+      if (!oldest || record.focusedAt < oldest.focusedAt) oldest = record;
+    }
+    return oldest;
   }
 
   private findTerminal(session: SessionRow): TerminalRecord | null {
@@ -1446,6 +1495,15 @@ export class ConnectionController {
   private assertLive(): void {
     if (this.disposed) throw new Error('ConnectionController is closed.');
   }
+}
+
+/** The PTY bound: the caller's, else the platform's channel budget minus the reserve, else the default. */
+function resolveMaxOpenPtys(requested: number | undefined, channels: number | undefined): number {
+  if (requested !== undefined && Number.isInteger(requested) && requested >= 1) return requested;
+  if (channels !== undefined && Number.isInteger(channels) && channels >= 1) {
+    return Math.max(1, channels - PTY_CHANNEL_RESERVE);
+  }
+  return DEFAULT_MAX_OPEN_PTYS;
 }
 
 function isKeyHandleCredential(value: unknown): value is { kind: 'key-handle' } {
