@@ -79,8 +79,13 @@
 .switch.on {
   color: var(--accent);
 }
-.switch:hover {
-  background: var(--state-hover);
+/* Hover only where a pointer can hover: on a touch screen the browser keeps
+   :hover on the last tapped element, which painted the switch as a filled bar
+   after every tap. */
+@media (hover: hover) {
+  .switch:hover {
+    background: var(--state-hover);
+  }
 }
 /* A range slider with its value, for the numeric Advanced settings. 44px keeps
    it a phone-sized touch target. */
@@ -115,5 +120,9 @@ select.control {
   }
   .control {
     max-width: none;
+  }
+  /* A switch keeps its own width; stretched it reads as a full-width button. */
+  .switch {
+    align-self: flex-start;
   }
 }

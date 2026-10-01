@@ -7,6 +7,15 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import { BACKGROUND_GRACE_OPTIONS, parseBackgroundGraceMs } from '@pocketshell/core';
 import { useSettingsStore } from '../../stores/settings';
 
+withDefaults(defineProps<{
+  /**
+   * Show the group's own "Connections" title. A screen that already titles
+   * itself Connections (the phone's Settings → Connections page) turns it off
+   * so the page does not say the same word twice; the group stays labelled.
+   */
+  showTitle?: boolean;
+}>(), { showTitle: true });
+
 const settings = useSettingsStore();
 
 function onGraceChange(event: Event): void {
@@ -16,8 +25,8 @@ function onGraceChange(event: Event): void {
 </script>
 
 <template>
-  <section class="group" data-testid="settings-group-connections">
-    <h3 class="group-title">Connections</h3>
+  <section class="group" data-testid="settings-group-connections" :aria-label="showTitle ? undefined : 'Connections'">
+    <h3 v-if="showTitle" class="group-title">Connections</h3>
     <div class="row">
       <div class="row-text">
         <label class="row-label" for="background-grace">Keep connection after leaving</label>
