@@ -854,6 +854,25 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${shown}`);
   });
 
+  it('does not carry an earlier refused login into a later give-up (#2984)', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] });
+    controllers.push(controller);
+    await connectAndList(controller);
+    await controller.switchSession(session('alpha'));
+    capability.refuseLogins = { code: 'AUTH_FAILED', message: 'Exhausted available authentication methods' };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+
+    // Logins work again, but every re-attach loses its transport.
+    capability.refuseLogins = null;
+    capability.openPty = async () => {
+      throw new SshCapabilityError('SSH transport closed during attach.', 'CONNECTION_LOST');
+    };
+    expect((await controller.reconnect()).ok).toBe(false);
+    expect(controller.getSnapshot().error).toBe('Could not reconnect to 127.0.0.1 after 2 attempts.');
+  });
+
   it('counts every dial of a retryable ladder that ran out (#2984)', async () => {
     const capability = new FakeCapability();
     const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] });
