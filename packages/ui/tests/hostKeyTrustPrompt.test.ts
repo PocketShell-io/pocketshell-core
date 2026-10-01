@@ -10,6 +10,9 @@ import { provideApi } from '../src/app/ipc';
 import { useConnectionStore } from '../src/app/stores/connection';
 import HostKeyTrustPrompt from '../src/app/components/HostKeyTrustPrompt.vue';
 import HostKeyTrustGate from '../src/app/components/HostKeyTrustGate.vue';
+import AppRoot from '../src/app/AppRoot.vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
+import { defineComponent, nextTick } from 'vue';
 
 // #2953 (A6): the shared host-key card and the store wiring behind the
 // optional `ssh.onTrustDecision` hook.
@@ -162,5 +165,38 @@ describe('shared host-key trust prompt', () => {
     await connection.disconnect();
     await expect(waiting).resolves.toBe('reject');
     expect(await gate()).not.toContain('host-key-decision');
+  });
+
+  it('is mounted by the shared AppRoot: asks on a hook client, inert on one without it', async () => {
+    const Home = defineComponent({ render: () => h('p', { class: 'home' }, 'home') });
+    const mountRoot = async () => {
+      const pinia = createPinia();
+      setActivePinia(pinia);
+      const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Home }] });
+      await router.push('/');
+      await router.isReady();
+      return mount(AppRoot, { global: { plugins: [pinia, router] } });
+    };
+
+    // A client without the hook (and here without any `ssh` group at all).
+    provideApi({ diag: { log: () => undefined } } as unknown as PocketShellApi);
+    const plain = await mountRoot();
+    expect(plain.find('.home').exists()).toBe(true);
+    expect(plain.find('[data-testid=host-key-trust-gate]').exists()).toBe(false);
+    plain.unmount();
+
+    let decider: ((request: HostKeyTrustRequest) => Promise<HostKeyTrustChoice>) | null = null;
+    const { api } = fakeApi({ onTrustDecision: (registered) => { decider = registered; return () => undefined; } });
+    provideApi({ ...api, diag: { log: () => undefined } } as unknown as PocketShellApi);
+    const asking = await mountRoot();
+    expect(asking.find('[data-testid=host-key-trust-gate]').exists()).toBe(false);
+    const answer = decider!(REQUEST);
+    await nextTick();
+    expect(asking.find('[data-testid=host-key-trust-gate] [data-testid=host-key-fingerprint]').text()).toBe(REQUEST.fingerprintSha256);
+    await asking.get('[data-testid=reject-host-key]').trigger('click');
+    await expect(answer).resolves.toBe('reject');
+    await nextTick();
+    expect(asking.find('[data-testid=host-key-trust-gate]').exists()).toBe(false);
+    asking.unmount();
   });
 });
