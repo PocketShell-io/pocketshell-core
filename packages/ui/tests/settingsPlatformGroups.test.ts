@@ -9,6 +9,9 @@ import type { PocketShellApi } from '../src/app/api';
 import { useSettingsStore } from '../src/app/stores/settings';
 import { registerSettingsSection } from '../src/app/settingsSections';
 import SettingsPlatformGroups from '../src/app/components/settings/SettingsPlatformGroups.vue';
+import SettingsConnectionsGroup from '../src/app/components/settings/SettingsConnectionsGroup.vue';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Desktop-style catch-all double: every `group.method` resolves undefined unless overridden. */
 function catchAllTransport(overrides: Record<string, unknown> = {}): PocketShellApi {
@@ -74,6 +77,27 @@ describe('Settings platform groups (0.5.x Connections, Advanced, Diagnostics, Ab
     expect(settings.reconnectOnReturn).toBe(false);
     expect(toggle.attributes('aria-checked')).toBe('false');
     expect(JSON.parse(localStorage.getItem('pocketshell.settings.v1') ?? '{}')).toMatchObject({ backgroundGraceMs: 600_000, reconnectOnReturn: false });
+  });
+
+  it('lets a page that is already titled Connections drop the group title, keeping the group labelled', () => {
+    const titled = mount(SettingsConnectionsGroup);
+    expect(titled.find('.group-title').text()).toBe('Connections');
+    const untitled = mount(SettingsConnectionsGroup, { props: { showTitle: false } });
+    expect(untitled.find('.group-title').exists()).toBe(false);
+    expect(untitled.find('[data-testid=settings-group-connections]').attributes('aria-label')).toBe('Connections');
+    expect(untitled.find('[data-testid=setting-reconnect-on-return]').attributes('role')).toBe('switch');
+  });
+
+  it('keeps the switch compact on a phone: hover only for hovering pointers, not stretched when rows stack', () => {
+    const css = readFileSync(join(__dirname, '../src/app/components/settings/settingsGroup.css'), 'utf8');
+    const outside = css.replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+    expect(outside).not.toMatch(/\.switch:hover/);
+    expect(css).toMatch(/@media \(hover: hover\) \{\s*\.switch:hover \{/);
+    const narrow = css.slice(css.indexOf('@media (max-width: 480px)'));
+    expect(narrow).toMatch(/\.row \{[^}]*align-items: stretch/);
+    expect(narrow).toMatch(/\.switch \{\s*align-self: flex-start;/);
+    const base = css.slice(css.indexOf('.switch {'), css.indexOf('}', css.indexOf('.switch {')));
+    expect(base).toContain('-webkit-tap-highlight-color: transparent;');
   });
 
   it('shows standard usage colours until a threshold is set, and resets both Advanced values', async () => {
