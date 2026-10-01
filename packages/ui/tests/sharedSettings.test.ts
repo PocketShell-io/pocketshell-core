@@ -3,7 +3,7 @@ import { createApp, defineComponent } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { composerTiming } from '@pocketshell/core';
 import { coerceSettings, settingsDefaults, useSettingsStore } from '../src/app/stores/settings';
-import { registerSettingsSection, settingsSections } from '../src/app/settingsSections';
+import { extensionsFor, provideExtensions } from '../src/app/extensions';
 import { provideApi } from '../src/app/ipc';
 import { diagErrors, dismissDiagError, installDiagCapture } from '../src/app/diag';
 import type { PocketShellApi } from '../src/app/api';
@@ -42,24 +42,22 @@ describe('shared settings: lifecycle, advanced and usage preferences', () => {
   });
 });
 
-describe('platform settings sections', () => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
+describe('platform settings sections (settings.sections slot)', () => {
+  afterEach(() => provideExtensions({}));
   const component = defineComponent({ render: () => null });
 
-  it('renders registered sections by order, replaces by id and unregisters', () => {
-    cleanups.push(registerSettingsSection({ id: 'voice', title: 'Voice', order: 20, component }));
-    cleanups.push(registerSettingsSection({ id: 'crash-reporter', title: 'Crash reporting', order: 10, component }));
-    cleanups.push(registerSettingsSection({ id: 'update-install', title: 'Updates on this device', order: 20, component }));
-    expect(settingsSections().map((section) => section.id)).toEqual(['crash-reporter', 'voice', 'update-install']);
-
-    const unregister = registerSettingsSection({ id: 'voice', title: 'Dictation', order: 5, component });
-    expect(settingsSections().map((section) => `${section.id}:${section.title}`)).toEqual([
-      'voice:Dictation', 'crash-reporter:Crash reporting', 'update-install:Updates on this device',
-    ]);
-    unregister();
-    expect(settingsSections().map((section) => section.id)).toEqual(['crash-reporter', 'update-install']);
-    expect(() => registerSettingsSection({ id: 'Bad Id', title: 'x', component })).toThrow(/kebab-case/);
+  it('orders contributed sections and refuses an id that cannot be a DOM id', () => {
+    provideExtensions({
+      'settings.sections': [
+        { id: 'voice', title: 'Voice', order: 20, component },
+        { id: 'crash-reporter', title: 'Crash reporting', order: 10, component },
+        { id: 'update-install', title: 'Updates on this device', order: 20, component },
+      ],
+    });
+    expect(extensionsFor('settings.sections').map((section) => section.id)).toEqual(['crash-reporter', 'voice', 'update-install']);
+    provideExtensions({});
+    expect(extensionsFor('settings.sections')).toEqual([]);
+    expect(() => provideExtensions({ 'settings.sections': [{ id: 'Bad Id', title: 'x', component }] })).toThrow(/kebab-case/);
   });
 });
 

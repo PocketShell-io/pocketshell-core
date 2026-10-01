@@ -8,6 +8,8 @@ import { prunePanes, upsertPane, type SessionPaneRecord } from './sessionPanes';
 import { sessionIdentityKey } from './sessionIdentity';
 import type { SessionDirectory } from './sessionTree';
 import type { useWorkspaceMemory } from './useWorkspaceMemory';
+import { dockContextFor } from './dockContext';
+import type { TerminalDockContext } from './extensions';
 
 /** The mounted-pane handles, keyed by the pane's own identity — what rename
  *  re-keys and what focus and Redraw look up. */
@@ -15,6 +17,8 @@ export interface TerminalPane {
   focus: () => void;
   /** Re-assert geometry and repaint — see TerminalView's `resyncDisplay`. */
   resyncDisplay: () => void;
+  /** Bytes into this pane's shell, exactly as typed — see TerminalView's `sendInput`. */
+  sendInput: (data: string) => void;
 }
 
 export interface WorkspaceTabsDeps {
@@ -63,6 +67,8 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   identityFor: (name: string, like?: string) => string;
   terminalRefs: Map<string, TerminalPane>;
   setTerminalRef: (identity: string, el: unknown) => void;
+  /** What a `terminal.dock` contribution sees; null with no session pane showing. */
+  terminalDockContext: ComputedRef<TerminalDockContext | null>;
   selectTab: (tab: WorkspaceTab) => void;
   goToTab: (id: string) => void;
   selectAfterClose: (id: string) => void;
@@ -544,7 +550,12 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     else terminalRefs.delete(identity);
   }
 
+  const terminalDockContext = computed(() =>
+    dockContextFor(activeTab.value?.kind === 'session', terminalIdentity.value, terminalSession.value, terminalRefs),
+  );
+
   return {
+    terminalDockContext,
     tabs,
     activeTab,
     activeSession,

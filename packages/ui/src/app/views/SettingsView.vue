@@ -26,7 +26,7 @@
 // So: one view, mounted inside `OverlayPanel` by two callers. It renders no
 // heading of its own — the overlay chrome owns the title (see UsageView's
 // `embedded` prop and the duplicated-heading note in OverlayPanel).
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
 import { useSettingsStore } from '../stores/settings';

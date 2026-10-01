@@ -59,7 +59,7 @@
 // machine and keyboard to useComposerVisibility, the move/resize machinery to
 // useComposerGeometry, the draw-or-annotate overlay to DoodleSheet.vue, and
 // the control row to ComposerControls.vue.
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useComposerStore } from '../stores/composer';
 import { useSettingsStore } from '../stores/settings';
 import { useShellsStore } from '../stores/shells';
@@ -68,6 +68,8 @@ import SlashCommandDropdown from './SlashCommandDropdown.vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import DoodleSheet from './DoodleSheet.vue';
 import ComposerControls from '@ui/components/ComposerControls.vue';
+import ExtensionSlot from './ExtensionSlot.vue';
+import type { ComposerExtensionContext } from '../extensions';
 import { COMPOSER_STRINGS } from '@pocketshell/core/shared/composerText';
 import type { ComposerAgentKind } from '@pocketshell/core';
 import type { ConnectionId } from '@pocketshell/core';
@@ -251,6 +253,17 @@ const doodleSheet = ref<{
   startFromAttachment: (remotePath: string) => Promise<void>;
 } | null>(null);
 
+/**
+ * What a platform's `composer.accessory` and `composer.inputSources`
+ * contributions (extensions.ts) see: this draft's session, the caret insert
+ * the terminal's withheld keystroke uses, and the drop's staging path.
+ */
+const extensionContext = computed<ComposerExtensionContext>(() => ({
+  sessionName: props.sessionName,
+  insertText: (text: string) => typeInto(text),
+  attachFiles: (files: File[]) => void acceptDroppedFiles(files),
+}));
+
 onMounted(() => {
   window.addEventListener('keydown', onGlobalKey, { capture: true });
   // Capture, so the press is seen wherever it lands — including inside the
@@ -345,6 +358,9 @@ defineExpose({
            is at the floor (or a banner appears) this scrolls instead of
            squeezing the Send row out of reach. -->
       <div class="panel-body">
+        <!-- The platform's chip row (extensions.ts `composer.accessory`);
+             renders nothing when none is contributed. -->
+        <ExtensionSlot name="composer.accessory" class="composer-accessory" :context="extensionContext" />
         <div class="draft-wrap">
           <textarea
             ref="draftEl"
@@ -418,6 +434,11 @@ defineExpose({
       <p v-if="state.connectionDegraded" class="conn-lost">
         {{ COMPOSER_STRINGS.connectionLost }}
       </p>
+
+      <!-- The platform's extra input sources (extensions.ts
+           `composer.inputSources`) — a picker, dictation, a share inbox —
+           beside the built-in controls; nothing contributed, nothing drawn. -->
+      <ExtensionSlot name="composer.inputSources" class="composer-input-sources" :context="extensionContext" />
 
       <ComposerControls
         :uploading-count="state.uploadingCount"
@@ -767,6 +788,15 @@ defineExpose({
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+}
+.composer-accessory,
+.composer-input-sources {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) 0;
 }
 .draft-wrap {
   flex: 1 1 auto;

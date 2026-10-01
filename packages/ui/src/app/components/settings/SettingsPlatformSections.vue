@@ -1,11 +1,12 @@
 <script setup lang="ts">
-// Platform-only settings registered through settingsSections.ts (Android
-// dictation, update-install handoff, crash reporting…), rendered as ordinary
-// groups after the shared ones.
+// Platform-only settings (Android dictation, update-install handoff, crash
+// reporting…), contributed through the `settings.sections` extension slot
+// (../../extensions.ts) and rendered as ordinary groups after the shared ones.
+// Nothing contributed renders nothing.
 import { computed } from 'vue';
-import { settingsSections } from '../../settingsSections';
+import { extensionsFor } from '../../extensions';
 
-const sections = computed(() => settingsSections());
+const sections = computed(() => extensionsFor('settings.sections'));
 </script>
 
 <template>

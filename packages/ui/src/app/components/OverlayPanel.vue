@@ -10,6 +10,7 @@
 // docs/screenshots/07-usage-overlay.png.
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
+import { useDismissLayer } from '../extensions';
 
 withDefaults(
   defineProps<{
@@ -26,6 +27,11 @@ withDefaults(
   { size: 'lg' },
 );
 const emit = defineEmits<{ close: [] }>();
+
+// An open panel is a dismissable layer (extensions.ts `app.dismissLayers`):
+// the platform's dismiss gesture — Android Back — closes the topmost one, the
+// same close the backdrop and Escape perform.
+useDismissLayer(() => emit('close'));
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') emit('close');

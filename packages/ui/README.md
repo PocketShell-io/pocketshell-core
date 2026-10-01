@@ -40,6 +40,25 @@ The mono font policy accepts a consumer fallback stack. Desktop uses its
 Consolas default; Android should provide the bundled JetBrains Mono stack
 specified by the rewrite plan.
 
+## The shared app and its extension points
+
+Every client mounts `src/app/AppRoot.vue` (theme and typography watchers,
+the diagnostics and update strips, the router outlet) and builds its router
+from `createAppRoutes(extra)` in `src/app/routes.ts`, adding only its own
+routes and its own history. Nothing under `src/app` branches on the
+platform; a client's own features plug in at startup:
+
+- API groups a platform provides or omits (`update`, `editors`, ...): a
+  capability exists when its group does.
+- UI slots, `provideExtensions()` in `src/app/extensions.ts`:
+  `terminal.dock`, `terminal.inputAdapter`, `composer.inputSources`,
+  `composer.accessory`, `settings.sections` (platform settings groups, which
+  Settings renders after the shared ones). An empty slot renders no DOM.
+- `app.dismissLayers`: open overlays register a close handler; the
+  platform's dismiss gesture calls `dismissTopLayer()`.
+- The inset contract, `--ps-inset-top/bottom/left/right/keyboard`
+  (`src/app/insets.ts`, `writeAppInsets`). Desktop and web leave them at 0.
+
 Build, typecheck and test this source standalone with `npm run build`,
 `npm run typecheck` and `npm run test` in this directory (core's CI gates all
 three), or from the desktop repo with `npm run build:ui` and
