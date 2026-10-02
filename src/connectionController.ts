@@ -445,6 +445,12 @@ export class ConnectionController {
       if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       if (isUncertainMutation(error) || this.isCurrentTransportFailure(error)) {
         this.startReconnect('session list lost its transport');
+        // The reconnect now owns the phase and has reported itself (its
+        // first `reconnecting`, with this reason). Writing the list error on
+        // top would report the same ladder a second time — on the #2954
+        // abrupt drop, whichever listing (the session panel's poll, a pane)
+        // saw the dead link first doubled the ladder's journal (#3039).
+        if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       }
       const phase = this.snapshot.phase === 'reconnecting'
         ? 'reconnecting'

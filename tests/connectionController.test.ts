@@ -1410,6 +1410,37 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
   });
 
+  it('reports a session list that finds the link dead as ONE ladder entry (pocketshell#3039, #2954)', async () => {
+    // The #2954 abrupt-drop journey counts every retry-0 `reconnecting`
+    // snapshot as a ladder. When a listing (the session panel's 5 s poll, or
+    // a pane) is the first to see the dead link, refreshSessions started the
+    // reconnect — which reports itself — and then wrote its own list error
+    // over it as a second retry-0 `reconnecting`: two "ladders" for one.
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const entries: Array<{ phase: string; retryAttempt: number; error: string | null }> = [];
+    controller.subscribe((snapshot) => {
+      entries.push({ phase: snapshot.phase, retryAttempt: snapshot.retryAttempt, error: snapshot.error });
+    });
+    const exec = capability.exec;
+    let armed = true;
+    capability.exec = async (options) => {
+      if (armed && options.command.includes('sessions list')) {
+        armed = false;
+        throw new SshCapabilityError('SSH connection is no longer available.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+
+    expect((await controller.refreshSessions()).ok).toBe(false);
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+
+    const firstRung = entries.filter((entry) => entry.phase === 'reconnecting' && entry.retryAttempt === 0);
+    expect(firstRung, JSON.stringify(entries)).toHaveLength(1);
+    expect(firstRung[0]!.error).toBe('session list lost its transport');
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
   it('a verdict probe failing on a dying transport changes nothing and starts no reconnect (pocketshell#3039)', async () => {
     // The pane's "did my session outlive its client?" query, asked as the
     // link dies (#3039 review B2): routed through refreshSessions it started
