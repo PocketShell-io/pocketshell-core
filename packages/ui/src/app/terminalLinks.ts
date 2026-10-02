@@ -139,7 +139,11 @@
  * break opportunities, the finished-address trace reading the PATH's
  * extension — an authority's `.com` is no filename ({@link webPathOf}) — and
  * rule 1a's head test admitting only the URL's own continuation. A URL on one
- * row is the addon's and stays the addon's.
+ * row is the addon's and stays the addon's — except the bare addresses
+ * (terminalUrls.ts's `127.0.0.1:8300` family): the addon's regex is anchored
+ * on `https?://`, so on a single row nobody but this provider can claim them,
+ * while the at-rest highlighter keeps its nothing-to-repair rule for every
+ * single-row address, bare or not.
  *
  * ## Appearance
  *
@@ -896,33 +900,47 @@ function pathLinksFromScan(scanned: ScannedLine, context: () => TerminalPathCont
 export type UrlOpener = (url: string) => void;
 
 /**
- * The web links for one buffer line — but only the ones that SPAN rows.
+ * The web links for one buffer line — but only the ones that SPAN rows, plus
+ * the bare (schemeless) addresses that sit on one.
  *
- * A URL on a single row is WebLinksAddon's to find, and stays so: the addon
- * has matched web links for years and this returns `[]` precisely so the
- * provider below never answers those lines and the addon keeps every cell it
- * always owned. A URL the remote CLI's wrapper broke across rows is the
- * addon's blind spot — it reads one row at a time — and it is the whole
- * reason these links exist: the flattened line rejoins the fragments, the
- * detector (./terminalUrls.ts) finds the address in it, and one link per row
- * the address covers is registered (each opening the whole address).
+ * A scheme URL on a single row is WebLinksAddon's to find, and stays so: the
+ * addon has matched web links for years and the schemeless branch below
+ * returns nothing for it precisely so the provider never answers those lines
+ * and the addon keeps every cell it always owned. A bare `127.0.0.1:8300` is
+ * the mirror case: the addon's regex is anchored on `https?://` and can never
+ * see it, so if this provider also passed, the address would stay plain text
+ * — the `claimSingleRow` flag is what takes it. A URL the remote CLI's
+ * wrapper broke across rows is the addon's blind spot either way — it reads
+ * one row at a time — and it is the whole reason these links exist: the
+ * flattened line rejoins the fragments, the detector (./terminalUrls.ts)
+ * finds the address in it, and one link per row the address covers is
+ * registered (each opening the whole address).
  *
  * [open] is injected rather than imported so a click's behaviour stays a
  * TerminalView decision (and a test can observe it without a window).
  */
 export function urlLinks(term: Terminal, bufferLineNumber: number, open: UrlOpener): ILink[] {
-  return urlLinksFromScan(scanBufferLine(term, bufferLineNumber), open);
+  return urlLinksFromScan(scanBufferLine(term, bufferLineNumber), open, true);
 }
 
 /** The URL half of {@link lineLinks}, over an already-flattened line. */
-function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
+function urlLinksFromScan(
+  scanned: ScannedLine,
+  open: UrlOpener,
+  claimSingleRow = false,
+): ILink[] {
   const links: ILink[] = [];
 
   for (const match of findUrls(scanned.text)) {
     const from = scanned.cells[match.start];
     const to = scanned.cells[match.end - 1];
     if (from === undefined || to === undefined) continue;
-    if (from.y === to.y) continue;
+    // A single-row address stays WebLinksAddon's — except a schemeless one,
+    // whose only claimant this provider is ([claimSingleRow]; the at-rest
+    // highlighter shares this scan and keeps the addon-era rule for both
+    // kinds: a single-row address was never half-underlined by the remote
+    // CLI, so there is nothing to repair).
+    if (from.y === to.y && !(claimSingleRow && match.schemeless)) continue;
 
     links.push(
       ...linksPerRow(scanned, match.start, match.end, (text, range) => ({
@@ -993,9 +1011,12 @@ export function createPathLinkProvider(
  * this row's fragment of the whole address claims those cells out from under
  * it (the two cover the same cells, ours being the one that opens the whole
  * address), and on the continuation rows the addon reports nothing at all, so
- * the address's fragment is the only link there. A single-row URL never gets
- * here — {@link urlLinks} returns `[]` and the callback answers `undefined`,
- * which leaves the addon untouched on the lines it always handled.
+ * the address's fragment is the only link there. A single-row SCHEME URL never
+ * gets here — the addon answers it, and this provider's `undefined` for the
+ * line leaves the addon untouched there as it always was — but a single-row
+ * BARE address (`127.0.0.1:8300`) does: the addon's regex is anchored on
+ * `https?://` and can never see it, so this provider is its only claimant
+ * ({@link urlLinks} for the split).
  */
 export function createUrlLinkProvider(term: Terminal, open: UrlOpener): ILinkProvider {
   return {

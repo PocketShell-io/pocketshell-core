@@ -614,8 +614,10 @@ onMounted(async () => {
   // truncated address); this provider reports the reconstructed address, one
   // link per row it covers (each opening the whole address), and xterm's
   // priority rule lets this row's link claim the fragment's cells. On
-  // single-row URLs it answers nothing, so the addon keeps every line it
-  // always handled. (createUrlLinkProvider documents the overlap arithmetic;
+  // single-row SCHEME-bearing URLs it answers nothing, so the addon keeps
+  // every line it always handled; a single-row BARE address (`127.0.0.1:8300`)
+  // is the mirror case — the addon's regex cannot see it, so this provider is
+  // its only claimant. (createUrlLinkProvider documents the overlap arithmetic;
   // terminalLinks.ts the joins that make the address whole.)
   termDisposables = [term.registerLinkProvider(createUrlLinkProvider(term, openExternal))];
   // An explicit activation handler, not the addon default.

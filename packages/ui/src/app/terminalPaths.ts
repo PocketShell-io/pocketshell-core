@@ -137,6 +137,17 @@ const NUMERIC_SEGMENT = /^\d+(?:\.\d+)?$/;
 const HOSTNAME_LIKE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}$/i;
 
 /**
+ * A first segment shaped like an IPv4 address: `127.0.0.1`. The same story
+ * as {@link HOSTNAME_LIKE} just above, one row over in the same output: an
+ * address wearing a path (`127.0.0.1/x.png`) is the URL detector's to claim
+ * and opens in the browser, and a dotted quad has exactly the shape of a
+ * relative path whose first segment ends extension-like. Deeper segments
+ * stay path material — `logs/127.0.0.1/error.log` is a real directory named
+ * after a host.
+ */
+const IPV4_LIKE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+/**
  * A trailing `.ext`. Deliberately permissive about the extension itself.
  *
  * Shared with the join rules in terminalLinks.ts, which read it not as "this
@@ -406,6 +417,7 @@ function isPath(p: string, hasPosition: boolean): boolean {
 
   const first = segments[0] ?? '';
   if (HOSTNAME_LIKE.test(first)) return false;
+  if (IPV4_LIKE.test(first)) return false;
 
   if (!hasPosition && countChar(p, '/') === 1) {
     // One slash, no anchor, no line number: this is where `and/or`, `w/o`,
