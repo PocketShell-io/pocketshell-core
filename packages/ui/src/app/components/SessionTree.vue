@@ -766,6 +766,17 @@ defineExpose({ openCreate });
 
 <style scoped>
 .tree {
+  /* A flex COLUMN, and that is load-bearing rather than tidy: the rows'
+     `.folder-list` is the panel's scroll area (`flex: 1; overflow-y: auto`,
+     SessionTreeRowsView), and `flex` only means anything to a child of one.
+     In block flow the list's height is its content's, the overflow never
+     engages, and the host panel's `overflow: hidden` clips the rows instead
+     of scrolling them — a panel with more sessions than a windowful became
+     a list with no way down. The pair was dropped in the move to
+     @pocketshell/ui and the loss shipped silently; see
+     tests/sessionTreeScroll.test.ts, which holds the contract. */
+  display: flex;
+  flex-direction: column;
   /* Flex-sized, not height:100%: the host panel is a flex column now, with
      the workspace's host-actions row below this component. The tree takes
      everything above it. Surface and the panel's right hairline moved to the
