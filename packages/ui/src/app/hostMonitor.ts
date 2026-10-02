@@ -60,23 +60,36 @@ export interface MemorySample {
   swapFreeKib: number;
 }
 
-/** `/proc/loadavg` — the three averages plus the running/total task counts. */
+/**
+ * `/proc/loadavg` — the three averages plus the running/threads counts. The
+ * second count is loadavg's scheduler-entity total, which on Linux is
+ * THREADS, not processes — htop shows it as `12157 thr`; the process count
+ * is the ps table's length, which the panel displays separately.
+ */
 export interface LoadSample {
   one: number;
   five: number;
   fifteen: number;
   running: number;
-  tasks: number;
+  threads: number;
 }
 
-/** One `ps -eo …` row. `timeS` is the process's cumulative CPU time. */
+/**
+ * One `ps` row. `state` is the first STAT letter (R running, D waiting on
+ * disk, S sleeping, T stopped, Z zombie); `vszKib`/`rssKib` are the virtual
+ * and resident figures in the KiB ps reports them in. `cpu` is the
+ * lifetime CPU percent, as `ps` reports it — not the instantaneous rate.
+ */
 export interface ProcessRow {
   pid: number;
   ppid: number;
   user: string;
+  state: string;
   /** Lifetime CPU percent, as `ps` reports it — not the instantaneous rate. */
   cpu: number;
   mem: number;
+  vszKib: number;
+  rssKib: number;
   timeS: number;
   command: string;
 }
@@ -110,7 +123,7 @@ export interface MonitorSample {
  * common denominator of procps and BusyBox.
  */
 export const MONITOR_SNAPSHOT_COMMAND =
-  "echo '==ps=='; LC_ALL=C ps -eo pid,ppid,user,pcpu,pmem,time,args; " +
+  "echo '==ps=='; LC_ALL=C ps -eo pid,ppid,user,stat,pcpu,pmem,vsz,rss,time,args; " +
   "echo '==stat=='; cat /proc/stat 2>/dev/null; " +
   "echo '==mem=='; cat /proc/meminfo 2>/dev/null; " +
   "echo '==load=='; cat /proc/loadavg 2>/dev/null; " +
@@ -138,14 +151,19 @@ export function parseProcessTime(text: string): number {
 }
 
 /**
- * One `ps` body line, fixed field order `pid ppid user pcpu pmem time args`.
- * The command takes EVERYTHING after the sixth field, spaces included — a
+ * One `ps` body line, fixed field order
+ * `pid ppid user stat pcpu pmem vsz rss time args`.
+ * The command takes EVERYTHING after the ninth field, spaces included — a
  * process is named by its argv, and argv is not ours to trim words from.
- * Returns null for whatever is not a data row (the header, a mangled line).
+ * `vsz`/`rss` arrive as integers (a zombie's are 0); anything unparsable
+ * reads 0, which is what the column shows. Returns null for whatever is
+ * not a data row (the header, a mangled line).
  */
 function parseProcessLine(line: string): ProcessRow | null {
   const m =
-    /^(\d+)\s+(\d+)\s+(\S+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\S+)\s?(.*)$/.exec(line);
+    /^(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+)\s+(\d+)\s+(\S+)\s?(.*)$/.exec(
+      line,
+    );
   if (!m) return null;
   // Every group participates in a match (only the command may be empty), so
   // the `?? ''` is the noUncheckedIndexedAccess guard, not a real fallback.
@@ -154,10 +172,13 @@ function parseProcessLine(line: string): ProcessRow | null {
     pid: Number(g(1)),
     ppid: Number(g(2)),
     user: g(3),
-    cpu: Number(g(4)),
-    mem: Number(g(5)),
-    timeS: parseProcessTime(g(6)),
-    command: g(7),
+    state: g(4).charAt(0),
+    cpu: Number(g(5)),
+    mem: Number(g(6)),
+    vszKib: Number(g(7)) || 0,
+    rssKib: Number(g(8)) || 0,
+    timeS: parseProcessTime(g(9)),
+    command: g(10),
   };
 }
 
@@ -210,7 +231,7 @@ function parseLoad(body: string): LoadSample | null {
     five: Number(m[2]),
     fifteen: Number(m[3]),
     running: Number(m[4]),
-    tasks: Number(m[5]),
+    threads: Number(m[5]),
   };
 }
 
@@ -275,9 +296,19 @@ export function killCommand(pid: number, signal: 'TERM' | 'KILL'): string | null
 /**
  * The columns the process table can be ordered by, in header order — the
  * `ProcessRow` field names themselves, so a key can never decouple from
- * the field it sorts (the column LABEL is the view's business).
+ * the field it sorts (the column LABEL is the view's business; state is a
+ * letter, not an order, and is the one column left out).
  */
-export const PROCESS_SORT_KEYS = ['cpu', 'mem', 'timeS', 'pid', 'user', 'command'] as const;
+export const PROCESS_SORT_KEYS = [
+  'pid',
+  'user',
+  'vszKib',
+  'rssKib',
+  'cpu',
+  'mem',
+  'timeS',
+  'command',
+] as const;
 export type ProcessSortKey = (typeof PROCESS_SORT_KEYS)[number];
 
 /**
@@ -310,6 +341,19 @@ export function sortProcesses(
  */
 export function formatKib(kib: number): string {
   return formatBytes(kib * 1024);
+}
+
+/**
+ * A used/total pair spoken in ONE unit — `32.6 / 62.7 GB`, not
+ * `32.6 GB / 64225.2 MB`: the unit comes from the total, the same way htop
+ * writes a memory bar, so the pair reads as one measurement and a ratio.
+ */
+export function formatKibPair(usedKib: number, totalKib: number): string {
+  const mib = 1024;
+  const gib = 1024 * 1024;
+  const [scale, unit] =
+    totalKib >= gib ? ([gib, 'GB'] as const) : totalKib >= mib ? ([mib, 'MB'] as const) : ([1, 'KB'] as const);
+  return `${(usedKib / scale).toFixed(1)} / ${(totalKib / scale).toFixed(1)} ${unit}`;
 }
 
 /** Seconds elapsed → `5d 3h`, `2h 15m`, `8m 40s`, `42s` — two units, no zeros. */
