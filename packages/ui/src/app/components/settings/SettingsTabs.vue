@@ -75,26 +75,31 @@ function onKeydown(event: KeyboardEvent): void {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-/* Ghost at rest like the rest of the app's chrome — the underline, not a
-   box, is what marks the selected tab. */
+/* Underline tabs, the session bar's treatment (WorkspaceTabBar): ghost at
+   rest — the underline, not a box, is what marks the selected tab. */
 .tab {
   height: var(--control-h);
   padding: 0 var(--sp-3);
   background: transparent;
   border: none;
-  /* The 2px seat is always reserved so selection never shifts the strip. */
+  /* The 2px seat is always reserved so selection never shifts the strip, and
+     the -1px lands the underline ON the strip's hairline instead of stacking
+     a second line under it. */
   border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   border-radius: 0;
   color: var(--fg-secondary);
   font-family: var(--font-ui);
   font-size: var(--fs-300);
   font-weight: var(--fw-medium);
+  white-space: nowrap;
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease);
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 .tab:hover {
   color: var(--fg);
-  background: var(--state-hover);
 }
 .tab[aria-selected='true'] {
   color: var(--fg);
