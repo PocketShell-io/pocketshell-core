@@ -95,12 +95,12 @@ import type { SessionAgentKind } from './types.js';
  * for, in the order the picker offers them.
  *
  * The first three are the phone's order (claude, codex, opencode) and are the
- * ones the pinned helper certainly has. `grok` comes last because it is the
- * newest and the only one whose availability has to be asked about — see
+ * ones the pinned helper certainly has. Grok and Antigravity require a
+ * host capability probe — see
  * {@link HELPER_BASELINE_KINDS} and {@link kindUnavailableReason}. Membership
  * here means "we can spell the command", NOT "this host will accept it".
  */
-export const LAUNCHABLE_KINDS = ['claude', 'codex', 'opencode', 'grok'] as const;
+export const LAUNCHABLE_KINDS = ['claude', 'codex', 'opencode', 'grok', 'antigravity'] as const;
 
 export type LaunchableKind = (typeof LAUNCHABLE_KINDS)[number];
 
@@ -111,7 +111,7 @@ export type LaunchableKind = (typeof LAUNCHABLE_KINDS)[number];
  * This is the floor, and it is what makes a FAILED capability probe survivable
  * rather than crippling: these three exist on every host that can run this app
  * at all, so when the probe cannot answer we still offer them. Anything not in
- * this list — today that is `grok` alone — has to be proven present on the
+ * this list — `grok` and `antigravity` — has to be proven present on the
  * host before it is offered.
  */
 export const HELPER_BASELINE_KINDS = ['claude', 'codex', 'opencode'] as const;
@@ -137,6 +137,7 @@ export const KIND_LABELS: Record<LaunchableKind, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   grok: 'Grok',
+  antigravity: 'Antigravity',
 };
 
 /** Narrow a badge-level {@link SessionAgentKind} to something we can launch. */
@@ -177,6 +178,9 @@ export function supportsSkipPermissions(kind: LaunchableKind): boolean {
 }
 
 /**
+ * Antigravity maps the helper's skip-permissions setting to agy's explicit
+ * --dangerously-skip-permissions flag. Profiles are not supported by agy.
+ *
  * Whether a profile can be chosen for the kind.
  *
  * `pocketshell profiles list --engine` accepts only `claude|codex`, and
@@ -193,7 +197,7 @@ export function supportsSkipPermissions(kind: LaunchableKind): boolean {
  * grok can both be captured.
  */
 export function supportsProfiles(kind: LaunchableKind): boolean {
-  return kind !== 'opencode' && kind !== 'grok';
+  return kind === 'claude' || kind === 'codex';
 }
 
 /**

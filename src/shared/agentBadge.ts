@@ -83,7 +83,8 @@ type AgentMarkName =
   | 'brand-copilot'
   | 'brand-grok'
   | 'brand-opencode'
-  | 'brand-zai';
+  | 'brand-zai'
+  | 'star';
 
 /** What a session tab shows for one agent kind. */
 export interface AgentMark {
@@ -95,7 +96,7 @@ export interface AgentMark {
 /**
  * The mark for [kind], or null when the tab should show nothing.
  *
- * Null is the answer for every kind that is not one of the four engines — see
+ * Null is the answer for every kind that is not a supported engine — see
  * the header for why `unknown` and `shell` deliberately get no glyph rather
  * than a "we don't know" one.
  *
@@ -118,6 +119,8 @@ export function agentMark(kind: SessionAgentKind | null | undefined): AgentMark 
       return { icon: 'brand-opencode', label: 'OpenCode' };
     case 'grok':
       return { icon: 'brand-grok', label: 'Grok' };
+    case 'antigravity':
+      return { icon: 'star', label: 'Antigravity' };
     case 'shell':
     case 'unknown':
     case 'probing':

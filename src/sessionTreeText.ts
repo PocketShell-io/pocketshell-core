@@ -91,6 +91,8 @@ export function agentBadge(kind: SessionAgentKind | null | undefined): string | 
       return 'opencode';
     case 'grok':
       return 'grok';
+    case 'antigravity':
+      return 'antigravity';
     case 'probing':
       return 'probing…';
     case 'exited':

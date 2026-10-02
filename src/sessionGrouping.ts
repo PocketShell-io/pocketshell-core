@@ -142,6 +142,7 @@ export function isAgentSession(kind: SessionAgentKind | null | undefined): boole
     case 'codex':
     case 'opencode':
     case 'grok':
+    case 'antigravity':
     case 'probing':
     case 'exited':
       return true;

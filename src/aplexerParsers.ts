@@ -125,6 +125,9 @@ export function agentKindFromEngine(
       return 'opencode';
     case 'grok':
       return 'grok';
+    case 'agy':
+    case 'antigravity':
+      return 'antigravity';
     case 'shell':
       return 'shell';
     default:

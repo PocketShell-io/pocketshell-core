@@ -40,7 +40,7 @@ function agentSession(
 
 describe('isAgentSession (FolderTreeProjection.kt:588)', () => {
   it('counts every launched engine, plus the transient detector states', () => {
-    for (const k of ['claude', 'codex', 'opencode', 'grok', 'probing', 'exited'] as const) {
+    for (const k of ['claude', 'codex', 'opencode', 'grok', 'antigravity', 'probing', 'exited'] as const) {
       expect(isAgentSession(k)).toBe(true);
     }
   });

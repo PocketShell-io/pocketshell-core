@@ -192,6 +192,25 @@ const grokBuild: AgentCommand[] = [
   { command: '/help', label: 'Help', description: "List the CLI's own commands." },
 ];
 
+/**
+ * Google Antigravity CLI's documented TUI commands, checked against
+ * https://antigravity.google/docs/cli/reference/ and /docs/plan/.
+ * These open CLI panels or switch modes; they do not imply native log support.
+ */
+const antigravity: AgentCommand[] = [
+  { command: '/plan', label: 'Plan', description: 'Explore requirements and draft an implementation plan.' },
+  { command: '/permissions', label: 'Permissions', description: 'Manage tool approvals.' },
+  { command: '/resume', label: 'Resume', description: 'Select an earlier conversation.' },
+  { command: '/diff', label: 'Diff', description: 'Review changes in the interactive viewer.' },
+  { command: '/usage', label: 'Usage', description: 'View model quota usage.' },
+  { command: '/context', label: 'Context', description: 'Inspect context usage.' },
+  { command: '/model', label: 'Model', description: 'Select the reasoning model.' },
+  { command: '/mcp', label: 'MCP', description: 'Manage MCP servers.' },
+  { command: '/tasks', label: 'Tasks', description: 'Inspect background task logs.' },
+  { command: '/skills', label: 'Skills', description: 'Browse available agent skills.' },
+  { command: '/rewind', label: 'Rewind', description: 'Return to an earlier conversation checkpoint.' },
+];
+
 /** The full ordered list for one engine, curated-first then long tail. */
 export function commandsFor(agent: ComposerAgentKind): AgentCommand[] {
   switch (agent) {
@@ -203,6 +222,8 @@ export function commandsFor(agent: ComposerAgentKind): AgentCommand[] {
       return openCode;
     case 'grok':
       return grokBuild;
+    case 'antigravity':
+      return antigravity;
     default:
       return [];
   }

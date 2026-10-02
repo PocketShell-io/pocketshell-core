@@ -141,6 +141,7 @@ export type SessionAgentKind =
   | 'codex'
   | 'opencode'
   | 'grok'
+  | 'antigravity'
   | 'shell'
   | 'probing'
   | 'exited'

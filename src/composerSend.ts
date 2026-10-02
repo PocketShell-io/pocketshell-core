@@ -393,7 +393,7 @@ export async function deliverPayload(payload: string, opts: DeliverOptions): Pro
 // ---------------------------------------------------------------------------
 
 /** Agent engines the composer can route to. Mirrors Android's `AgentKind`. */
-export type ComposerAgentKind = 'claude' | 'codex' | 'opencode' | 'grok';
+export type ComposerAgentKind = 'claude' | 'codex' | 'opencode' | 'grok' | 'antigravity';
 
 /**
  * Narrow a host-recorded `SessionAgentKind` (types.ts:103) to the engines the
@@ -405,13 +405,14 @@ export type ComposerAgentKind = 'claude' | 'codex' | 'opencode' | 'grok';
  * offer a command we cannot name an engine for.
  */
 export function composerAgentKind(
-  kind: 'claude' | 'codex' | 'opencode' | 'grok' | 'shell' | 'probing' | 'exited' | 'unknown' | null | undefined,
+  kind: 'claude' | 'codex' | 'opencode' | 'grok' | 'antigravity' | 'shell' | 'probing' | 'exited' | 'unknown' | null | undefined,
 ): ComposerAgentKind | null {
   switch (kind) {
     case 'claude':
     case 'codex':
     case 'opencode':
     case 'grok':
+    case 'antigravity':
       return kind;
     default:
       return null;
