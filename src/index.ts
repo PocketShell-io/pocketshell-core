@@ -56,6 +56,7 @@ export * from './sshCapability';
 export * from './connectionController';
 export * from './hostBootstrap';
 export * from './sessionRowSummary';
+export * from './sessionClientExit';
 export * from './hostKeyTrustCore';
 export * from './savedHosts';
 export * from './sessionNameParts';

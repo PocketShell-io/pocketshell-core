@@ -9,7 +9,7 @@ import {
   repairIncompleteViewport,
   resumeWriteBufferAfterError,
 } from './xtermWriteBuffer';
-import type { ConnectionId, GeometryProbe, ShellId } from '@pocketshell/core';
+import { sessionOutlivedClient, type ConnectionId, type GeometryProbe, type ShellId } from '@pocketshell/core';
 
 /** What the pane needs from its mounting component, read at call time. */
 export interface TerminalPaneDeps {
@@ -537,20 +537,30 @@ export class TerminalPane {
   /**
    * The bounded, silent re-join after an aplexer pane's client died on its own.
    *
-   * The pane's shell is a client (`a attach`), not the session: its exit says
-   * the viewer lost its channel and NOTHING about the workload — the recurring
-   * "[process exited]" on perfectly healthy sessions (diagnosed 2026-10-02)
-   * was exactly this. So the unexpected death of an aplexer pane's shell gets
-   * what a dead tmux client gets: close the pool record and join fresh, the
-   * one repair that re-initialises BOTH ends — under the shared bounds.
+   * The pane's shell is a client (`a attach`), not the session: its exit can
+   * mean the viewer lost its channel while the workload carried on — the
+   * recurring "[process exited]" on perfectly healthy sessions (diagnosed
+   * 2026-10-02) was exactly this — and that case gets what a dead tmux client
+   * gets: close the pool record and join fresh, the one repair that
+   * re-initialises BOTH ends, under the shared bounds.
    *
-   * Silently, deliberately. The common failure is a session the user stopped
-   * on purpose, whose exit event can reach this still-mounted pane in the
-   * window before the store row leaves (`confirmStop` resolves the kill
-   * before `removeLocal`); announcing "reconnecting…" there would be the lie.
-   * When the fresh attach finds nothing to attach to, showTarget resolves
-   * having printed nothing (quietFailure) and this prints the ordinary
-   * "[process exited]" — a stopped session reads exactly as it always did.
+   * But the very same exit is also what a REAL session end looks like (killed,
+   * or its workload exited): a clean exit on a healthy transport either way
+   * (#3039). So the host decides first, from a fresh listing taken after the
+   * exit ({@link sessionOutlivedClient}): only a session it still lists as
+   * running is re-joined. Ended, ending, gone, or a listing that cannot be
+   * had → the ordinary "[process exited]", exactly what the pane said before
+   * this re-join existed — and NOTHING is opened against a dead session. Probing
+   * by attaching instead (open a client and see whether it survives) was the
+   * #3039 race: the attach PTY of a dead session opens, gets its geometry
+   * pushed while its client is already exiting, and a channel request racing
+   * that teardown made the host drop the whole SSH connection.
+   *
+   * Silently, deliberately: the common miss is a session the user stopped on
+   * purpose, and "reconnecting…" there would be the lie. A fresh attach that
+   * still finds nothing (the session went between the listing and the join)
+   * resolves having printed nothing (quietFailure) and this prints the
+   * ordinary "[process exited]".
    *
    * The streak reset is this path's own: healthy probe answers clear
    * rejoinStreak for tmux panes, but an aplexer pane's probe answers 'bare'
@@ -569,30 +579,63 @@ export class TerminalPane {
       this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
       return;
     }
-    this.rejoinStreak += 1;
+    const target = {
+      sessionName: this.deps.getTargetSession(),
+      workspace: this.deps.getWorkspace() ?? null,
+      aplexerId: this.deps.getAplexerId() ?? null,
+    };
     forget(
-      api.shell
-        .close(id)
-        // The record may already be gone with the channel; the fresh attach,
-        // not the close, is what delivers the verdict.
-        .catch(() => undefined)
-        .then(() => {
-          if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
-          return this.open(true).then(() => {
-            if (!this.term) return; // unmounted inside the join
-            if (this.shellId === null) {
-              // Nothing to attach to — the stopped-session case.
-              this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
-              return;
-            }
-            this.shellGone = false;
-            this.shellAttachedAt = Date.now();
-            this.paneWrite(
-              '\r\n\x1b[90m[PocketShell] client dropped — reattached to the live session\x1b[0m\r\n',
-            );
+      this.hostSaysSessionOutlivedClient(target).then((outlived) => {
+        if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
+        if (!outlived) {
+          // The session ended: say so, and attach nothing.
+          this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+          return;
+        }
+        this.rejoinStreak += 1;
+        return api.shell
+          .close(id)
+          // The record may already be gone with the channel; the fresh attach,
+          // not the close, is what delivers the verdict.
+          .catch(() => undefined)
+          .then(() => {
+            if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
+            return this.open(true).then(() => {
+              if (!this.term) return; // unmounted inside the join
+              if (this.shellId === null) {
+                // Nothing to attach to after all — it went after the listing.
+                this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+                return;
+              }
+              this.shellGone = false;
+              this.shellAttachedAt = Date.now();
+              this.paneWrite(
+                '\r\n\x1b[90m[PocketShell] client dropped — reattached to the live session\x1b[0m\r\n',
+              );
+            });
           });
-        }),
+      }),
     );
+  }
+
+  /**
+   * Ask the host, fresh, whether `target` outlived its client. A listing that
+   * fails is no evidence the session lives: it reads as ended.
+   */
+  private async hostSaysSessionOutlivedClient(target: {
+    sessionName: string;
+    workspace: string | null;
+    aplexerId: string | null;
+  }): Promise<boolean> {
+    try {
+      const connectionId = this.deps.getConnectionId();
+      const listing = typeof api.helper.sessionsListing === 'function'
+        ? (await api.helper.sessionsListing(connectionId)).sessions
+        : await api.helper.sessionsList(connectionId);
+      return sessionOutlivedClient(listing, target);
+    } catch {
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -26,6 +26,7 @@ export function sessionRowToSummary(row: SessionRow): SessionSummary {
     tag: row.tag ?? row.name,
     aplexerId: row.id,
     ...(row.profile ? { profile: row.profile } : {}),
+    ...(row.phase ? { aplexerPhase: row.phase } : {}),
   };
 }
 
