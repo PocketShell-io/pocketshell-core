@@ -334,7 +334,9 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
     </div>
 
     <!-- Keyboard: the whole group — list, capture, refused keys — is
-         components/ShortcutSettings.vue; the reasoning lives there. -->
+         components/ShortcutSettings.vue; the reasoning lives there. `fill`
+         hands the group the frame's remaining height so its own section rail
+         and scrolling body fill it, instead of scrolling this panel. -->
     <div
       v-show="activeTab === 'keyboard'"
       id="settings-panel-keyboard"
@@ -342,7 +344,7 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
       role="tabpanel"
       aria-labelledby="settings-tab-keyboard"
     >
-      <section class="group">
+      <section class="group fill">
         <h3 class="group-title">Keyboard</h3>
         <ShortcutSettings />
       </section>
@@ -390,6 +392,13 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+/* A group that manages its own scrolling (the keyboard page: section rail
+   beside a scrolling body) takes the frame's remaining height instead of
+   growing the panel. */
+.group.fill {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 /* The section header metric from the session panel: small, uppercase, tracked.
    It is the app's existing "this is a group of things" mark. */

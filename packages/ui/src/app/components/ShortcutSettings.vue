@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // ShortcutSettings: the Keyboard group of the settings sheet — the list of
 // every chord PocketShell claims, the rebinding capture, and the refused-keys
-// ledger. Extracted from SettingsView.vue with its reasoning; the parent keeps
-// the group chrome and the rest of the sheet.
+// ledger, laid out as a section rail beside a scrolling body (the rail's own
+// reasoning sits above it in the script). Extracted from SettingsView.vue
+// with its reasoning; the parent keeps the group chrome and the rest of the
+// sheet.
 //
 // THE LIST STANDS ALONE. It is rendered straight off `SHORTCUTS`, grouped by
 // surface, and it shows EVERY binding including the ones nothing here can
@@ -43,6 +45,65 @@ const shortcutGroups = computed(() =>
     (group) => group.specs.length > 0,
   ),
 );
+
+/* --- The section rail ----------------------------------------------------
+ * The keyboard page is a scroll of seven sections (six surfaces plus the
+ * reserved keys), and inside the tab's fixed frame only a couple are visible
+ * at a time. The rail answers "where am I, and what else is here" without
+ * hiding anything: it is NAVIGATION, not a filter — every section stays
+ * rendered (the tests read the list as text, and a binding that scrolled out
+ * of view still exists), a rail entry scrolls to its section, and scrolling
+ * the body moves the highlight.
+ * ---------------------------------------------------------------------- */
+
+/** The rail's entries, in document order, each with the rows it holds. */
+const railItems = computed(() => [
+  ...shortcutGroups.value.map((group) => ({
+    id: group.surface.id,
+    label: group.surface.label,
+    count: group.specs.length,
+  })),
+  {
+    id: 'reserved',
+    label: 'Will not take',
+    count: RESERVED_CHORDS.length + MENU_CLAIMED_UNSUPPRESSIBLE.length,
+  },
+]);
+
+const bodyEl = ref<HTMLElement | null>(null);
+const activeSection = ref(railItems.value[0]?.id ?? '');
+
+/** The section elements, by rail id. A function ref per rendered section. */
+const sectionEls = new Map<string, HTMLElement>();
+function bindSection(id: string): (el: unknown) => void {
+  return (el) => {
+    if (el instanceof HTMLElement) sectionEls.set(id, el);
+    else sectionEls.delete(id);
+  };
+}
+
+function jumpTo(id: string): void {
+  const body = bodyEl.value;
+  const section = sectionEls.get(id);
+  if (!body || !section) return;
+  // scrollTop, not scrollIntoView: the body is the sections' offsetParent
+  // (position: relative below), so this is one assignment — and one jsdom can
+  // pretend to perform in tests.
+  body.scrollTop = Math.max(0, section.offsetTop - 8);
+  onBodyScroll();
+}
+
+/** The section whose top is the highest one at or above a sliver into view. */
+function onBodyScroll(): void {
+  const body = bodyEl.value;
+  if (!body) return;
+  let current = railItems.value[0]?.id ?? '';
+  for (const { id } of railItems.value) {
+    const section = sectionEls.get(id);
+    if (section && section.offsetTop <= body.scrollTop + 24) current = id;
+  }
+  activeSection.value = current;
+}
 
 /** The chords in force for one binding — never the defaults, unless they match. */
 function chipsFor(spec: ShortcutSpec): string[][] {
@@ -164,165 +225,189 @@ function shellCostNote(spec: ShortcutSpec): { text: string; safe: boolean } | nu
 </script>
 
 <template>
-  <!--
-    Grouped by SURFACE rather than alphabetically or by frequency, because
-    the question a reader has is never "what does Ctrl+L do" — it is "I am
-    looking at the Files tab, what can I press". The blurb under each heading
-    says when that group is live, which is the part no code comment could
-    ever have told them.
+  <div class="keyboard">
+    <nav class="keys-rail" aria-label="Keyboard sections">
+      <button
+        v-for="item in railItems"
+        :key="item.id"
+        class="rail-item"
+        type="button"
+        :class="{ active: activeSection === item.id }"
+        :aria-current="activeSection === item.id ? 'true' : undefined"
+        @click="jumpTo(item.id)"
+      >
+        <span class="rail-label">{{ item.label }}</span>
+        <span class="rail-count">{{ item.count }}</span>
+      </button>
+    </nav>
 
-    Every chord is a run of <kbd> chips, one per key. Not a glyph: this is
-    exactly the screen where a ⌘ or an ↑ would be pressed into service as an
-    icon, and tests/unit/designGates.test.ts
-    — enforces that every glyph doing an icon's job here is a real SVG. So the arrows
-    are the words "Up" and "Down", which also happen to be what a keycap says.
-  -->
-  <div class="row stacked">
-    <div class="row-text">
-      <span class="row-label">Shortcuts</span>
-      <p class="row-hint">
-        Every key PocketShell claims, and what it does. Some are fixed — the zoom
-        chords are recognised before the page sees the key, the editor's undo belongs
-        to the editor, and <kbd>Esc</kbd> is a ladder that closes whatever you opened
-        last rather than a single command. The rest you can move.
+    <div ref="bodyEl" class="keys-body" @scroll.passive="onBodyScroll">
+      <!--
+        Grouped by SURFACE rather than alphabetically or by frequency, because
+        the question a reader has is never "what does Ctrl+L do" — it is "I am
+        looking at the Files tab, what can I press". The blurb under each heading
+        says when that group is live, which is the part no code comment could
+        ever have told them.
+
+        Every chord is a run of <kbd> chips, one per key. Not a glyph: this is
+        exactly the screen where a ⌘ or an ↑ would be pressed into service as an
+        icon, and tests/unit/designGates.test.ts
+        — enforces that every glyph doing an icon's job here is a real SVG. So the arrows
+        are the words "Up" and "Down", which also happen to be what a keycap says.
+      -->
+      <div class="row stacked">
+        <div class="row-text">
+          <span class="row-label">Shortcuts</span>
+          <p class="row-hint">
+            Every key PocketShell claims, and what it does. Some are fixed — the zoom
+            chords are recognised before the page sees the key, the editor's undo belongs
+            to the editor, and <kbd>Esc</kbd> is a ladder that closes whatever you opened
+            last rather than a single command. The rest you can move.
+          </p>
+        </div>
+        <button
+          class="add-btn self-start"
+          :disabled="!settings.hasShortcutOverrides"
+          @click="onResetAllShortcuts"
+        >
+          <AppIcon name="rotate-ccw" :size="14" />
+          Reset every shortcut
+        </button>
+      </div>
+
+      <div
+        v-for="group in shortcutGroups"
+        :key="group.surface.id"
+        :ref="bindSection(group.surface.id)"
+        class="keys-group"
+      >
+      <h4 class="keys-title">{{ group.surface.label }}</h4>
+      <p class="keys-blurb">{{ group.surface.blurb }}</p>
+
+      <ul class="keys">
+        <li v-for="spec in group.specs" :key="spec.id" class="key-row">
+          <div class="key-text">
+            <span class="key-label">{{ spec.label }}</span>
+            <p v-if="spec.note" class="key-note">{{ spec.note }}</p>
+            <p
+              v-if="shellCostNote(spec)"
+              class="key-note"
+              :class="shellCostNote(spec)!.safe ? 'safe' : 'cost'"
+            >
+              {{ shellCostNote(spec)!.text }}
+            </p>
+            <!-- The refusal sits under the binding it was refused for, not in
+                 a banner at the top: the user is looking at this row, and a
+                 conflict names another command they now have to find. -->
+            <p v-if="captureError && capturing === spec.id" class="notice">
+              <AppIcon name="alert-triangle" :size="14" />
+              <span>{{ captureError.message }}</span>
+            </p>
+          </div>
+
+          <div class="key-controls">
+            <!-- Capturing REPLACES the chips rather than sitting beside them,
+                 so there is never a moment where the screen shows both the
+                 old chord and a field claiming to hold the new one. -->
+            <button
+              v-if="capturing === spec.id"
+              :ref="bindCaptureEl"
+              class="capture"
+              @keydown="onCaptureKey(spec.id, $event)"
+              @blur="cancelCapture"
+            >
+              Press the keys… <kbd>Esc</kbd> to cancel
+            </button>
+            <template v-else>
+              <span class="chords">
+                <span v-if="chipsFor(spec).length === 0" class="chord-none">
+                  Any printable key
+                </span>
+                <span v-for="(parts, i) in chipsFor(spec)" :key="i" class="chord">
+                  <kbd v-for="part in parts" :key="part">{{ part }}</kbd>
+                </span>
+              </span>
+              <button
+                v-if="spec.rebindable"
+                class="icon-btn"
+                :title="`Change the shortcut for ${spec.label}`"
+                :aria-label="`Change the shortcut for ${spec.label}`"
+                @click="startCapture(spec.id)"
+              >
+                <AppIcon name="edit-2" :size="14" />
+              </button>
+              <button
+                v-if="spec.rebindable"
+                class="icon-btn"
+                :disabled="!settings.isShortcutOverridden(spec.id)"
+                :title="`Reset ${spec.label} to its default`"
+                :aria-label="`Reset ${spec.label} to its default`"
+                @click="onResetShortcut(spec.id)"
+              >
+                <AppIcon name="rotate-ccw" :size="14" />
+              </button>
+              <!-- A fixed binding says so where the buttons would be, rather
+                   leaving a gap the reader has to interpret. -->
+              <span v-else class="fixed-tag">Fixed</span>
+            </template>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <!--
+      What PocketShell refuses to take, and why.
+
+      This is not a disclaimer. Two of the three reasons are things a user
+      would otherwise discover by breaking something: bind a command to
+      Ctrl+C and you cannot stop a running program; bind one to Ctrl+W and
+      the window closes as well as running the command, because that
+      accelerator belongs to Electron's own menu and the page cannot take it
+      back. Listing them turns "that didn't work" into "that was refused, and
+      here is what would have happened".
+    -->
+    <div :ref="bindSection('reserved')" class="keys-group">
+      <h4 class="keys-title">Keys PocketShell will not take</h4>
+      <p class="keys-blurb">
+        Refused when you try to bind them, so a rebinding cannot lock you out of your
+        own shell or your own window.
+      </p>
+
+      <ul class="keys">
+        <li v-for="entry in RESERVED_CHORDS" :key="entry.chord" class="key-row locked">
+          <div class="key-text">
+            <span class="key-label">{{ entry.why }}</span>
+          </div>
+          <div class="key-controls">
+            <span class="chords">
+              <span class="chord">
+                <kbd v-for="part in entry.chord.split('+')" :key="part">{{ part }}</kbd>
+              </span>
+            </span>
+          </div>
+        </li>
+        <li v-for="entry in MENU_CLAIMED_UNSUPPRESSIBLE" :key="entry.chord" class="key-row locked">
+          <div class="key-text">
+            <span class="key-label">Electron's built-in menu: {{ entry.role }}</span>
+          </div>
+          <div class="key-controls">
+            <span class="chords">
+              <span class="chord">
+                <kbd v-for="part in entry.chord.split('+')" :key="part">{{ part }}</kbd>
+              </span>
+            </span>
+          </div>
+        </li>
+      </ul>
+
+      <p class="keys-blurb">
+        A shortcut also needs <kbd>Ctrl</kbd> or <kbd>Alt</kbd> — without one it would
+        swallow ordinary typing — and a bare <kbd>Alt</kbd> chord is refused anywhere a
+        terminal can be behind, because <kbd>Alt</kbd> is Meta there and programs read
+        it.
       </p>
     </div>
-    <button
-      class="add-btn self-start"
-      :disabled="!settings.hasShortcutOverrides"
-      @click="onResetAllShortcuts"
-    >
-      <AppIcon name="rotate-ccw" :size="14" />
-      Reset every shortcut
-    </button>
-  </div>
-
-  <div v-for="group in shortcutGroups" :key="group.surface.id" class="keys-group">
-    <h4 class="keys-title">{{ group.surface.label }}</h4>
-    <p class="keys-blurb">{{ group.surface.blurb }}</p>
-
-    <ul class="keys">
-      <li v-for="spec in group.specs" :key="spec.id" class="key-row">
-        <div class="key-text">
-          <span class="key-label">{{ spec.label }}</span>
-          <p v-if="spec.note" class="key-note">{{ spec.note }}</p>
-          <p
-            v-if="shellCostNote(spec)"
-            class="key-note"
-            :class="shellCostNote(spec)!.safe ? 'safe' : 'cost'"
-          >
-            {{ shellCostNote(spec)!.text }}
-          </p>
-          <!-- The refusal sits under the binding it was refused for, not in
-               a banner at the top: the user is looking at this row, and a
-               conflict names another command they now have to find. -->
-          <p v-if="captureError && capturing === spec.id" class="notice">
-            <AppIcon name="alert-triangle" :size="14" />
-            <span>{{ captureError.message }}</span>
-          </p>
-        </div>
-
-        <div class="key-controls">
-          <!-- Capturing REPLACES the chips rather than sitting beside them,
-               so there is never a moment where the screen shows both the
-               old chord and a field claiming to hold the new one. -->
-          <button
-            v-if="capturing === spec.id"
-            :ref="bindCaptureEl"
-            class="capture"
-            @keydown="onCaptureKey(spec.id, $event)"
-            @blur="cancelCapture"
-          >
-            Press the keys… <kbd>Esc</kbd> to cancel
-          </button>
-          <template v-else>
-            <span class="chords">
-              <span v-if="chipsFor(spec).length === 0" class="chord-none">
-                Any printable key
-              </span>
-              <span v-for="(parts, i) in chipsFor(spec)" :key="i" class="chord">
-                <kbd v-for="part in parts" :key="part">{{ part }}</kbd>
-              </span>
-            </span>
-            <button
-              v-if="spec.rebindable"
-              class="icon-btn"
-              :title="`Change the shortcut for ${spec.label}`"
-              :aria-label="`Change the shortcut for ${spec.label}`"
-              @click="startCapture(spec.id)"
-            >
-              <AppIcon name="edit-2" :size="14" />
-            </button>
-            <button
-              v-if="spec.rebindable"
-              class="icon-btn"
-              :disabled="!settings.isShortcutOverridden(spec.id)"
-              :title="`Reset ${spec.label} to its default`"
-              :aria-label="`Reset ${spec.label} to its default`"
-              @click="onResetShortcut(spec.id)"
-            >
-              <AppIcon name="rotate-ccw" :size="14" />
-            </button>
-            <!-- A fixed binding says so where the buttons would be, rather
-                 leaving a gap the reader has to interpret. -->
-            <span v-else class="fixed-tag">Fixed</span>
-          </template>
-        </div>
-      </li>
-    </ul>
-  </div>
-
-  <!--
-    What PocketShell refuses to take, and why.
-
-    This is not a disclaimer. Two of the three reasons are things a user
-    would otherwise discover by breaking something: bind a command to
-    Ctrl+C and you cannot stop a running program; bind one to Ctrl+W and
-    the window closes as well as running the command, because that
-    accelerator belongs to Electron's own menu and the page cannot take it
-    back. Listing them turns "that didn't work" into "that was refused, and
-    here is what would have happened".
-  -->
-  <div class="keys-group">
-    <h4 class="keys-title">Keys PocketShell will not take</h4>
-    <p class="keys-blurb">
-      Refused when you try to bind them, so a rebinding cannot lock you out of your
-      own shell or your own window.
-    </p>
-
-    <ul class="keys">
-      <li v-for="entry in RESERVED_CHORDS" :key="entry.chord" class="key-row locked">
-        <div class="key-text">
-          <span class="key-label">{{ entry.why }}</span>
-        </div>
-        <div class="key-controls">
-          <span class="chords">
-            <span class="chord">
-              <kbd v-for="part in entry.chord.split('+')" :key="part">{{ part }}</kbd>
-            </span>
-          </span>
-        </div>
-      </li>
-      <li v-for="entry in MENU_CLAIMED_UNSUPPRESSIBLE" :key="entry.chord" class="key-row locked">
-        <div class="key-text">
-          <span class="key-label">Electron's built-in menu: {{ entry.role }}</span>
-        </div>
-        <div class="key-controls">
-          <span class="chords">
-            <span class="chord">
-              <kbd v-for="part in entry.chord.split('+')" :key="part">{{ part }}</kbd>
-            </span>
-          </span>
-        </div>
-      </li>
-    </ul>
-
-    <p class="keys-blurb">
-      A shortcut also needs <kbd>Ctrl</kbd> or <kbd>Alt</kbd> — without one it would
-      swallow ordinary typing — and a bare <kbd>Alt</kbd> chord is refused anywhere a
-      terminal can be behind, because <kbd>Alt</kbd> is Meta there and programs read
-      it.
-    </p>
+    </div>
   </div>
 </template>
 
@@ -334,6 +419,99 @@ function shellCostNote(spec: ShortcutSpec): { text: string; safe: boolean } | nu
  * file's decision to make. The mirror is visual only — one spelling of each
  * rule still lives in SettingsView.vue.
  */
+/* --- The two-pane layout -------------------------------------------------
+   The keyboard section fills the tab's fixed frame (SettingsView gives the
+   group `fill`): the rail is the stable left column, the body is the one
+   scroll container, so the rail never moves while sections scroll past it —
+   the same "chrome stays, content scrolls" split the tab strip and the
+   overlay frame use. `position: relative` makes the body the sections'
+   offsetParent, which is what lets the rail jump and the scroll-spy be one
+   `scrollTop`/`offsetTop` comparison rather than a measurement chain.
+   ---------------------------------------------------------------------- */
+.keyboard {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-4);
+}
+.keys-rail {
+  flex: none;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: flex-start;
+}
+/* Ghost at rest like every list row in the app; the active entry takes the
+   hover ground plus the 2px accent bar — the underline treatment the tab
+   strip uses, turned 90° for a vertical list. */
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.rail-item:hover {
+  color: var(--fg);
+  background: var(--state-hover);
+}
+.rail-item.active {
+  color: var(--fg);
+  background: var(--state-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.rail-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The rows each section holds — the number a reader scans to decide where to
+   jump. --fg-secondary, not muted: real information at 12px. */
+.rail-count {
+  margin-left: auto;
+  font-size: var(--fs-200);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+.keys-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--sp-2);
+}
+/* Narrow (phone) widths: the rail becomes a horizontal chip row above the
+   body — the segmented-toggle register — instead of eating 168px of a
+   400px sheet. */
+@media (max-width: 640px) {
+  .keyboard {
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .keys-rail {
+    flex-direction: row;
+    width: auto;
+    align-self: stretch;
+    overflow-x: auto;
+  }
+  .rail-item {
+    flex: none;
+  }
+}
 /* A key, wherever one is named — in a hint, or as a chip in the shortcut list.
    Not a control: it is the picture of a keycap, so it takes no hover, no focus
    ring and no pointer. `min-width` keeps a one-character cap ("K", "0") the
