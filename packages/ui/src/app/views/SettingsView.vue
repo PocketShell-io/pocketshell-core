@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings: the renderer preferences screen, with host-scoped project roots.
+// Settings: the renderer preferences screen, ordered into tabs.
 // Account & sync is intentionally a separate window (views/AccountView.vue),
 // so this overlay stays focused on local application preferences.
 //
@@ -26,71 +26,69 @@
 // So: one view, mounted inside `OverlayPanel` by two callers. It renders no
 // heading of its own — the overlay chrome owns the title (see UsageView's
 // `embedded` prop and the duplicated-heading note in OverlayPanel).
-import { computed, onMounted } from 'vue';
+//
+// THE TABS
+//
+// One scroll of every group became five tabs — General, Sessions, Appearance,
+// Keyboard, Advanced — because the stack had grown past what a single sheet
+// could hold as one glanceable list: the keyboard registry alone is a page.
+// The strip (SettingsTabs) sticks to the top of the overlay body; the panels
+// are `v-show`, not `v-if`, so every group stays MOUNTED across tab switches —
+// drafts in the roots editor and the shortcut capture survive a round trip,
+// the platform groups keep their own mount-time capability probes, and the
+// whole settings DOM stays in document order for anything that queries it
+// (tests do; `settings.sections` slots render inside the Advanced panel).
+// Groups live in components/settings/*Group.vue; this view keeps the shell
+// and the two small General/Appearance groups that need no component of
+// their own.
+import { computed, onMounted, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
 import { useSettingsStore } from '../stores/settings';
-import { useUpdateStore } from '../stores/update';
-import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
 import { hostEntryId } from '@pocketshell/core';
-import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from '../folderSort';
-import { useProjectRoots } from '../useProjectRoots';
-import {
-  FONT_SIZE_MAX,
-  FONT_SIZE_MIN,
-  MONOSPACE_FAMILIES,
-  parseFontSize,
-  resolveMonoStack,
-  sanitiseFontFamily,
-} from '@ui/fonts';
+import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import {
   formatZoomPercent,
   ZOOM_PERCENT_DEFAULT,
   ZOOM_PERCENT_MAX,
   ZOOM_PERCENT_MIN,
 } from '../zoom';
-import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import ShortcutSettings from '../components/ShortcutSettings.vue';
+import SettingsTabs from '../components/settings/SettingsTabs.vue';
+import SettingsSessionsGroup from '../components/settings/SettingsSessionsGroup.vue';
+import SettingsMonospaceGroup from '../components/settings/SettingsMonospaceGroup.vue';
 import SettingsPlatformGroups from '../components/settings/SettingsPlatformGroups.vue';
-// Used by the roots list's icon buttons (and the notices); it was referenced
-// without an import, so those buttons rendered empty.
+import SettingsUpdatesGroup from '../components/settings/SettingsUpdatesGroup.vue';
+// Used by the default-host notice; it was referenced without an import once,
+// and those buttons rendered empty.
 import AppIcon from '@ui/components/AppIcon.vue';
 
 const connection = useConnectionStore();
 const settings = useSettingsStore();
 const hostList = useHostsStore();
-const updates = useUpdateStore();
-const workspaceRoots = useWorkspaceRootsStore();
-// Update checks are a desktop capability (the desktop install replaces itself
-// from GitHub releases); the web deployment is always current, so the whole
-// group stays hidden over a platform without the seam.
-const updatesSupported = api.update !== undefined;
 
-const {
-  selectedRootHost,
-  rootHost,
-  rootsOnHost,
-  rootsEditable,
-  rootRows,
-  rootDraft,
-  rootSuggestions,
-  rootsFull,
-  rootMessage,
-  selectDefaultRootHost,
-  onAddRoot,
-  onRemoveRoot,
-  onMoveRoot,
-} = useProjectRoots();
+/** The five tabs, in reading order; Advanced carries the platform groups. */
+const TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'keyboard', label: 'Keyboard' },
+  { id: 'advanced', label: 'Advanced' },
+] as const;
+// Session-local, deliberately not a stored setting: the panel always opens on
+// General, so a preference touched last year cannot hijack the next visit.
+const activeTab = ref<string>('general');
 
 onMounted(async () => {
   // The picker loads hosts on its own mount, but the workspace does not
   // re-read the config, and this panel opens over both. `listConfigHosts()` is
   // the single source for the default-host choices, so ask for it when the
-  // list is empty rather than rendering an empty select.
+  // list is empty rather than rendering an empty select. (The sessions group
+  // runs the same guarded load for its root-host select; one of the two fills
+  // the store, the other's guard sees it and skips.)
   if (!connection.hosts.length) await connection.loadHosts();
-  selectDefaultRootHost();
 });
 
 /**
@@ -110,17 +108,6 @@ function onDefaultHostChange(event: Event): void {
   // select re-renders from that value, so the control snaps back on its own.
   void hostList.setDefaultHost(value === '' ? null : value).catch(() => undefined);
 }
-
-/** The panel's folder-row sort — the select writes the key straight in. */
-const sortOptions = FOLDER_SORT_KEYS.map((key) => ({ key, label: FOLDER_SORT_LABELS[key] }));
-
-function onSortChange(event: Event): void {
-  // The action, not a bare write: picking a sort clears the dragged
-  // arrangements (one per host) — see setSessionTreeSort.
-  settings.setSessionTreeSort((event.target as HTMLSelectElement).value as FolderSortKey);
-}
-
-
 
 /* --- Theme ---------------------------------------------------------------
  * The options are read off the THEMES registry, so this control never needs
@@ -146,47 +133,6 @@ const atMinZoom = computed(() => settings.zoomPercent <= ZOOM_PERCENT_MIN);
 const atMaxZoom = computed(() => settings.zoomPercent >= ZOOM_PERCENT_MAX);
 const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAULT);
 
-/**
- * The stack the chosen family actually resolves to, used to render the two
- * samples below.
- *
- * The samples are not decoration. There is no way to ask the renderer whether
- * a family is installed, so a sample IS the answer: type a name, and if it
- * does not change, the font is not on this machine and the stack fell through
- * to Consolas. That is a better report than any check this app could make.
- *
- * There are two of them, one per size control, because a single shared sample
- * is what made the size controls confusable in the first place — see the
- * comment above the Monospace text section in the template.
- */
-const monoSample = computed(() => resolveMonoStack(settings.monospaceFontFamily));
-
-/**
- * Committed on `change` (blur, Enter, or picking a datalist suggestion) rather
- * than on `input`. A family name is only meaningful once it is finished — the
- * partial "Fira Cod" would resolve to the fallback and flicker the whole app's
- * mono chrome on the way to "Fira Code".
- */
-function onFamilyChange(event: Event): void {
-  const el = event.target as HTMLInputElement;
-  const clean = sanitiseFontFamily(el.value) ?? null;
-  settings.set('monospaceFontFamily', clean);
-  // Write the cleaned value back so the field shows what was actually stored;
-  // otherwise a name that lost characters to the sanitiser would look accepted
-  // verbatim until the panel was reopened.
-  el.value = clean ?? '';
-}
-
-/** Both size fields. The clamp lives in `fonts.ts` so it cannot drift. */
-function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event): void {
-  const el = event.target as HTMLInputElement;
-  // `min`/`max` on a number input are advisory — they gate the stepper, not a
-  // typed value — so the clamp is applied here regardless of what the DOM says.
-  const size = parseFontSize(el.value) ?? settings[key];
-  settings.set(key, size);
-  el.value = String(size);
-}
-
 /* --- Keyboard ------------------------------------------------------------
  * The whole group — the list, the capture editor, and the refused-keys
  * ledger — is components/ShortcutSettings.vue, with its reasoning. The parent
@@ -196,482 +142,235 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 
 <template>
   <div class="settings">
-    <section class="group">
-      <h3 class="group-title">Startup</h3>
-      <div class="row">
-        <div class="row-text">
-          <label class="row-label" for="default-host">Default host</label>
-          <p class="row-hint">
-            Connect to this host as soon as PocketShell starts and go straight to its
-            sessions. Choose <em>Always show the host list</em> to keep the picker.
-          </p>
-        </div>
-        <select
-          id="default-host"
-          class="control"
-          :value="hostList.defaultHostKey ?? ''"
-          @change="onDefaultHostChange"
-        >
-          <option value="">Always show the host list</option>
-          <!-- The stale value keeps its own option so the select can still
-               display it; without this the control would silently snap to
-               "always show", which is not what is stored. -->
-          <option v-if="defaultMissing" :value="hostList.defaultHostKey ?? ''">
-            {{ hostList.defaultHostKey }} (not in ~/.ssh/config)
-          </option>
-          <option v-for="host in connection.hosts" :key="hostEntryId(host)" :value="hostEntryId(host)">
-            {{ host.name }}
-          </option>
-        </select>
-      </div>
-      <p v-if="defaultMissing" class="notice">
-        <AppIcon name="alert-triangle" :size="14" />
-        <span>
-          <strong>{{ hostList.defaultHostKey }}</strong> is not in <code>~/.ssh/config</code> any
-          more, so PocketShell starts on the host list until you pick a new default.
-        </span>
-      </p>
-    </section>
+    <SettingsTabs v-model="activeTab" :tabs="TABS" />
 
-    <section class="group">
-      <h3 class="group-title">Session panel</h3>
-
-      <div class="row stacked">
-        <div class="row-text">
-          <span class="row-label">Project roots</span>
-          <p class="row-hint">
-            The top level of the session tree: <code>~/git</code>, <code>~/tmp</code>, or
-            any folder you keep projects in. Every session below a root is grouped under
-            it, by the folder it runs in. Sessions under no root collect in
-            <em>other</em>, at the bottom.
-            <template v-if="rootsOnHost">
-              Roots are registered on the host itself; removing one only takes it off
-              this list — its folder, files and sessions stay.
-            </template>
-            <template v-else>Roots are stored separately for each SSH host;</template>
-            <template v-if="rootHost">
-              <!-- Host mode's sentence ends before this one; the local one runs on. -->
-              {{ rootsOnHost ? 'This' : 'this' }} list belongs to <code>{{ rootHost }}</code>.
-            </template>
-            <template v-else>choose an instance below to edit its list.</template>
-          </p>
-        </div>
-
-        <div v-if="!rootHost && connection.hosts.length" class="root-host-picker">
-          <label for="root-host">Instance</label>
-          <select id="root-host" v-model="selectedRootHost" class="control">
-            <option disabled value="">Choose an SSH host</option>
-            <option v-for="host in connection.hosts" :key="host.name" :value="host.name">
+    <!-- General: how the app starts and how the composer behaves. -->
+    <div
+      v-show="activeTab === 'general'"
+      id="settings-panel-general"
+      class="tab-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-general"
+    >
+      <section class="group">
+        <h3 class="group-title">Startup</h3>
+        <div class="row">
+          <div class="row-text">
+            <label class="row-label" for="default-host">Default host</label>
+            <p class="row-hint">
+              Connect to this host as soon as PocketShell starts and go straight to its
+              sessions. Choose <em>Always show the host list</em> to keep the picker.
+            </p>
+          </div>
+          <select
+            id="default-host"
+            class="control"
+            :value="hostList.defaultHostKey ?? ''"
+            @change="onDefaultHostChange"
+          >
+            <option value="">Always show the host list</option>
+            <!-- The stale value keeps its own option so the select can still
+                 display it; without this the control would silently snap to
+                 "always show", which is not what is stored. -->
+            <option v-if="defaultMissing" :value="hostList.defaultHostKey ?? ''">
+              {{ hostList.defaultHostKey }} (not in ~/.ssh/config)
+            </option>
+            <option v-for="host in connection.hosts" :key="hostEntryId(host)" :value="hostEntryId(host)">
               {{ host.name }}
             </option>
           </select>
         </div>
+        <p v-if="defaultMissing" class="notice">
+          <AppIcon name="alert-triangle" :size="14" />
+          <span>
+            <strong>{{ hostList.defaultHostKey }}</strong> is not in <code>~/.ssh/config</code> any
+            more, so PocketShell starts on the host list until you pick a new default.
+          </span>
+        </p>
+      </section>
 
-        <template v-if="rootsEditable">
-          <ul v-if="rootRows.length" class="roots" data-testid="workspace-roots">
-            <li
-              v-for="(root, index) in rootRows"
-              :key="root.path"
-              class="root"
-              :data-root-path="root.path"
-            >
-              <span class="root-path" :title="root.path">{{ root.label }}</span>
-              <template v-if="rootsOnHost">
-                <button
-                  class="icon-btn"
-                  :title="`Move ${root.label} up`"
-                  :disabled="index === 0 || workspaceRoots.rootsBusy"
-                  @click="onMoveRoot(root.path, -1)"
-                >
-                  <AppIcon name="chevron-up" :size="14" />
-                </button>
-                <button
-                  class="icon-btn"
-                  :title="`Move ${root.label} down`"
-                  :disabled="index === rootRows.length - 1 || workspaceRoots.rootsBusy"
-                  @click="onMoveRoot(root.path, 1)"
-                >
-                  <AppIcon name="chevron-down" :size="14" />
-                </button>
-              </template>
-              <button
-                class="icon-btn"
-                :title="`Remove ${root.label}`"
-                :disabled="workspaceRoots.rootsBusy"
-                @click="onRemoveRoot(root.path)"
-              >
-                <AppIcon name="trash-2" :size="14" />
-              </button>
-            </li>
-          </ul>
-          <p
-            v-else-if="rootsOnHost && workspaceRoots.state.status === 'loading'"
-            class="row-hint"
+      <section class="group">
+        <h3 class="group-title">Prompt composer</h3>
+
+        <div class="row">
+          <div class="row-text">
+            <span class="row-label">Typing opens the composer</span>
+            <p class="row-hint">
+              Typing in the terminal opens the prompt composer and the keystrokes go into
+              it, instead of straight to the shell.
+            </p>
+          </div>
+          <button
+            class="switch"
+            role="switch"
+            :aria-checked="settings.typingOpensComposer"
+            :class="{ on: settings.typingOpensComposer }"
+            @click="settings.set('typingOpensComposer', !settings.typingOpensComposer)"
           >
-            Reading this host's workspace roots…
-          </p>
+            <AppIcon :name="settings.typingOpensComposer ? 'toggle-right' : 'toggle-left'" />
+            <span>{{ settings.typingOpensComposer ? 'On' : 'Off' }}</span>
+          </button>
+        </div>
 
-          <div class="add-root">
-            <input
-              v-model="rootDraft"
-              class="control grow"
-              type="text"
-              list="root-suggestions"
-              placeholder="~/git"
-              :disabled="rootsFull"
-              :aria-label="`Add a project root for ${rootHost}`"
-              @keydown.enter.prevent="onAddRoot"
-            />
-            <!-- Where the user's roots actually are, read off the running
-                 sessions. Typing is still allowed: a root you have not started a
-                 session in yet cannot be suggested, and registering one ahead of
-                 time is a legitimate thing to want. -->
-            <datalist id="root-suggestions">
-              <option v-for="path in rootSuggestions" :key="path" :value="path" />
-            </datalist>
+        <div class="row">
+          <div class="row-text">
+            <span class="row-label">Close the composer after sending</span>
+            <p class="row-hint">
+              The composer closes itself once a message is sent, and reopens the next time
+              you type.
+            </p>
+          </div>
+          <button
+            class="switch"
+            role="switch"
+            :aria-checked="settings.closeComposerOnSend"
+            :class="{ on: settings.closeComposerOnSend }"
+            @click="settings.set('closeComposerOnSend', !settings.closeComposerOnSend)"
+          >
+            <AppIcon :name="settings.closeComposerOnSend ? 'toggle-right' : 'toggle-left'" />
+            <span>{{ settings.closeComposerOnSend ? 'On' : 'Off' }}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Sessions: the session tree's shape — its project roots and folder sort. -->
+    <div
+      v-show="activeTab === 'sessions'"
+      id="settings-panel-sessions"
+      class="tab-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-sessions"
+    >
+      <SettingsSessionsGroup />
+    </div>
+
+    <!-- Appearance: the palette and the type — theme, zoom, the mono face. -->
+    <div
+      v-show="activeTab === 'appearance'"
+      id="settings-panel-appearance"
+      class="tab-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-appearance"
+    >
+      <section class="group">
+        <h3 class="group-title">Display</h3>
+
+        <div class="row">
+          <div class="row-text">
+            <label class="row-label" for="theme-choice">Theme</label>
+            <p class="row-hint">
+              Colours for the whole app — panels, terminal and file editor together, so
+              they always read as one surface. <em>Follow Windows</em> switches between
+              Dark and Light with the system's own light and dark mode, live.
+            </p>
+          </div>
+          <select
+            id="theme-choice"
+            class="control"
+            :value="settings.theme"
+            @change="onThemeChange"
+          >
+            <option :value="THEME_CHOICE_SYSTEM">Follow Windows</option>
+            <option v-for="theme in THEMES" :key="theme.id" :value="theme.id">
+              {{ theme.label }}
+            </option>
+          </select>
+        </div>
+
+        <div class="row">
+          <div class="row-text">
+            <span id="zoom-label" class="row-label">App zoom</span>
+            <p class="row-hint">
+              Scales the whole window at once — panels, tabs, the composer and the terminal
+              together — the way a browser's zoom does. <kbd>Ctrl</kbd> with
+              <kbd>+</kbd>, <kbd>-</kbd> or <kbd>0</kbd> moves this same setting, so the
+              number here is always what the window is actually at. To change only the
+              terminal's text, leave this at 100% and use <em>Terminal text size</em> below.
+            </p>
+          </div>
+          <!-- A stepper, not a number field: zoom moves along a fixed ladder
+               (see zoom.ts) so that in-then-out returns to exactly where you
+               started, and a free-text percentage would invite values that are
+               not on it. The reset sits in the same group as the thing it
+               undoes, and is disabled at 100% so it also reads as a state. -->
+          <div class="stepper" role="group" aria-labelledby="zoom-label">
             <button
-              class="add-btn"
-              :disabled="rootsFull || workspaceRoots.rootsBusy"
-              @click="onAddRoot"
+              class="icon-btn"
+              :disabled="atMinZoom"
+              aria-label="Zoom out"
+              title="Zoom out (Ctrl+-)"
+              @click="settings.zoomOut()"
+            >
+              <AppIcon name="minus" :size="14" />
+            </button>
+            <span class="stepper-value" aria-live="polite">{{ zoomLabel }}</span>
+            <button
+              class="icon-btn"
+              :disabled="atMaxZoom"
+              aria-label="Zoom in"
+              title="Zoom in (Ctrl+=)"
+              @click="settings.zoomIn()"
             >
               <AppIcon name="plus" :size="14" />
-              Add
+            </button>
+            <button
+              class="icon-btn"
+              :disabled="atDefaultZoom"
+              aria-label="Reset zoom to 100%"
+              title="Reset to 100% (Ctrl+0)"
+              @click="settings.resetZoom()"
+            >
+              <AppIcon name="rotate-ccw" :size="14" />
             </button>
           </div>
-
-          <p
-            v-if="rootMessage"
-            class="notice"
-            :class="{ info: rootMessage.tone === 'info' }"
-            :role="rootMessage.tone === 'error' ? 'alert' : undefined"
-          >
-            <AppIcon :name="rootMessage.tone === 'error' ? 'alert-triangle' : 'check'" :size="14" />
-            <span>{{ rootMessage.text }}</span>
-          </p>
-        </template>
-        <p v-else class="root-notice">
-          <AppIcon name="alert-triangle" :size="14" />
-          <span v-if="rootsOnHost && rootHost">
-            Workspace roots are stored on the host. Connect to {{ rootHost }} to manage them.
-          </span>
-          <span v-else-if="connection.hosts.length">
-            Connect to an instance, or choose an SSH host above, to configure its roots.
-          </span>
-          <span v-else>Connect to an instance to configure its roots.</span>
-        </p>
-      </div>
-
-      <!-- The folder-row sort, in the seat every other preference holds. The
-           panel's own sort menu (the summoned search row) writes the same
-           setting through the same action. -->
-      <div class="row">
-        <div class="row-text">
-          <label class="row-label" for="session-tree-sort">Sort folders</label>
-          <p class="row-hint">
-            The order of the folder rows in the session tree. <em>Host order</em> is the
-            order the host's listing reports, and it is the mode your dragged arrangement
-            belongs to: picking a sort clears dragged places, and dragging rows switches
-            you back under <em>Host order</em>.
-          </p>
         </div>
-        <select
-          id="session-tree-sort"
-          class="control"
-          :value="settings.sessionTreeSort"
-          @change="onSortChange"
-        >
-          <option v-for="opt in sortOptions" :key="opt.key" :value="opt.key">
-            {{ opt.label }}
-          </option>
-        </select>
-      </div>
-    </section>
+      </section>
 
-    <section class="group">
-      <h3 class="group-title">Display</h3>
+      <SettingsMonospaceGroup />
+    </div>
 
-      <div class="row">
-        <div class="row-text">
-          <label class="row-label" for="theme-choice">Theme</label>
-          <p class="row-hint">
-            Colours for the whole app — panels, terminal and file editor together, so
-            they always read as one surface. <em>Follow Windows</em> switches between
-            Dark and Light with the system's own light and dark mode, live.
-          </p>
-        </div>
-        <select
-          id="theme-choice"
-          class="control"
-          :value="settings.theme"
-          @change="onThemeChange"
-        >
-          <option :value="THEME_CHOICE_SYSTEM">Follow Windows</option>
-          <option v-for="theme in THEMES" :key="theme.id" :value="theme.id">
-            {{ theme.label }}
-          </option>
-        </select>
-      </div>
+    <!-- Keyboard: the whole group — list, capture, refused keys — is
+         components/ShortcutSettings.vue; the reasoning lives there. -->
+    <div
+      v-show="activeTab === 'keyboard'"
+      id="settings-panel-keyboard"
+      class="tab-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-keyboard"
+    >
+      <section class="group">
+        <h3 class="group-title">Keyboard</h3>
+        <ShortcutSettings />
+      </section>
+    </div>
 
-      <div class="row">
-        <div class="row-text">
-          <span id="zoom-label" class="row-label">App zoom</span>
-          <p class="row-hint">
-            Scales the whole window at once — panels, tabs, the composer and the terminal
-            together — the way a browser's zoom does. <kbd>Ctrl</kbd> with
-            <kbd>+</kbd>, <kbd>-</kbd> or <kbd>0</kbd> moves this same setting, so the
-            number here is always what the window is actually at. To change only the
-            terminal's text, leave this at 100% and use <em>Terminal text size</em> below.
-          </p>
-        </div>
-        <!-- A stepper, not a number field: zoom moves along a fixed ladder
-             (see zoom.ts) so that in-then-out returns to exactly where you
-             started, and a free-text percentage would invite values that are
-             not on it. The reset sits in the same group as the thing it
-             undoes, and is disabled at 100% so it also reads as a state. -->
-        <div class="stepper" role="group" aria-labelledby="zoom-label">
-          <button
-            class="icon-btn"
-            :disabled="atMinZoom"
-            aria-label="Zoom out"
-            title="Zoom out (Ctrl+-)"
-            @click="settings.zoomOut()"
-          >
-            <AppIcon name="minus" :size="14" />
-          </button>
-          <span class="stepper-value" aria-live="polite">{{ zoomLabel }}</span>
-          <button
-            class="icon-btn"
-            :disabled="atMaxZoom"
-            aria-label="Zoom in"
-            title="Zoom in (Ctrl+=)"
-            @click="settings.zoomIn()"
-          >
-            <AppIcon name="plus" :size="14" />
-          </button>
-          <button
-            class="icon-btn"
-            :disabled="atDefaultZoom"
-            aria-label="Reset zoom to 100%"
-            title="Reset to 100% (Ctrl+0)"
-            @click="settings.resetZoom()"
-          >
-            <AppIcon name="rotate-ccw" :size="14" />
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <!--
-      Monospace text.
-
-      TWO SIZE CONTROLS, AND WHY EACH ONE CARRIES ITS OWN PREVIEW.
-
-      These shipped as "Terminal size" and "File editor size" under one
-      heading, with a single shared sample between them, and a user reported
-      twice that "font size has no effect" — because they were moving the
-      editor's control while watching the terminal. The wiring was correct
-      both times. That is a labelling defect, not a user error: two adjacent
-      numeric fields whose only distinguishing mark was a word in a hint
-      nobody reads.
-
-      Both settings are kept. They are genuinely two decisions — the terminal's
-      size changes the cell, so it changes the rows and columns pushed to the
-      PTY and tmux reflows on the far end, which the editor's size cannot do —
-      and merging them would jump every existing user's editor from 13px to
-      16px on upgrade, breaking the rule the whole typography feature was built
-      on. What changes instead is that each control now names its surface in
-      the LABEL rather than in prose, and each is followed by a captioned live
-      sample rendered in that surface's own face, size and ground. A preview
-      that visibly moves when you touch the control is self-explanatory in a
-      way no label is; if this is still confused after that, the answer is to
-      merge them and accept the editor jump.
-    -->
-    <section class="group">
-      <h3 class="group-title">Monospace text</h3>
-
-      <div class="row">
-        <div class="row-text">
-          <label class="row-label" for="mono-family">Font</label>
-          <p class="row-hint">
-            Used by the terminal, the file editor and every path, port and session name
-            in the app — they are one surface, so they share one face. Pick a suggestion
-            or type any family installed on this machine; leave it empty for the default.
-            A font you do not have falls back to Consolas, never to a proportional face.
-          </p>
-        </div>
-        <input
-          id="mono-family"
-          class="control"
-          type="text"
-          list="mono-families"
-          placeholder="Consolas (default)"
-          :value="settings.monospaceFontFamily ?? ''"
-          @change="onFamilyChange"
-        />
-        <datalist id="mono-families">
-          <option v-for="family in MONOSPACE_FAMILIES" :key="family" :value="family" />
-        </datalist>
-      </div>
-
-      <div class="row previewed">
-        <div class="row-main">
-          <div class="row-text">
-            <label class="row-label" for="terminal-size">Terminal text size</label>
-            <p class="row-hint">
-              Pixels, for the terminal only — this is the one the shell and tmux are in.
-              Changing it changes the cell size, so the terminal reports a new row and
-              column count to the remote and tmux redraws to fit. Above about 22px an
-              80-column pane no longer fits a default window with the session panel open.
-            </p>
-          </div>
-          <input
-            id="terminal-size"
-            class="control size"
-            type="number"
-            :min="FONT_SIZE_MIN"
-            :max="FONT_SIZE_MAX"
-            step="1"
-            :value="settings.terminalFontSize"
-            @change="onSizeChange('terminalFontSize', $event)"
-          />
-        </div>
-        <!-- On the terminal's own ground, in the resolved stack, at exactly
-             the size above: the sample answers both "is this font installed"
-             and "which of the two controls am I holding". -->
-        <figure class="preview">
-          <figcaption class="preview-tag">Terminal at {{ settings.terminalFontSize }}px</figcaption>
-          <p class="sample terminal" :style="{ fontFamily: monoSample }">
-            ABCdef 0123 il1 O0 {}[]() -&gt;= !== &amp;&amp; ~/.ssh/config
-          </p>
-        </figure>
-      </div>
-
-      <div class="row previewed">
-        <div class="row-main">
-          <div class="row-text">
-            <label class="row-label" for="editor-size">File editor text size</label>
-            <p class="row-hint">
-              Pixels, for the text of a file open in the Files tab — nothing else. It has
-              its own setting because the two surfaces ship at different sizes, and
-              because only the terminal's size is visible to the program on the other end.
-            </p>
-          </div>
-          <input
-            id="editor-size"
-            class="control size"
-            type="number"
-            :min="FONT_SIZE_MIN"
-            :max="FONT_SIZE_MAX"
-            step="1"
-            :value="settings.editorFontSize"
-            @change="onSizeChange('editorFontSize', $event)"
-          />
-        </div>
-        <figure class="preview">
-          <figcaption class="preview-tag">File editor at {{ settings.editorFontSize }}px</figcaption>
-          <p class="sample editor" :style="{ fontFamily: monoSample }">
-            ABCdef 0123 il1 O0 {}[]() -&gt;= !== &amp;&amp; ~/.ssh/config
-          </p>
-        </figure>
-      </div>
-    </section>
-
-    <section class="group">
-      <h3 class="group-title">Prompt composer</h3>
-
-      <div class="row">
-        <div class="row-text">
-          <span class="row-label">Typing opens the composer</span>
-          <p class="row-hint">
-            Typing in the terminal opens the prompt composer and the keystrokes go into
-            it, instead of straight to the shell.
-          </p>
-        </div>
-        <button
-          class="switch"
-          role="switch"
-          :aria-checked="settings.typingOpensComposer"
-          :class="{ on: settings.typingOpensComposer }"
-          @click="settings.set('typingOpensComposer', !settings.typingOpensComposer)"
-        >
-          <AppIcon :name="settings.typingOpensComposer ? 'toggle-right' : 'toggle-left'" />
-          <span>{{ settings.typingOpensComposer ? 'On' : 'Off' }}</span>
-        </button>
-      </div>
-
-      <div class="row">
-        <div class="row-text">
-          <span class="row-label">Close the composer after sending</span>
-          <p class="row-hint">
-            The composer closes itself once a message is sent, and reopens the next time
-            you type.
-          </p>
-        </div>
-        <button
-          class="switch"
-          role="switch"
-          :aria-checked="settings.closeComposerOnSend"
-          :class="{ on: settings.closeComposerOnSend }"
-          @click="settings.set('closeComposerOnSend', !settings.closeComposerOnSend)"
-        >
-          <AppIcon :name="settings.closeComposerOnSend ? 'toggle-right' : 'toggle-left'" />
-          <span>{{ settings.closeComposerOnSend ? 'On' : 'Off' }}</span>
-        </button>
-      </div>
-    </section>
-
-    <!--
-      Keyboard. The whole group — list, capture, refused keys — is
-      components/ShortcutSettings.vue; the reasoning lives there.
-    -->
-    <section class="group">
-      <h3 class="group-title">Keyboard</h3>
-      <ShortcutSettings />
-    </section>
-
-
-    <!-- Connections, Advanced, platform sections, Diagnostics, About. -->
-    <SettingsPlatformGroups />
-
-    <section v-if="updatesSupported" class="group">
-      <h3 class="group-title">Updates</h3>
-
-      <div class="row">
-        <div class="row-text">
-          <label class="row-label">Updates</label>
-          <p class="row-hint">
-            The app checks this project's GitHub releases once per launch. Nothing
-            installs itself: when a newer version exists you get a banner with a
-            download link, and updating means replacing this copy the way you first
-            put it here. The check runs at launch; this button runs it again now.
-          </p>
-        </div>
-        <div class="control">
-          <button class="btn-ghost" :disabled="updates.status === 'checking'" @click="updates.check()">
-            {{ updates.status === 'checking' ? 'Checking…' : 'Check now' }}
-          </button>
-          <p class="row-hint">
-            <template v-if="updates.status === 'up-to-date'">
-              Up to date ({{ updates.currentVersion }}).
-            </template>
-            <template v-else-if="updates.status === 'available'">
-              {{ updates.tagName }} is available.
-            </template>
-            <template v-else-if="updates.status === 'failed'">
-              Check failed: {{ updates.reason }}
-            </template>
-            <template v-else-if="updates.status === 'idle'">
-              {{ updates.currentVersion ?? '…' }}
-            </template>
-          </p>
-        </div>
-      </div>
-    </section>
+    <!-- Advanced: the tuning dials, the platform's own groups and sections,
+         diagnostics, about, and the update check. -->
+    <div
+      v-show="activeTab === 'advanced'"
+      id="settings-panel-advanced"
+      class="tab-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-advanced"
+    >
+      <SettingsPlatformGroups />
+      <SettingsUpdatesGroup />
+    </div>
   </div>
 </template>
 
 <style scoped>
 .settings {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* Each tab's groups; the strip above is full-bleed, so the panels own the
+   content inset. `1 1 auto` mirrors OverlayPanel's body child rule. */
+.tab-panel {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
@@ -705,153 +404,6 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 }
 .row:last-child {
   border-bottom: none;
-}
-/* A list plus an editor cannot sit in the label-left/control-right shape the
-   other rows use — it needs the full width — so this row stacks instead. */
-.row.stacked {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-2);
-}
-/* A row whose preview belongs to IT and not to the section. The label/control
-   pair keeps the normal shape in `.row-main`; the sample goes full width
-   underneath, inside the same row, so the hairline still separates settings
-   rather than separating a control from its own preview. */
-.row.previewed {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-2);
-}
-.row-main {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-}
-.preview {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-/* Names the surface the sample IS. Same metric as the group title, one step
-   quieter — it labels a picture, it is not a heading. */
-.preview-tag {
-  font-size: var(--fs-100);
-  line-height: var(--lh-100);
-  font-weight: var(--fw-medium);
-  color: var(--fg-secondary);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-/* The zoom stepper: minus / value / plus / reset, in one bordered group so the
-   four controls read as one instrument rather than four loose buttons. */
-.stepper {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: 0 var(--sp-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-}
-/* Tabular figures and a fixed width so stepping 90% -> 100% -> 110% does not
-   shuffle the buttons either side of it. */
-.stepper-value {
-  min-width: 4.5ch;
-  text-align: center;
-  font-family: var(--font-ui);
-  font-size: var(--fs-300);
-  font-weight: var(--fw-medium);
-  font-variant-numeric: tabular-nums;
-  color: var(--fg);
-}
-/* The keyboard group's styles — keycaps, the chord list, the capture field —
-   moved to components/ShortcutSettings.vue with the group. */
-.root-host-picker {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-}
-.root-host-picker label {
-  flex: none;
-  font-size: var(--fs-200);
-  color: var(--fg-secondary);
-}
-.root-host-picker .control {
-  flex: 1;
-  max-width: none;
-}
-.roots {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-.root {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  height: var(--row-h);
-  padding: 0 var(--sp-1) 0 var(--sp-3);
-  border-bottom: 1px solid var(--border-soft);
-}
-.root:last-child {
-  border-bottom: none;
-}
-/* The stored spelling, verbatim and in mono: this is the string the panel
-   matches against, so showing it in anything else would be a paraphrase. */
-.root-path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-200);
-}
-.add-root {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.control.grow {
-  flex: 1;
-  max-width: none;
-  font-family: var(--font-mono);
-}
-/* Bordered, matching the session panel's `New session` button: it is the one
-   primary action in this section and a ghost control beside a text field
-   reads as a hint rather than a button. */
-.add-btn {
-  flex: none;
-  height: var(--control-h);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-3);
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  color: var(--fg-secondary);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--fs-300);
-  font-weight: var(--fw-medium);
-}
-.add-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-  background: var(--accent-soft);
-}
-.add-btn:disabled,
-.control:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .row-text {
   display: flex;
@@ -915,42 +467,29 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
 .switch:hover {
   background: var(--state-hover);
 }
-.control.size {
-  width: 5rem;
-  font-variant-numeric: tabular-nums;
-}
-/* The sync rows' outcome line. Same hint metric; an error tints the text so
-   "decryption failed — wrong passphrase" is a colour apart from a count. */
-/* The sync selection list: a scroller rather than an ever-growing stack —
-   a config with thirty hosts must not stretch the settings panel. Two
-   columns while there is room (aliases are short), one on a narrow panel. */
-/* Each sample sits on its surface's own ground at its surface's own size, so
-   it answers the question the user is actually asking — "what will THIS look
-   like" — rather than "what does this font look like on a settings panel".
-   The two differ only in the size token they read, which is the whole point:
-   move one control and exactly one sample changes. */
-.sample {
-  margin: 0;
-  padding: var(--sp-2) var(--sp-3);
+/* The zoom stepper: minus / value / plus / reset, in one bordered group so the
+   four controls read as one instrument rather than four loose buttons. */
+.stepper {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--term-bg);
-  line-height: 1.3;
-  white-space: nowrap;
-  overflow-x: auto;
 }
-.sample.terminal {
-  color: var(--term-fg);
-  font-size: var(--term-font-size);
+/* Tabular figures and a fixed width so stepping 90% -> 100% -> 110% does not
+   shuffle the buttons either side of it. */
+.stepper-value {
+  min-width: 4.5ch;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
 }
-/* The editor sits on the terminal's ground too (see FilesView: an open file
-   and the shell it came from are one surface), in the editor's own body
-   colour and at the editor's own size. */
-.sample.editor {
-  color: var(--code-variable);
-  font-size: var(--code-font-size);
-}
-/* The roots editor's message: the host's refusal or unreadable answer in the
-   error register, a completed add/remove/restore in the quiet one. */
+/* The default-host notice: a stale stored default named in the error register. */
 .notice {
   display: flex;
   align-items: flex-start;
@@ -963,24 +502,6 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
   font-size: var(--fs-200);
   line-height: var(--lh-200);
   overflow-wrap: anywhere;
-}
-.notice.info {
-  color: var(--fg-secondary);
-  background: var(--surface-2);
-}
-/* The refusal sheet's other half: the roots editor's notice. The keyboard
-   group's own notice moved to ShortcutSettings.vue with the group. */
-.root-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  color: var(--warning);
-  background: var(--warning-soft);
-  font-size: var(--fs-200);
-  line-height: var(--lh-200);
 }
 code {
   font-family: var(--font-mono);
