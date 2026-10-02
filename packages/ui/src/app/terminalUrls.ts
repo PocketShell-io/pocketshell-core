@@ -23,25 +23,41 @@
  * percent sign is just a character. The one URL-shaped thing refused outright
  * is a scheme with no authority (`https:///x`) — nothing a click could open.
  *
- * The one family matched WITHOUT a scheme is a bare IPv4 address — the
- * `127.0.0.1:8300` a dev box prints when it reports where a server it just
- * started listens. Nothing else claims it: WebLinksAddon's regex is anchored
- * on `https?://`, and the path detector refuses any first segment of the
- * shape (terminalPaths.ts, beside its hostname rule). The match's `url`
- * carries the `http://` a click needs — the only scheme the allow-lists
- * between here and the browser admit for an address like this — while
- * `start`/`end` span what the user reads, the bare address whole. A `:port`
- * and a `/path?query` ride along; the octets are validated 0–255; a letter,
- * digit or dot against the address's left shoulder (`v1.2.3.4`,
- * `256.0.0.1` read from its second octet) refuses it, as does a fifth group.
- * The false-positive cost is known and accepted: a four-part version number
- * is the same shape and will linkify — the three-part semver everyone
- * prints is not the shape and never matches. IPv6 stays out: an unbracketed
- * `::1` is colons all the way down, the same character tmux separates its
- * targets with, and the bracketed forms are rare enough in this pane that
- * guessing is not worth it.
+ * The family matched WITHOUT a scheme is the one a dev box prints when it
+ * reports where something lives: bare IPv4 addresses (`127.0.0.1:8300`) and
+ * bare domains with somewhere to go (`datatalks.club/blog/sponsor-…html`).
+ * Nothing else claims them: WebLinksAddon's regex is anchored on
+ * `https?://`, and the path detector refuses address-shaped first segments
+ * beside its hostname rule. The match's `url` carries the `http://` a click
+ * needs — the only scheme the allow-lists between here and the browser admit
+ * for an address like this — while `start`/`end` span what the user reads,
+ * the bare address whole.
+ *
+ * The two halves of the family are deliberately NOT symmetric. An address
+ * may stand alone: a dotted quad is rare enough in prose that its shape IS
+ * the evidence (the four-part version number it collides with is the known,
+ * accepted cost; three-part semver is not the shape). A domain may not: a
+ * bare `datatalks.club` is a hostname being MENTIONED — and the tail of
+ * `alexey@datatalks.club` — as often as an address, so a `:port` or a `/path`
+ * is the belief it needs. One carve-out beside that: a `.js` domain with a
+ * single extension-less path segment stays prose (`Node.js/Python`), the
+ * same standard the path detector applies to a single-slash relative path,
+ * narrowed to the one TLD that is also a filename extension.
+ *
+ * The rest is refusal: octets validate 0–255 and a fifth group refuses; a
+ * letter, digit or dot against the address's left shoulder refuses it
+ * (`v1.2.3.4`, `256.0.0.1` read from its second octet); a colon that is not
+ * a port (`127.0.0.1:8300:8080`) and an scp-shaped `host:/path` fail the
+ * anchor. IPv6 stays out — an unbracketed `::1` is colons all the way down,
+ * the same character tmux separates its targets with, and the bracketed
+ * forms are rare enough in this pane that guessing is not worth it.
  */
-import { hasControlChar, peelTrailingDecoration } from './terminalPaths';
+import {
+  hasControlChar,
+  HAS_EXTENSION,
+  HOSTNAME,
+  peelTrailingDecoration,
+} from './terminalPaths';
 
 export interface UrlMatch {
   /** Offset of the first character (`h` of the scheme) within the line. */
@@ -77,16 +93,35 @@ const SCHEME = /https?:\/\//g;
  */
 const OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
 
+/** A dotted quad — the bare-IP half of the schemeless family. */
+const QUAD = `${OCTET}(?:\\.${OCTET}){3}`;
+
+/** A candidate that IS a quad, not a longer domain whose tail looks like one. */
+const QUAD_ONLY = new RegExp(`^${QUAD}$`);
+
 /**
- * The whole schemeless address, anchored on the peeled token: four octets,
- * then an optional `:port` and an optional `/path?query`, then the token
- * must END. A fifth group (`1.2.3.4.5`) and a colon that is not a port
- * (`127.0.0.1:8300:8080`) fail the anchor and stay plain text.
+ * The whole schemeless address, anchored on the peeled token: a dotted quad
+ * or a hostname, then an optional `:port` and an optional `/path?query`,
+ * then the token must END. A fifth group (`1.2.3.4.5`), a colon that is not
+ * a port (`127.0.0.1:8300:8080`), and a domain followed by anything but a
+ * port or path (`datatalks.club:/tmp/x`, the scp shape) fail the anchor and
+ * stay plain text. Group 1 is the host part, which the family rules below
+ * read the rest against.
  */
-const SCHEMELESS = new RegExp(`^${OCTET}(?:\\.${OCTET}){3}(?::\\d{1,5})?(?:[/?].*)?$`);
+const SCHEMELESS = new RegExp(`^(${QUAD}|${HOSTNAME.source})(?::\\d{1,5})?(?:[/?][^\\s]*)?$`);
 
 /** The same shape, loose about what follows — the scout for candidate STARTS. */
-const QUAD = new RegExp(`${OCTET}(?:\\.${OCTET}){3}`, 'g');
+const SCHEMELESS_SCOUT = new RegExp(`${QUAD}|${HOSTNAME.source}`, 'gi');
+
+/**
+ * The one TLD that is also a filename extension. `Node.js/Python` is prose
+ * with a slash in it, and a `.js` domain therefore needs the same evidence a
+ * single-slash relative path needs in terminalPaths.ts — more than one path
+ * segment, or an extension-shaped one — before the slash is believed to be
+ * an address's. Every other TLD collides with nothing: `.com`-shaped tails
+ * on words are addresses by construction.
+ */
+const JS_TLD = /\.js$/i;
 
 /** Every http(s) URL in `line`, left to right. */
 export function findUrls(line: string): UrlMatch[] {
@@ -120,8 +155,8 @@ export function findUrls(line: string): UrlMatch[] {
     SCHEME.lastIndex = start + url.length;
   }
 
-  QUAD.lastIndex = 0;
-  for (let m = QUAD.exec(line); m !== null; m = QUAD.exec(line)) {
+  SCHEMELESS_SCOUT.lastIndex = 0;
+  for (let m = SCHEMELESS_SCOUT.exec(line); m !== null; m = SCHEMELESS_SCOUT.exec(line)) {
     const start = m.index;
     if (spans.some((s) => start >= s.start && start < s.end)) continue;
     // `v1.2.3.4` is a version and `a.127.0.0.1` a five-label name; the
@@ -132,7 +167,31 @@ export function findUrls(line: string): UrlMatch[] {
     let end = start;
     while (end < line.length && !/\s/.test(line.charAt(end))) end++;
     const address = peelTrailingDecoration(line.slice(start, end));
-    if (!SCHEMELESS.test(address)) continue;
+    const whole = SCHEMELESS.exec(address);
+    if (whole === null) continue;
+
+    // The family rules read what follows the host. A quad may stand alone —
+    // its shape IS the evidence, and the four-part version number it collides
+    // with is the accepted cost. A domain may not: a bare `datatalks.club` is
+    // a hostname being mentioned (and the half of `alexey@datatalks.club`)
+    // as often as an address, so a port or a path is the belief it needs.
+    const host = whole[1] ?? '';
+    const rest = address.slice(host.length);
+    if (rest === '' && !QUAD_ONLY.test(host)) continue;
+    // The `.js` carve-out ([JS_TLD]): one extension-less path segment is
+    // prose with a slash (`Node.js/Python`), not an address. A `:port` is
+    // evidence on its own and skips the carve-out, as do a trailing slash
+    // (`node.js/blog/`, the shape a server prints) and an extension-shaped
+    // or multi-segment path.
+    if (
+      JS_TLD.test(host) &&
+      rest.startsWith('/') &&
+      !rest.endsWith('/') &&
+      !HAS_EXTENSION.test(rest) &&
+      rest.split('/').filter((s) => s !== '').length < 2
+    ) {
+      continue;
+    }
     if (hasControlChar(address)) continue;
 
     out.push({ start, end: start + address.length, url: `http://${address}`, schemeless: true });

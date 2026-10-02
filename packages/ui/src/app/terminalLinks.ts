@@ -140,7 +140,8 @@
  * extension — an authority's `.com` is no filename ({@link webPathOf}) — and
  * rule 1a's head test admitting only the URL's own continuation. A URL on one
  * row is the addon's and stays the addon's — except the bare addresses
- * (terminalUrls.ts's `127.0.0.1:8300` family): the addon's regex is anchored
+ * (terminalUrls.ts's schemeless family: `127.0.0.1:8300`,
+ * `datatalks.club/blog/x.html`): the addon's regex is anchored
  * on `https?://`, so on a single row nobody but this provider can claim them,
  * while the at-rest highlighter keeps its nothing-to-repair rule for every
  * single-row address, bare or not.

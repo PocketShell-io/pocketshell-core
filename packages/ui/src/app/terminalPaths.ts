@@ -132,9 +132,12 @@ const NUMERIC_SEGMENT = /^\d+(?:\.\d+)?$/;
  * reaches us unclaimed — and it has the exact shape of a relative path with an
  * extension, which is the one relative shape we do accept. Rejecting a
  * domain-like first segment is what keeps a URL someone typed without a scheme
- * from opening the Files tab.
+ * from opening the Files tab. Unanchored so the URL detector can reuse the
+ * shape against a whole token and scout with it; {@link isPath} anchors it on
+ * the segment.
  */
-const HOSTNAME_LIKE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}$/i;
+export const HOSTNAME = /(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}/i;
+const HOSTNAME_LIKE = new RegExp(`^${HOSTNAME.source}$`, 'i');
 
 /**
  * A first segment shaped like an IPv4 address: `127.0.0.1`. The same story
