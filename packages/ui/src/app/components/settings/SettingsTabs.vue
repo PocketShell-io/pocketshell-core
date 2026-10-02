@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// The Settings tab strip. Settings is a tall stack of groups rendered inside
-// OverlayPanel, whose body is the scroll container, so the strip sticks to the
-// top of the body (full-bleed: the panels own the padding) and stays reachable
-// while a long tab scrolls under it.
+// The Settings tab strip. Settings renders inside OverlayPanel at a fixed
+// frame height (the view owns it): this strip is the full-bleed rail at the
+// top of that frame and the tab panels scroll beneath it, so the chrome never
+// moves — not within a tab, and not from one tab to the next.
 //
 // ARIA tabs with roving tabindex: the selected tab is the only one in the Tab
- // order; Arrow keys (and Home/End) move BOTH selection and focus — automatic
+// order; Arrow keys (and Home/End) move BOTH selection and focus — automatic
 // activation, the APG's recommended pattern for a panel whose content is
 // already mounted, so no second keystroke is ever needed to see a tab.
 import { ref } from 'vue';
@@ -61,13 +61,10 @@ function onKeydown(event: KeyboardEvent): void {
 </template>
 
 <style scoped>
-/* Full-bleed and sticky: the scroller is OverlayPanel's body, the panels own
-   the padding, and the hairline reads as the strip's own edge rather than a
-   rule that happens to stop at the content inset. */
+/* Full-bleed rail: the panels own the content inset, and the hairline reads
+   as the strip's own edge rather than a rule that stops at that inset. */
 .strip {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  flex: none;
   display: flex;
   align-items: stretch;
   gap: var(--sp-1);

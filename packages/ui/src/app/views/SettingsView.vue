@@ -32,15 +32,18 @@
 // One scroll of every group became five tabs — General, Sessions, Appearance,
 // Keyboard, Advanced — because the stack had grown past what a single sheet
 // could hold as one glanceable list: the keyboard registry alone is a page.
-// The strip (SettingsTabs) sticks to the top of the overlay body; the panels
-// are `v-show`, not `v-if`, so every group stays MOUNTED across tab switches —
-// drafts in the roots editor and the shortcut capture survive a round trip,
-// the platform groups keep their own mount-time capability probes, and the
-// whole settings DOM stays in document order for anything that queries it
-// (tests do; `settings.sections` slots render inside the Advanced panel).
-// Groups live in components/settings/*Group.vue; this view keeps the shell
-// and the two small General/Appearance groups that need no component of
-// their own.
+// The view owns a FIXED FRAME height (`min(660px, 72vh)`, under the overlay's
+// own cap): OverlayPanel sizes to its content, so letting each tab take its
+// natural height would breathe the whole sheet — and move its centered top —
+// on every switch. The strip sits above the panels; each panel scrolls
+// itself. The panels are `v-show`, not `v-if`, so every group stays MOUNTED
+// across tab switches — drafts in the roots editor and the shortcut capture
+// survive a round trip, the platform groups keep their own mount-time
+// capability probes, and the whole settings DOM stays in document order for
+// anything that queries it (tests do; `settings.sections` slots render inside
+// the Advanced panel). Groups live in components/settings/*Group.vue; this
+// view keeps the shell and the two small General/Appearance groups that need
+// no component of their own.
 import { computed, onMounted, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
@@ -365,12 +368,19 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* The stable frame. Every tab renders inside the same box, so switching
+     tabs moves nothing; the height tracks the window (72vh) but is capped
+     under the overlay's own 720px/88vh sheet so the panel never clips us. */
+  height: min(660px, 72vh);
 }
 /* Each tab's groups; the strip above is full-bleed, so the panels own the
-   content inset. `1 1 auto` mirrors OverlayPanel's body child rule. */
+   content inset. The PANEL scrolls, not the overlay body — the strip and the
+   frame are the stable chrome the content scrolls under. */
 .tab-panel {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
