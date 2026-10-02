@@ -449,7 +449,7 @@ defineExpose({ openCreate });
       </button>
       <!-- ORDER: hide, then — across the stretch of empty panel the
            right-aligned run keeps — back, `+`, search, ports, usage,
-           refresh, settings.
+           monitor, refresh, settings.
 
            The user's screenshot circled the back arrow and hide with an arrow
            between: hide takes the left end the back arrow used to hold alone,
@@ -461,7 +461,9 @@ defineExpose({ openCreate });
            follows back because it is the panel's primary action, first of the
            chrome proper, and the magnifier follows the `+` because the two
            are the run's pair of summons — create something, find something —
-           ahead of the host overlays and the chrome tail.
+           ahead of the host overlays and the chrome tail. The monitor rides
+           with the host overlays (HostPanelButtons renders the run's middle
+           from HOST_PANEL_ITEMS), between usage and refresh.
 
            The magnifier opens the quick-actions palette (the `palette` emit,
            the workspace's `paletteOpen`): the palette is the app's one search
@@ -472,12 +474,12 @@ defineExpose({ openCreate });
            comment, below); a door to the palette is a different thing than a
            home for the filter, and this is the door.
 
-           WIDTH, at the 264px drag floor, because this strip is again full:
-           eight --control-h squares (8×28 = 224) plus seven --sp-1 gaps (28)
-           is 252px, in a content box of 264 − 8 − 4 = 252. It fits EXACTLY,
+           WIDTH, at the 296px drag floor, because this strip is again full:
+           nine --control-h squares (9×28 = 252) plus eight --sp-1 gaps (32)
+           is 284px, in a content box of 296 − 8 − 4 = 284. It fits EXACTLY,
            with no shrink and nothing clipped, and that is why the right
            padding is --sp-1 against the left's --sp-2 (see .tree-header).
-           There is no room for a ninth: the next control added here has to
+           There is no room for a tenth: the next control added here has to
            displace one or move the floor again — MIN_PANEL_WIDTH in
            HostWorkspaceView.vue and .tree's min-width below pin it together. -->
       <div class="header-actions">
@@ -529,7 +531,7 @@ defineExpose({ openCreate });
     </div>
 
     <!-- The panel's tool row, summoned (Ctrl+Shift+F) and dismissed (Escape)
-         — NEVER permanent. The header row above is at its exact 232px
+         — NEVER permanent. The header row above is at its exact width
          capacity (the arithmetic beside `.header-actions`), and a permanent
          second row cost the tree 36px of vertical for tools used in bursts;
          the Files pane's summoned Ctrl+F box is the pattern, copied whole.
@@ -784,10 +786,11 @@ defineExpose({ openCreate });
      short of that row. */
   flex: 1 1 auto;
   min-height: 0;
-  /* Matches HostWorkspaceView's MIN_PANEL_WIDTH (264px since the header strip
-     forced the strip its eighth square; before that both were 232, and before
-     THAT this was 240, silently contradicting the drag clamp of the day). */
-  min-width: 232px;
+  /* Matches HostWorkspaceView's MIN_PANEL_WIDTH (296px since the header strip
+     forced the strip its ninth square; 264 held through the eighth, 232
+     before that, and before THAT this was 240, silently contradicting the
+     drag clamp of the day). */
+  min-width: 296px;
   /* Query container for the narrow-panel rule that hides the rows' timestamps
      — it lives at the bottom of SessionTreeRows.vue's block, beside the rows
      it draws; container resolution follows the DOM, not the scope. */
@@ -803,9 +806,9 @@ defineExpose({ openCreate });
    visibly off the panel's left rhythm.
 
    The RIGHT padding is --sp-1, and the asymmetry is doing work rather than
-   drifting. The right end is a RUN of eight ghost squares, each already
+   drifting. The right end is a RUN of nine ghost squares, each already
    carrying ~7px of its own optical inset, so a further 8px there is inset on
-   top of inset. Halving it is also exactly what makes the strip fit the 264px
+   top of inset. Halving it is also exactly what makes the strip fit the 296px
    drag floor with nothing shrunk — the arithmetic is in the template, above
    `.header-actions`. The alignment argument and the width arithmetic want the
    same thing, which is the only reason to spend an asymmetry on it. */

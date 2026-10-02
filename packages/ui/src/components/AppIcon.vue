@@ -23,6 +23,7 @@
 // `@pocketshell/core/shared/agentBadge` for why the registry carries vendor
 // geometry at all.
 export type AppIconName =
+  | 'activity'
   | 'alert-triangle'
   | 'arrow-left'
   | 'arrow-right'
@@ -98,6 +99,12 @@ const STAR_PATH =
   'M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26z';
 
 const GEOMETRY: Record<AppIconName, IconShape> = {
+  // Feather's `activity`, its <polyline> as one path. The HOST MONITOR trigger
+  // (app/hostPanels.ts): the pulse line — the register every live read of a
+  // running box wears. Deliberately not a meter: `bar-chart-2` already means
+  // the usage panel, and a heartbeat says "something running to watch"
+  // where a bar says "a number to read".
+  activity: { paths: ['M22 12h-4l-3 9L9 3l-3 9H2'] },
   // Feather's `alert-triangle`. The banner mark for a scan that is failing —
   // a warning about a background process, not an error the user caused.
   'alert-triangle': {

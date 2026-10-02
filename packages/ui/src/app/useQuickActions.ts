@@ -217,6 +217,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
       },
       { id: 'panel:ports', label: 'Port forwarding', run: () => (deps.panel.value = 'ports') },
       { id: 'panel:usage', label: 'Provider usage', run: () => (deps.panel.value = 'usage') },
+      { id: 'panel:monitor', label: 'Host monitor', run: () => (deps.panel.value = 'monitor') },
       { id: 'panel:settings', label: 'Settings', run: () => (deps.panel.value = 'settings') },
     ];
     for (const key of FOLDER_SORT_KEYS) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// HostPanelButtons: the two host overlays as DIRECT icon buttons, rendered
+// HostPanelButtons: the host overlays as DIRECT icon buttons, rendered
 // identically from the session panel's header and from the collapsed rail.
 //
 // Killed at the user's ask ("we can kill the kebab here

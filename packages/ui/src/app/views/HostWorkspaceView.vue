@@ -28,9 +28,8 @@
 //     its own destination, next to where the connection was opened.
 //
 // Folders are the default view of a host, and tabs belong to the selected
-// FOLDER. The two host-scoped panels — port forwarding and
-// provider usage — open as overlays, because neither is a property of one
-// folder.
+// FOLDER. The host-scoped panels — port forwarding, provider usage and the
+// host monitor — open as overlays, because none is a property of one folder.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAgentsStore } from '../stores/agents';
@@ -59,6 +58,7 @@ import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
 import UsageView from './UsageView.vue';
+import MonitorPanelView from './MonitorPanelView.vue';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
@@ -186,16 +186,17 @@ onBeforeUnmount(() => unwatchStates?.());
 /** Session-panel geometry. Collapsed hides it entirely; width is drag-resized. */
 const panelCollapsed = ref(false);
 /**
- * Eight controls in the header strip pin this floor: 8×28px squares + 7×4px
- * gaps = 252, plus the header's asymmetric padding of 12 — the arithmetic is
+ * Nine controls in the header strip pin this floor: 9×28px squares + 8×4px
+ * gaps = 284, plus the header's asymmetric padding of 12 — the arithmetic is
  * written out in SessionTree's template. It was 200 until the seven-control
- * header forced the overflow menu into its two icons, and 232 until the
- * palette's magnifier took the eighth square; dragging below 264 would clip
- * the strip.
+ * header forced the overflow menu into its two icons, 232 until the
+ * palette's magnifier took the eighth square, and 264 held through the
+ * eighth until the host monitor took the ninth; dragging below 296 would
+ * clip the strip.
  */
-const MIN_PANEL_WIDTH = 264;
+const MIN_PANEL_WIDTH = 296;
 const MAX_PANEL_WIDTH = 560;
-const DEFAULT_PANEL_WIDTH = 280;
+const DEFAULT_PANEL_WIDTH = 312;
 // usePaneWidth owns the restore/clamp/drag/write mechanics that the Files
 // tree's splitter used to duplicate line for line.
 const { width: panelWidth, onDragStart } = usePaneWidth({
@@ -537,8 +538,8 @@ async function onRefreshUsage(): Promise<void> {
           <AppIcon name="folder" :size="14" />
         </button>
         <!-- The rail exists so host controls are not stranded when the panel is
-             hidden (ca79ae2). The header holds Ports and Usage as their own
-             icon buttons, so the rail carries the same pair
+             hidden (ca79ae2). The header holds Ports, Usage and the Monitor as
+             their own icon buttons, so the rail carries the same trio
              (components/HostPanelButtons.vue) plus the gear — mirroring the
              header's arrangement rather than inventing its own. Not fewer
              icons than the header, and no menu row between them and their
@@ -684,6 +685,15 @@ async function onRefreshUsage(): Promise<void> {
       </template>
       <!-- `embedded`: the overlay header renders the title AND the refresh. -->
       <UsageView v-if="connection.connectionId" embedded />
+    </OverlayPanel>
+    <!-- The host monitor (docs/MONITOR.md). Wide, like the ports table: the
+         process table is the panel's body and a table wants columns. Unlike
+         Ports and Usage there is no #actions row up here — the panel's pause
+         and sample controls sit beside the table they freeze, and the poll
+         itself dies with the overlay (the composable's onScopeDispose), so a
+         closed monitor costs the host nothing. -->
+    <OverlayPanel v-if="panel === 'monitor'" title="Host monitor" size="lg" @close="panel = null">
+      <MonitorPanelView v-if="connection.connectionId" />
     </OverlayPanel>
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">
       <SettingsView />
