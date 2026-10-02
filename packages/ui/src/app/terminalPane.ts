@@ -212,8 +212,8 @@ export class TerminalPane {
    */
   private showTargetChain: Promise<void> = Promise.resolve();
 
-  open(): Promise<void> {
-    const run = this.showTargetChain.then(() => this.showTarget());
+  open(quietFailure = false): Promise<void> {
+    const run = this.showTargetChain.then(() => this.showTarget(quietFailure));
     // showTarget writes its own failures into the pane; this catch only keeps
     // the chain alive for the next rider.
     this.showTargetChain = run.catch(() => undefined);
@@ -262,7 +262,7 @@ export class TerminalPane {
    * had. Used for the initial mount and for every later session change, because
    * main — not this pane — is what decides which of the three it is.
    */
-  private async showTarget(): Promise<void> {
+  private async showTarget(quietFailure = false): Promise<void> {
     const term = this.term;
     if (!term || !this.container) return;
     // From here until the far end's first byte, the pane says what it is doing
@@ -299,7 +299,13 @@ export class TerminalPane {
       this.unbindShellStream();
       this.shellId = null;
       this.sent = null;
-      this.paneWrite(`\r\n\u001b[31mCould not open a shell: ${describe(e)}\u001b[0m\r\n`);
+      this.shellAttachedAt = null;
+      // A quiet failure belongs to the automatic client-exit re-join, which
+      // writes the one honest line itself; the red diagnosis is for joins
+      // somebody actually asked for.
+      if (!quietFailure) {
+        this.paneWrite(`\r\n\u001b[31mCould not open a shell: ${describe(e)}\u001b[0m\r\n`);
+      }
       return;
     }
 
@@ -354,6 +360,9 @@ export class TerminalPane {
     // folders never share a registration.
     this.registeredKey = this.deps.getRegistryKey();
     this.deps.shells.register(this.registeredKey, result.shellId);
+    // The client-exit re-join's stability clock restarts on every adopted
+    // shell, re-point or fresh join alike.
+    this.shellAttachedAt = Date.now();
     // Re-fit and push the geometry the pane has NOW, not the `cols`/`rows`
     // captured before the await. A join is an SSH channel, a login shell and
     // `tmuxctl` — seconds on a real host — and the pane is laid out during it,
@@ -392,6 +401,14 @@ export class TerminalPane {
         // gone without a trace. Passing the id keeps a newer registration (a
         // re-join that raced this event) untouched — the store no-ops then.
         if (this.registeredKey !== null) this.deps.shells.unregister(this.registeredKey, id);
+        // An aplexer pane's shell is a client (`a attach`), not the session:
+        // its exit says the viewer lost its channel, nothing about the
+        // workload. Those panes get the bounded silent re-join instead; a bare
+        // shell or a tmux client dying still means what it always meant.
+        if (this.deps.getBackend() === 'aplexer' && this.deps.getTargetSession()) {
+          this.rejoinAfterClientExit(id);
+          return;
+        }
         this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
       }
     });
@@ -514,6 +531,67 @@ export class TerminalPane {
         if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
         return this.open();
       }),
+    );
+  }
+
+  /**
+   * The bounded, silent re-join after an aplexer pane's client died on its own.
+   *
+   * The pane's shell is a client (`a attach`), not the session: its exit says
+   * the viewer lost its channel and NOTHING about the workload — the recurring
+   * "[process exited]" on perfectly healthy sessions (diagnosed 2026-10-02)
+   * was exactly this. So the unexpected death of an aplexer pane's shell gets
+   * what a dead tmux client gets: close the pool record and join fresh, the
+   * one repair that re-initialises BOTH ends — under the shared bounds.
+   *
+   * Silently, deliberately. The common failure is a session the user stopped
+   * on purpose, whose exit event can reach this still-mounted pane in the
+   * window before the store row leaves (`confirmStop` resolves the kill
+   * before `removeLocal`); announcing "reconnecting…" there would be the lie.
+   * When the fresh attach finds nothing to attach to, showTarget resolves
+   * having printed nothing (quietFailure) and this prints the ordinary
+   * "[process exited]" — a stopped session reads exactly as it always did.
+   *
+   * The streak reset is this path's own: healthy probe answers clear
+   * rejoinStreak for tmux panes, but an aplexer pane's probe answers 'bare'
+   * and never will — so the reset keys on the shell having lived longer than
+   * REJOIN_MIN_INTERVAL_MS. A stable life is the evidence the previous
+   * episode ended; the budget is per-episode, not per-pane-lifetime.
+   */
+  private rejoinAfterClientExit(id: ShellId): void {
+    if (
+      this.shellAttachedAt !== null &&
+      Date.now() - this.shellAttachedAt >= TerminalPane.REJOIN_MIN_INTERVAL_MS
+    ) {
+      this.rejoinStreak = 0;
+    }
+    if (this.rejoinStreak >= TerminalPane.MAX_CONSECUTIVE_REJOINS) {
+      this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+      return;
+    }
+    this.rejoinStreak += 1;
+    forget(
+      api.shell
+        .close(id)
+        // The record may already be gone with the channel; the fresh attach,
+        // not the close, is what delivers the verdict.
+        .catch(() => undefined)
+        .then(() => {
+          if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
+          return this.open(true).then(() => {
+            if (!this.term) return; // unmounted inside the join
+            if (this.shellId === null) {
+              // Nothing to attach to — the stopped-session case.
+              this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+              return;
+            }
+            this.shellGone = false;
+            this.shellAttachedAt = Date.now();
+            this.paneWrite(
+              '\r\n\x1b[90m[PocketShell] client dropped — reattached to the live session\x1b[0m\r\n',
+            );
+          });
+        }),
     );
   }
 
@@ -902,6 +980,11 @@ export class TerminalPane {
   private rejoinStreak = 0;
   /** Epoch ms of the last self-re-join, for REJOIN_MIN_INTERVAL_MS. */
   private lastRejoinAt = 0;
+  /**
+   * Epoch ms when the current shell was adopted; null while none is. The
+   * client-exit re-join's stability reset reads this.
+   */
+  private shellAttachedAt: number | null = null;
 
   /**
    * Watch the far end, repair what is ours, repaint what is not, and re-join
