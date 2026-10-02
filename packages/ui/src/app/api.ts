@@ -218,6 +218,16 @@ export interface PocketShellApi {
      * it keeps `sessionsList` and reports no list errors.
      */
     "sessionsListing"?: (connectionId: string, sortBy?: 'activity' | 'created') => Promise<SessionsListResult>;
+    /**
+     * OPTIONAL — a fresh host listing with NO side effects on the connection:
+     * it never starts a reconnect, never changes connection state, and
+     * rejects when the link is not usable instead of probing it (#3039). The
+     * terminal pane's "did this session outlive its client?" verdict uses it,
+     * so a verdict asked as the link dies cannot become a second recovery
+     * trigger. A platform whose listing already has no such side effects may
+     * omit it; the pane then uses `sessionsListing` / `sessionsList`.
+     */
+    "sessionsProbe"?: (connectionId: string) => Promise<SessionSummary[]>;
     "sessionsCreate": (connectionId: string, name: string, cwd: string) => Promise<boolean>;
     "usage": (connectionId: string) => Promise<UsageRow[]>;
     "warnings": (connectionId: string) => Promise<AplexerWarning[]>;

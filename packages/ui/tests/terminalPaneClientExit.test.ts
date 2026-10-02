@@ -71,6 +71,9 @@ function listed(patch: Partial<SessionSummary> = {}): SessionSummary {
   };
 }
 
+/** What the shared connection store says about this pane's link; tests flip it. */
+let linkUp = true;
+
 function makePane(backend: 'aplexer' | 'tmux' | undefined) {
   const pane = new TerminalPane({
     shells: { register: vi.fn(), unregister: vi.fn() },
@@ -83,6 +86,7 @@ function makePane(backend: 'aplexer' | 'tmux' | undefined) {
     getAplexerId: () => (backend === 'aplexer' ? SESSION_ID : null),
     isVisible: () => true,
     mayRestoreFocus: () => false,
+    isLinkUp: () => linkUp,
   });
   const writes: string[] = [];
   const internals = pane as unknown as PaneInternals;
@@ -98,6 +102,7 @@ function makePane(backend: 'aplexer' | 'tmux' | undefined) {
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  linkUp = true;
   vi.mocked(api.shell.close).mockReset().mockResolvedValue(undefined);
   vi.mocked(api.shell.onExited).mockClear();
   // By default the host still runs the session: only the client dropped.
@@ -302,5 +307,112 @@ describe('the client-exit verdict: a real session end never re-joins (#3039)', (
     expect(api.shell.close).not.toHaveBeenCalled();
     expect(internals.open).not.toHaveBeenCalled();
     expect(writes).toEqual([]);
+  });
+});
+
+/**
+ * #3039 review B2: the pane's verdict listing ran on EVERY aplexer client
+ * exit, including one that came with the link going down. That listing fails
+ * on the dead transport, and on Android a failed list is the controller's
+ * reconnect trigger — it started a reconnect of its own and wrote a second
+ * `reconnecting` snapshot, doubling the #2954 abrupt-drop ladder. A client
+ * exit with the link down is the reconnect owner's: no listing, no re-join;
+ * and the verdict takes the platform's side-effect-free probe when it has one.
+ */
+describe('a client exit caused by the link going asks nothing (#3039 B2)', () => {
+  it('lists nothing and joins nothing when the exit came with the link down', async () => {
+    const sessionsProbe = vi.fn(async () => [listed()]);
+    (api.helper as unknown as { sessionsProbe?: typeof sessionsProbe }).sessionsProbe = sessionsProbe;
+    try {
+      linkUp = false; // the transport dropped: the store already reads reconnecting
+      const { pane, internals, writes } = makePane('aplexer');
+      internals.shellId = 'shell-1' as ShellId;
+      internals.shellAttachedAt = Date.now();
+      internals.open = vi.fn(async () => {
+        internals.shellId = 'shell-2' as ShellId;
+      });
+      internals.bindShellStream();
+      const handler = vi.mocked(api.shell.onExited).mock.calls.at(-1)![0];
+      handler({ shellId: 'shell-1' as ShellId, exitCode: 0 });
+      await settle();
+      await settle();
+      // Load-bearing: no listing of any kind is sent down the dying link.
+      expect(api.helper.sessionsList).not.toHaveBeenCalled();
+      expect(sessionsProbe).not.toHaveBeenCalled();
+      expect(api.shell.close).not.toHaveBeenCalled();
+      expect(internals.open).not.toHaveBeenCalled();
+      expect(internals.rejoinStreak).toBe(0);
+      expect(writes).toEqual([EXITED]);
+    } finally {
+      delete (api.helper as unknown as { sessionsProbe?: unknown }).sessionsProbe;
+    }
+  });
+
+  it('does not re-join when the link went down while the host was being asked', async () => {
+    let answer!: (rows: SessionSummary[]) => void;
+    vi.mocked(api.helper.sessionsList).mockImplementation(
+      () => new Promise<SessionSummary[]>((resolve) => { answer = resolve; }),
+    );
+    const { pane, internals, writes } = makePane('aplexer');
+    internals.shellId = 'shell-1' as ShellId;
+    internals.shellAttachedAt = Date.now();
+    internals.open = vi.fn(async () => {
+      internals.shellId = 'shell-2' as ShellId;
+    });
+    internals.rejoinAfterClientExit('shell-1' as ShellId);
+    linkUp = false; // the drop landed between the exit and the answer
+    answer([listed()]);
+    await settle();
+    await settle();
+    expect(api.shell.close).not.toHaveBeenCalled();
+    expect(internals.open).not.toHaveBeenCalled();
+    expect(writes).toEqual([EXITED]);
+  });
+
+  it('asks through the side-effect-free probe when the platform offers one', async () => {
+    const sessionsProbe = vi.fn(async () => [listed()]);
+    const sessionsListing = vi.fn(async () => ({ sessions: [listed()], errors: [] }));
+    const helper = api.helper as unknown as { sessionsProbe?: unknown; sessionsListing?: unknown };
+    helper.sessionsProbe = sessionsProbe;
+    helper.sessionsListing = sessionsListing;
+    try {
+      const { pane, internals, writes } = makePane('aplexer');
+      internals.shellId = 'shell-1' as ShellId;
+      internals.shellAttachedAt = Date.now();
+      internals.open = vi.fn(async () => {
+        internals.shellId = 'shell-2' as ShellId;
+      });
+      internals.rejoinAfterClientExit('shell-1' as ShellId);
+      await settle();
+      await settle();
+      expect(sessionsProbe).toHaveBeenCalledWith('conn-1');
+      expect(sessionsListing).not.toHaveBeenCalled();
+      expect(api.helper.sessionsList).not.toHaveBeenCalled();
+      expect(writes).toEqual([REATTACHED]);
+    } finally {
+      delete helper.sessionsProbe;
+      delete helper.sessionsListing;
+    }
+  });
+
+  it('reads a failed probe as ended, attaching nothing', async () => {
+    const sessionsProbe = vi.fn(async () => {
+      throw new Error('No usable connection to list sessions on.');
+    });
+    (api.helper as unknown as { sessionsProbe?: typeof sessionsProbe }).sessionsProbe = sessionsProbe;
+    try {
+      const { pane, internals, writes } = makePane('aplexer');
+      internals.shellId = 'shell-1' as ShellId;
+      internals.shellAttachedAt = Date.now();
+      internals.open = vi.fn(async () => undefined);
+      internals.rejoinAfterClientExit('shell-1' as ShellId);
+      await settle();
+      await settle();
+      expect(internals.open).not.toHaveBeenCalled();
+      expect(api.shell.close).not.toHaveBeenCalled();
+      expect(writes).toEqual([EXITED]);
+    } finally {
+      delete (api.helper as unknown as { sessionsProbe?: unknown }).sessionsProbe;
+    }
   });
 });

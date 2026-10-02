@@ -29,6 +29,14 @@ export interface TerminalPaneDeps {
   isVisible: () => boolean;
   /** Whether re-attaching may take focus (see the focus note in TerminalView). */
   mayRestoreFocus: () => boolean;
+  /**
+   * Whether this pane's connection is up right now (the shared connection
+   * store reads `connected` for this pane's connection id). A client exit
+   * while it is not is the link going, not the session or its client: the
+   * reconnect owner recovers that, and the pane neither asks the host nor
+   * re-joins (#3039).
+   */
+  isLinkUp: () => boolean;
 }
 
 /**
@@ -556,6 +564,12 @@ export class TerminalPane {
    * pushed while its client is already exiting, and a channel request racing
    * that teardown made the host drop the whole SSH connection.
    *
+   * Only on a link that is up: a client exit while the connection is going
+   * is the transport's loss, which its reconnect owner recovers. The pane then
+   * asks nothing and joins nothing (the listing would fail on the dead link
+   * and, on Android, become a second reconnect trigger — the #2954 ladder
+   * doubled exactly so).
+   *
    * Silently, deliberately: the common miss is a session the user stopped on
    * purpose, and "reconnecting…" there would be the lie. A fresh attach that
    * still finds nothing (the session went between the listing and the join)
@@ -579,6 +593,15 @@ export class TerminalPane {
       this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
       return;
     }
+    if (!this.deps.isLinkUp()) {
+      // The link is going: that is the reconnect owner's to recover (the
+      // controller re-attaches its terminals; the store re-dials elsewhere).
+      // Asking the host now would only fail on the dead link — and a listing
+      // that fails on a dead transport is a second recovery trigger, which
+      // doubled the #2954 abrupt-drop ladder. Say what the pane always said.
+      this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+      return;
+    }
     const target = {
       sessionName: this.deps.getTargetSession(),
       workspace: this.deps.getWorkspace() ?? null,
@@ -587,7 +610,7 @@ export class TerminalPane {
     forget(
       this.hostSaysSessionOutlivedClient(target).then((outlived) => {
         if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
-        if (!outlived) {
+        if (!outlived || !this.deps.isLinkUp()) {
           // The session ended: say so, and attach nothing.
           this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
           return;
@@ -621,6 +644,12 @@ export class TerminalPane {
   /**
    * Ask the host, fresh, whether `target` outlived its client. A listing that
    * fails is no evidence the session lives: it reads as ended.
+   *
+   * The platform's side-effect-free probe is preferred: the ordinary listing
+   * is also a connection-health signal on some platforms (Android's
+   * controller starts its reconnect when a list fails on a dead transport),
+   * and a verdict query must never be the thing that starts — or reports —
+   * a recovery (#3039).
    */
   private async hostSaysSessionOutlivedClient(target: {
     sessionName: string;
@@ -629,9 +658,11 @@ export class TerminalPane {
   }): Promise<boolean> {
     try {
       const connectionId = this.deps.getConnectionId();
-      const listing = typeof api.helper.sessionsListing === 'function'
-        ? (await api.helper.sessionsListing(connectionId)).sessions
-        : await api.helper.sessionsList(connectionId);
+      const listing = typeof api.helper.sessionsProbe === 'function'
+        ? await api.helper.sessionsProbe(connectionId)
+        : typeof api.helper.sessionsListing === 'function'
+          ? (await api.helper.sessionsListing(connectionId)).sessions
+          : await api.helper.sessionsList(connectionId);
       return sessionOutlivedClient(listing, target);
     } catch {
       return false;
