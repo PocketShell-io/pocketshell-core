@@ -2,8 +2,17 @@
 // MonitorProcessTable: the htop half of the monitor panel — the process
 // table with its filter, sort and the two-step kill.
 //
-// It owns the filter and the sort because both are table state with no
-// other consumer (the poll loop in useHostMonitor holds everything two
+// The column set is htop's, minus the fields this table's readers never
+// asked for (PRI, NI, SHR): pid, user, VIRT, RES, the state letter, CPU%,
+// MEM%, TIME+ and the command. The headers and the cells are ONE list
+// (COLUMNS) walked twice — the mis-aligned header the table first shipped
+// with came from a header list and a cell row that were assembled by hand
+// and drifted by one column — so a column cannot exist in one and not the
+// other. Every column with a `key` sorts; the state letter does not (it is
+// a flag, not an order).
+//
+// The table owns the filter and the sort because both are table state with
+// no other consumer (the poll loop in useHostMonitor holds everything two
 // surfaces could share; nothing else wants this table's query). The kill
 // arrives as a prop function — the composable's own `kill`, passed through
 // the panel — so the arm/confirm choreography can live beside the button
@@ -14,16 +23,12 @@
 // fires, and touching anything else — the other signal, the filter,
 // another sort — disarms. That is the inline cousin of the session Stop
 // confirm (useSessionStop): same refusal to kill on a single click, sized
-// for a table where the victim is already the focused row. The second
-// press needs no dialog because it names what it kills by being ON the
-// row; the pid in the row is the label.
+// for a table where the victim is already the focused row.
 import { computed, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
+import { MONITOR_RENDER_CAP, type MonitorSignal } from '../useHostMonitor';
 import {
-  MONITOR_RENDER_CAP,
-  type MonitorSignal,
-} from '../useHostMonitor';
-import {
+  formatKib,
   formatProcessTime,
   sortProcesses,
   type ProcessRow,
@@ -65,32 +70,72 @@ const visible = computed(() =>
 );
 const capped = computed(() => total.value > MONITOR_RENDER_CAP);
 
+/**
+ * Headers and cells in the SAME order — `key: null` is the state column,
+ * a flag that sorts nowhere. Labels spell htop's names (virt/res/time+);
+ * the CSS uppercases them.
+ */
+interface Column {
+  key: ProcessSortKey | null;
+  label: string;
+  title: string;
+}
+const COLUMNS: Column[] = [
+  { key: 'pid', label: 'pid', title: 'Process id' },
+  { key: 'user', label: 'user', title: 'Owner' },
+  { key: 'vszKib', label: 'virt', title: 'Virtual memory' },
+  { key: 'rssKib', label: 'res', title: 'Resident memory' },
+  {
+    key: null,
+    label: 's',
+    title: 'State — R running, D disk wait, S sleeping, T stopped, Z zombie',
+  },
+  { key: 'cpu', label: 'cpu%', title: 'CPU — ps lifetime average' },
+  { key: 'mem', label: 'mem%', title: 'Memory — share of physical memory' },
+  { key: 'timeS', label: 'time+', title: 'Cumulative CPU time' },
+  { key: 'command', label: 'command', title: 'Command line' },
+];
+
 /** Same key flips the direction; a new key lands in its heavier direction. */
 function sortBy(key: ProcessSortKey): void {
   if (sortKey.value === key) {
     descending.value = !descending.value;
   } else {
     sortKey.value = key;
-    descending.value = key !== 'user' && key !== 'command';
+    descending.value = key !== 'user' && key !== 'command' && key !== 'pid';
   }
   armed.value = null;
 }
 
-/** Column captions in header order — the key IS the field name (hostMonitor). */
-const COLUMNS: { key: ProcessSortKey; label: string; title: string }[] = (
-  ['cpu', 'mem', 'timeS', 'pid', 'user', 'command'] as const
-).map((key) => ({
-  key,
-  label: key === 'timeS' ? 'time' : key,
-  title:
-    key === 'cpu'
-      ? 'CPU — lifetime average as ps reports it'
-      : key === 'mem'
-        ? 'Memory — share of physical memory'
-        : key === 'timeS'
-          ? 'Cumulative CPU time'
-          : key,
-}));
+/** The state letter's traffic light: alive green, blocked amber, dead red. */
+function stateClass(state: string): string {
+  if (state === 'R') return 'ok';
+  if (state === 'D' || state === 'T') return 'warn';
+  if (state === 'Z') return 'crit';
+  return '';
+}
+
+const STATE_TITLES: Record<string, string> = {
+  R: 'Running',
+  D: 'Waiting on disk — uninterruptible sleep',
+  S: 'Sleeping',
+  T: 'Stopped',
+  Z: 'Zombie — exited, waiting to be reaped',
+};
+function stateTitle(state: string): string {
+  return STATE_TITLES[state] ?? 'State';
+}
+/** The lifetime CPU percent, tiered like the meters above the table. */
+function cpuClass(percent: number): string {
+  if (percent >= 80) return 'crit';
+  if (percent >= 50) return 'warn';
+  return 'ok';
+}
+
+/** Memory columns show 0 the way htop does — bare zero, not '0.0 B'. */
+function memText(kib: number): string {
+  return kib === 0 ? '0' : formatKib(kib);
+}
 
 /** The one armed kill, if any: touching anything else disarms it. */
 const armed = ref<{ pid: number; signal: MonitorSignal } | null>(null);
@@ -139,33 +184,41 @@ function killLabel(pid: number, signal: MonitorSignal): string {
       </span>
     </div>
 
+    <!-- Headers and cells walk the SAME COLUMNS list — see the header comment
+         for the drift that rule exists to prevent. -->
     <div class="pgrid head">
-      <span class="th">pid</span>
-      <button
-        v-for="col in COLUMNS.slice(1)"
-        :key="col.key"
-        class="th sort"
-        :class="{ on: sortKey === col.key }"
-        type="button"
-        :aria-pressed="sortKey === col.key"
-        :title="col.title"
-        @click="sortBy(col.key)"
-      >
-        {{ col.label }}
-        <AppIcon v-if="sortKey === col.key" name="arrow-up-down" :size="12" />
-      </button>
+      <template v-for="(col, i) in COLUMNS" :key="col.label">
+        <button
+          v-if="col.key"
+          class="th sort"
+          :class="{ on: sortKey === col.key }"
+          type="button"
+          :aria-pressed="sortKey === col.key"
+          :title="col.title"
+          @click="sortBy(col.key)"
+        >
+          {{ col.label }}
+          <AppIcon v-if="sortKey === col.key" name="arrow-up-down" :size="12" />
+        </button>
+        <span v-else class="th" :title="col.title">{{ col.label }}</span>
+      </template>
       <span class="th acts" aria-hidden="true" />
     </div>
 
     <div class="pbody">
       <div v-for="row in visible" :key="row.pid" class="pgrid prow">
         <span class="cell mono pid">{{ row.pid }}</span>
-        <span class="cell cpu" :title="`${row.cpu.toFixed(1)}% — ps lifetime average`">{{
+        <span class="cell user" :title="row.user">{{ row.user }}</span>
+        <span class="cell mono mem" :title="`${row.vszKib} KiB virtual`">{{ memText(row.vszKib) }}</span>
+        <span class="cell mono mem" :title="`${row.rssKib} KiB resident`">{{ memText(row.rssKib) }}</span>
+        <span class="cell mono state" :class="stateClass(row.state)" :title="stateTitle(row.state)">{{
+          row.state
+        }}</span>
+        <span class="cell mono cpu" :class="cpuClass(row.cpu)" :title="`${row.cpu.toFixed(1)}% — ps lifetime average`">{{
           row.cpu.toFixed(1)
         }}</span>
         <span class="cell mono">{{ row.mem.toFixed(1) }}</span>
         <span class="cell mono time">{{ formatProcessTime(row.timeS) }}</span>
-        <span class="cell mono">{{ row.user }}</span>
         <span class="cell cmd" :title="row.command">{{ row.command || '(no command line)' }}</span>
         <span class="cell acts">
           <button
@@ -207,12 +260,13 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   width: 100%;
 }
 
-/* pid user cpu mem time command actions */
+/* pid user virt res s cpu% mem% time+ command actions — one grid, walked by
+   both the header row and every data row (see the header comment). */
 .pgrid {
   display: grid;
   grid-template-columns:
-    52px 76px 48px 48px 84px minmax(160px, 1fr) 108px;
-  column-gap: var(--sp-3);
+    60px 84px 64px 64px 20px 48px 48px 76px minmax(140px, 1fr) 104px;
+  column-gap: var(--sp-2);
   align-items: center;
 }
 
@@ -237,7 +291,7 @@ function killLabel(pid: number, signal: MonitorSignal): string {
 }
 .filter-input {
   width: 100%;
-  height: var(--control-h-sm, 26px);
+  height: var(--control-h-sm);
   padding: 0 var(--sp-2) 0 calc(var(--sp-4) + var(--sp-2));
   background: var(--bg);
   border: 1px solid var(--border);
@@ -262,7 +316,7 @@ function killLabel(pid: number, signal: MonitorSignal): string {
 }
 
 /* Column captions: the app's .th treatment (UsageView), clickable where the
-   column sorts. pid is fixed ascending — a sort nobody asks for. */
+   column sorts. */
 .th {
   font-size: var(--fs-100);
   line-height: var(--lh-100);
@@ -272,6 +326,8 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   color: var(--fg-muted);
   padding-bottom: var(--sp-1);
   text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .th.sort {
   display: inline-flex;
@@ -301,12 +357,14 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   overflow-y: auto;
   min-height: 120px;
 }
+/* Denser than a settings list — htop's table is a MONITOR, and monitors are
+   read in sweeps, not one row at a time. */
 .prow {
-  min-height: var(--row-h, 28px);
-  padding: var(--sp-1) 0;
+  min-height: 24px;
+  padding: 2px 0;
   border-bottom: 1px solid var(--border-soft);
 }
-/* Mono figures for the numbers, so pid/time columns form one clean edge. */
+/* Mono figures for the numbers, so the numeric columns form one clean edge. */
 .mono {
   font-family: var(--font-mono);
   font-size: var(--fs-200);
@@ -315,11 +373,43 @@ function killLabel(pid: number, signal: MonitorSignal): string {
 .pid {
   color: var(--fg-secondary);
 }
-.cpu {
-  font-family: var(--font-mono);
+.user {
   font-size: var(--fs-200);
-  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem {
   text-align: right;
+  color: var(--fg-secondary);
+}
+/* The state letter and the cpu figure are the table's only colour — the
+   meters carry the panel's palette, and these two say "look here" the same
+   way (green alive, amber busy/blocked, red dead/hot). */
+.state {
+  text-align: center;
+  font-weight: var(--fw-semibold);
+}
+.state.ok {
+  color: var(--success);
+}
+.state.warn {
+  color: var(--warning);
+}
+.state.crit {
+  color: var(--error);
+}
+.cpu {
+  text-align: right;
+}
+.cpu.ok {
+  color: var(--fg);
+}
+.cpu.warn {
+  color: var(--warning);
+}
+.cpu.crit {
+  color: var(--error);
 }
 /* The command is the row's identity: single line, ellipsis on overflow, the
    full argv in the title. */
@@ -392,3 +482,4 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   padding: var(--sp-3) 0;
 }
 </style>
+

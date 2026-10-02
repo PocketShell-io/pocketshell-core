@@ -24,7 +24,7 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import MonitorProcessTable from '../components/MonitorProcessTable.vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostMonitor } from '../useHostMonitor';
-import { formatKib, formatUptime } from '../hostMonitor';
+import { formatKibPair, formatUptime } from '../hostMonitor';
 
 const connection = useConnectionStore();
 
@@ -62,17 +62,23 @@ const uptimeText = computed(() =>
     ? '–'
     : formatUptime(sample.value.uptimeS),
 );
-const tasksText = computed(() =>
-  sample.value?.load ? `${sample.value.load.tasks} tasks, ${sample.value.load.running} running` : '–',
-);
+/**
+ * Three counts, three sources, three words — the loadavg figure is THREADS
+ * (scheduler entities; htop's `12157 thr`), the process count is the ps
+ * table's own length, and running is loadavg's first half of the fraction.
+ * The old "tasks" label said all three were the same kind of thing.
+ */
+const processCount = computed(() => sample.value?.processes.length ?? 0);
+const threadsCount = computed(() => sample.value?.load?.threads ?? null);
+const runningCount = computed(() => sample.value?.load?.running ?? null);
 
-/** Used / total for the memory bars, in the byte ladder's voice. */
+/** Used / total for the memory bars, in one unit, the total's. */
 const memoryBar = computed(() => {
   const mem = sample.value?.memory;
   if (!mem || mem.totalKib === 0) return null;
   const used = mem.totalKib - mem.availableKib;
   return {
-    label: `${formatKib(used)} / ${formatKib(mem.totalKib)}`,
+    label: formatKibPair(used, mem.totalKib),
     percent: Math.min(100, (used / mem.totalKib) * 100),
   };
 });
@@ -81,7 +87,7 @@ const swapBar = computed(() => {
   if (!mem || mem.swapTotalKib === 0) return null;
   const used = mem.swapTotalKib - mem.swapFreeKib;
   return {
-    label: `${formatKib(used)} / ${formatKib(mem.swapTotalKib)}`,
+    label: formatKibPair(used, mem.swapTotalKib),
     percent: Math.min(100, (used / mem.swapTotalKib) * 100),
   };
 });
@@ -126,7 +132,13 @@ const sampledAt = computed(() =>
         <div class="stats">
           <span class="stat"><span class="k">load</span> {{ loadText }}</span>
           <span class="stat"><span class="k">up</span> {{ uptimeText }}</span>
-          <span class="stat"><span class="k">tasks</span> {{ tasksText }}</span>
+          <span class="stat"><span class="k">procs</span> {{ processCount }}</span>
+          <span v-if="threadsCount !== null" class="stat">
+            <span class="k">threads</span> {{ threadsCount }}
+          </span>
+          <span v-if="runningCount !== null" class="stat">
+            <span class="k">running</span> {{ runningCount }}
+          </span>
           <span v-if="paused" class="paused" role="status">paused — sampled {{ sampledAt }}</span>
         </div>
         <div class="tools">
@@ -147,7 +159,10 @@ const sampledAt = computed(() =>
 
       <!-- Meters render only when the host exposed /proc — a ps-only host
            (macOS) gets the table without them, which the section's absence
-           states more honestly than a row of empty wells would. -->
+           states more honestly than a row of empty wells would. The cores
+           sit in a compact auto-fill GRID — htop's own layout — because a
+           column of twelve full-width bars spends the panel's height
+           repeating one number twelve times. -->
       <section v-if="sample.cpus.length > 0 || memoryBar" class="meters" aria-label="CPU and memory">
         <div class="meter-row">
           <span class="meter-k">cpu</span>
@@ -167,16 +182,18 @@ const sampledAt = computed(() =>
           </div>
           <span class="pct">{{ pctText(aggregatePercent) }}</span>
         </div>
-        <div v-for="(percent, i) in corePercents" :key="i" class="meter-row core">
-          <span class="meter-k" aria-hidden="true">{{ i }}</span>
-          <div class="meter">
-            <span
-              class="meter-fill"
-              :class="cpuTier(percent)"
-              :style="{ width: percent === null ? '0%' : `${percent}%` }"
-            />
+        <div class="core-grid" aria-label="Per-core CPU">
+          <div v-for="(percent, i) in corePercents" :key="i" class="meter-row core">
+            <span class="meter-k" aria-hidden="true">{{ i }}</span>
+            <div class="meter">
+              <span
+                class="meter-fill"
+                :class="cpuTier(percent)"
+                :style="{ width: percent === null ? '0%' : `${percent}%` }"
+              />
+            </div>
+            <span class="pct">{{ pctText(percent) }}</span>
           </div>
-          <span class="pct">{{ pctText(percent) }}</span>
         </div>
         <div v-if="memoryBar" class="meter-row">
           <span class="meter-k">mem</span>
@@ -190,7 +207,7 @@ const sampledAt = computed(() =>
           >
             <span class="meter-fill" :class="memTier(memoryBar.percent)" :style="{ width: `${memoryBar.percent}%` }" />
           </div>
-          <span class="pct wide">{{ memoryBar.label }}</span>
+          <span class="pct pair">{{ memoryBar.label }}</span>
         </div>
         <div v-if="swapBar" class="meter-row">
           <span class="meter-k">swap</span>
@@ -204,7 +221,7 @@ const sampledAt = computed(() =>
           >
             <span class="meter-fill" :class="memTier(swapBar.percent)" :style="{ width: `${swapBar.percent}%` }" />
           </div>
-          <span class="pct wide">{{ swapBar.label }}</span>
+          <span class="pct pair">{{ swapBar.label }}</span>
         </div>
       </section>
 
@@ -294,20 +311,28 @@ const sampledAt = computed(() =>
 }
 
 /* The meters. The aggregate and the mem/swap rows carry their label in the
-   gutter; the core rows get their index — the grid reads like htop's own. */
+   gutter; the cores sit in the compact grid above. */
 .meters {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
 }
 .meter-row {
   display: grid;
-  grid-template-columns: 36px 1fr 76px;
+  grid-template-columns: 36px 1fr 150px;
   column-gap: var(--sp-3);
   align-items: center;
 }
-.meter-row.core .meter {
-  height: 6px;
+/* htop packs its cores side by side; a 230px cell holds
+   `10 [|||  ] 64%` comfortably, and auto-fill wraps. */
+.core-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  column-gap: var(--sp-4);
+  row-gap: var(--sp-1);
+}
+.meter-row.core {
+  grid-template-columns: 24px 1fr 44px;
 }
 .meter-k {
   font-size: var(--fs-100);
@@ -318,12 +343,28 @@ const sampledAt = computed(() =>
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.meter-row.core .meter-k {
+  text-transform: none;
+  letter-spacing: 0;
+}
 /* 8px on a --bg well, the usage panel's meter register. */
 .meter {
+  position: relative;
   height: 8px;
   background: var(--bg);
   border-radius: var(--r-sm);
   overflow: hidden;
+}
+/* htop's pipe meter: one repeating overlay slices fill and track into
+   segments, so the bar reads as ticks at a glance and a PARTIAL fill is
+   countable rather than a smooth wash. The ticks are --bg, the track's own
+   colour — no new token, no new colour. */
+.meter::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 3px, var(--bg) 3px 5px);
+  pointer-events: none;
 }
 .meter-fill {
   display: block;
@@ -349,5 +390,10 @@ const sampledAt = computed(() =>
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A mem/swap row speaks a used/total PAIR (one unit, the total's) — wide
+   enough for it at the meter font, never truncated into `32.6 GB / …`. */
+.pct.pair {
+  width: 150px;
 }
 </style>
