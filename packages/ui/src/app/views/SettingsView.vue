@@ -48,7 +48,6 @@ import { computed, onMounted, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
 import { useSettingsStore } from '../stores/settings';
-import { api } from '../ipc';
 import { defaultHostStatus } from '../autoConnect';
 import { hostEntryId } from '@pocketshell/core';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';

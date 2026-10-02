@@ -24,7 +24,6 @@ import {
   type MonitorSignal,
 } from '../useHostMonitor';
 import {
-  PROCESS_SORT_KEYS,
   formatProcessTime,
   sortProcesses,
   type ProcessRow,

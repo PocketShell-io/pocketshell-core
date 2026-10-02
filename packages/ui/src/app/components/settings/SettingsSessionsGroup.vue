@@ -7,7 +7,6 @@ import { onMounted } from 'vue';
 import { useConnectionStore } from '../../stores/connection';
 import { useSettingsStore } from '../../stores/settings';
 import { useWorkspaceRootsStore } from '../../stores/workspaceRoots';
-import { hostEntryId } from '@pocketshell/core';
 import { FOLDER_SORT_KEYS, FOLDER_SORT_LABELS, type FolderSortKey } from '../../folderSort';
 import { useProjectRoots } from '../../useProjectRoots';
 import AppIcon from '@ui/components/AppIcon.vue';
