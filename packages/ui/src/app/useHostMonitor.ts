@@ -38,6 +38,15 @@ import {
 /** One sample every two seconds — htop's default delay, and cheap. */
 export const MONITOR_POLL_MS = 2000;
 
+/**
+ * One priming poll after the sample that births the CPU deltas: the first
+ * sample can only show unset bars (nothing to diff against), and waiting out
+ * the full 2s cadence for the second one leaves a freshly opened panel dead
+ * for two seconds. One quick follow-up turns the bars live inside ~1s; the
+ * normal cadence resumes after it.
+ */
+export const MONITOR_PRIME_MS = 700;
+
 /** Rendered rows per table, so a 2000-pid host cannot DOM the panel to death. */
 export const MONITOR_RENDER_CAP = 300;
 
@@ -79,6 +88,9 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
   let previousCpus: CpuTicks[] | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inflight = false;
+  /** Set by the last `sampleNow` when it fetched the FIRST /proc ticks: the
+   * NEXT sample is the one that turns the bars live, so it gets primed. */
+  let bornTicks = false;
 
   function stopTimer(): void {
     if (timer !== null) {
@@ -93,6 +105,7 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
     if (!id || inflight) return;
     inflight = true;
     if (sample.value === null) loading.value = true;
+    const hadNoTicks = previousCpus === null;
     try {
       const result = await api.ssh.exec(id, MONITOR_SNAPSHOT_COMMAND);
       const next = parseMonitorSample(result.stdout);
@@ -103,6 +116,7 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
         cpuPercents.value = [];
         previousCpus = null;
       }
+      bornTicks = hadNoTicks && next.cpus.length > 0;
       sample.value = next;
       error.value =
         next.processes.length === 0 && next.cpus.length === 0 && next.memory === null
@@ -120,7 +134,7 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
     }
   }
 
-  function schedule(): void {
+  function schedule(delay: number = MONITOR_POLL_MS): void {
     stopTimer();
     timer = setTimeout(async () => {
       timer = null;
@@ -130,8 +144,16 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
         return;
       }
       await sampleNow();
-      schedule();
-    }, MONITOR_POLL_MS);
+      // The sample that fetched the FIRST /proc ticks cannot show percentages
+      // (nothing to diff against) — the NEXT one can. One quick follow-up
+      // turns the unset bars live within ~1s of open; the 2s cadence resumes.
+      schedule(bornTicks ? MONITOR_PRIME_MS : MONITOR_POLL_MS);
+    }, delay);
+  }
+
+  /** Schedule the next poll, priming it right after the first tick-bearing sample. */
+  function scheduleNext(): void {
+    schedule(bornTicks ? MONITOR_PRIME_MS : MONITOR_POLL_MS);
   }
 
   async function refresh(): Promise<void> {
@@ -146,7 +168,7 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
   function resume(): void {
     paused.value = false;
     // A resumed panel wants a sample now, not in two seconds.
-    void sampleNow().then(schedule);
+    void sampleNow().then(scheduleNext);
   }
 
   async function kill(pid: number, signal: MonitorSignal): Promise<boolean> {
@@ -167,18 +189,19 @@ export function useHostMonitor(connectionId: Ref<string | null>): {
   watch(connectionId, (id) => {
     stopTimer();
     previousCpus = null;
+    bornTicks = false;
     sample.value = null;
     cpuPercents.value = [];
     error.value = null;
-    if (id !== null && !paused.value) void sampleNow().then(schedule);
+    if (id !== null && !paused.value) void sampleNow().then(scheduleNext);
   });
   watch(paused, (isPaused) => {
     if (isPaused) stopTimer();
-    else void sampleNow().then(schedule);
+    else void sampleNow().then(scheduleNext);
   });
 
   // First mount: the watch above is not immediate.
-  if (connectionId.value !== null) void sampleNow().then(schedule);
+  if (connectionId.value !== null) void sampleNow().then(scheduleNext);
 
   onScopeDispose(stopTimer);
 
