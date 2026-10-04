@@ -14,7 +14,7 @@ describe('Antigravity integration', () => {
     }
     expect(isAgentSession('antigravity')).toBe(true);
     expect(agentBadge('antigravity')).toBe('antigravity');
-    expect(agentMark('antigravity')).toEqual({ icon: 'star', label: 'Antigravity' });
+    expect(agentMark('antigravity')).toEqual({ icon: 'brand-antigravity', label: 'Antigravity' });
   });
 
   it('requires an advertised remote helper capability before creating a session', () => {
