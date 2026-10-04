@@ -339,6 +339,16 @@ const switcherTitle = computed(() =>
   sessionTotal.value > 0 ? `Sessions — ${sessionTotal.value}` : 'Sessions',
 );
 
+/**
+ * The monitor overlay names the box it is reading: kills are aimed at a host,
+ * and the title is the one place that survives every scroll and filter. Falls
+ * back to the bare word while no host is claimed.
+ */
+const monitorTitle = computed(() => {
+  const name = connection.activeHost?.name;
+  return name ? `Host monitor — ${name}` : 'Host monitor';
+});
+
 /* ── Quick actions — the command palette ───────────────────────────────────
  * One summoned overlay listing the workspace's verbs, in the VS Code Ctrl+P
  * shape (`workspace.quickActions` in the registry — a pair with Ctrl+Shift+P,
@@ -687,12 +697,13 @@ async function onRefreshUsage(): Promise<void> {
       <UsageView v-if="connection.connectionId" embedded />
     </OverlayPanel>
     <!-- The host monitor (docs/MONITOR.md). Wide, like the ports table: the
-         process table is the panel's body and a table wants columns. Unlike
-         Ports and Usage there is no #actions row up here — the panel's pause
-         and sample controls sit beside the table they freeze, and the poll
+         process table is the panel's body and a table wants columns. The
+         title names the host — kills are aimed at a named box. Unlike Ports
+         and Usage there is no #actions row up here — the panel's pause and
+         sample controls sit beside the meters they freeze, and the poll
          itself dies with the overlay (the composable's onScopeDispose), so a
          closed monitor costs the host nothing. -->
-    <OverlayPanel v-if="panel === 'monitor'" title="Host monitor" size="lg" @close="panel = null">
+    <OverlayPanel v-if="panel === 'monitor'" :title="monitorTitle" size="lg" @close="panel = null">
       <MonitorPanelView v-if="connection.connectionId" />
     </OverlayPanel>
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">

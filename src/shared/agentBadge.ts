@@ -38,8 +38,9 @@
  * arbitrary shapes never became legible — a user had to hover each one to
  * learn it, and the tooltip was doing the identifying, not the mark — so the
  * badges went to the actual product marks (claude's spark, the OpenAI knot,
- * the Grok loop, opencode's frame), rendered as flat single-colour
- * silhouettes at the same muted grey the arbitrary marks wore. Monochrome at
+ * the Grok loop, opencode's frame, antigravity's arch), rendered as flat
+ * single-colour silhouettes at the same muted grey
+ * the arbitrary marks wore. Monochrome at
  * the app's own contrast answers the fidelity half of the trap, the marks are
  * carried at UI sizes to identify the tool the session runs — nominative use,
  * the way a dependency list names a product — answers the licensing half, and
@@ -78,6 +79,7 @@ import type { SessionAgentKind } from '../types';
  * rendering an empty `<svg>`.
  */
 type AgentMarkName =
+  | 'brand-antigravity'
   | 'brand-claude'
   | 'brand-codex'
   | 'brand-copilot'
@@ -120,7 +122,7 @@ export function agentMark(kind: SessionAgentKind | null | undefined): AgentMark 
     case 'grok':
       return { icon: 'brand-grok', label: 'Grok' };
     case 'antigravity':
-      return { icon: 'star', label: 'Antigravity' };
+      return { icon: 'brand-antigravity', label: 'Antigravity' };
     case 'shell':
     case 'unknown':
     case 'probing':
@@ -143,7 +145,8 @@ export function agentMark(kind: SessionAgentKind | null | undefined): AgentMark 
  * The tab function stays the narrower question and this the broader one,
  * because the two key off different vocabularies that mostly overlap: the
  * usage table speaks the helper's provider names, where `go` IS OpenCode (on
- * the Go backend, the helper's own gloss) but `copilot` and `zai` are
+ * the Go backend, the helper's own gloss) and `gemini` IS Antigravity (quse's
+ * canonical key for the `agy` harness), but `copilot` and `zai` are
  * providers no session kind ever names — their marks exist for this table
  * alone. An unfamiliar provider gets null, the tab rule's silence: a table
  * where every row wears SOMETHING would have the same "we do not know"
@@ -159,6 +162,13 @@ export function usageProviderMark(provider: string): AgentMark | null {
     case 'github_copilot':
     case 'github-copilot':
       return { icon: 'brand-copilot', label: 'GitHub Copilot' };
+    // quse 0.0.17's key for the Antigravity CLI (`agy`) quota — the canonical
+    // key is `gemini`, the aliases are the product's own names; quse answers
+    // to all three, so the register does too.
+    case 'gemini':
+    case 'antigravity':
+    case 'agy':
+      return { icon: 'brand-antigravity', label: 'Antigravity' };
     // The helper's own gloss: `go` is OpenCode on the Go backend.
     case 'go':
     case 'opencode':
