@@ -55,6 +55,27 @@ describe('HostCliCore sessions contract', () => {
     expect(transport.calls).toEqual([{ command: 'pocketshell sessions list --json', timeoutMs: 20_000 }]);
   });
 
+  it('keeps the aplexer phase, which tells a dying session from a running one (#3039)', () => {
+    // The captured 0.5.8 listing reports `phase` on every row.
+    expect(parseHostSessionsList(fixture('sessions-list.json')).sessions.map((row) => row.phase))
+      .toEqual(['running', 'running']);
+    // The CLI lists an `exiting` (killed, record not yet removed) session
+    // among the live ones; only its phase says it is going.
+    const dying = parseHostSessionsList(JSON.stringify({
+      schema: 3,
+      sessions: [
+        { name: 'w:a', attached: true, phase: 'Exiting ' },
+        { name: 'w:b', attached: false, phase: null },
+        { name: 'w:c', attached: false },
+      ],
+    })).sessions;
+    expect(dying[0]!.phase).toBe('exiting');
+    expect('phase' in dying[1]!).toBe(false);
+    expect('phase' in dying[2]!).toBe(false);
+    expect(() => parseHostSessionsList('{"schema":3,"sessions":[{"name":"x","attached":true,"phase":7}]}'))
+      .toThrow(HostCliMalformed);
+  });
+
   it('keeps the host errors array even when there are no sessions', async () => {
     const listing = await new HostCliCore(
       new ScriptedTransport(ok(fixture('sessions-list-errors.json'))),

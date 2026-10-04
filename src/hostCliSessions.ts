@@ -43,6 +43,13 @@ export interface SessionRow {
   attached: boolean;
   createdEpoch: number | null;
   activityEpoch: number | null;
+  /**
+   * The aplexer lifecycle phase the host reported (`running`, `exiting`, …),
+   * when it reported one. The CLI lists a dying session (`exiting`) among the
+   * live ones, so this is what tells a session on its way out from a running
+   * one (#3039).
+   */
+  phase?: string;
 }
 
 export interface SessionListError {
@@ -119,6 +126,7 @@ export function parseHostSessionsList(raw: string): SessionsListing {
         agentState === 'idle' || agentState === 'waiting' || agentState === 'working' ? agentState : null;
       const knownStateSource: AgentStateSource | null =
         agentStateSource === 'reported' || agentStateSource === 'heuristic' ? agentStateSource : null;
+      const phase = optionalString(row.phase, 'phase', label)?.trim().toLowerCase() || null;
       return {
         name: row.name,
         id: optionalString(row.id, 'id', label),
@@ -132,6 +140,7 @@ export function parseHostSessionsList(raw: string): SessionsListing {
         attached: row.attached,
         createdEpoch: optionalInteger(row.created_epoch, 'created_epoch', label),
         activityEpoch: optionalInteger(row.activity_epoch, 'activity_epoch', label),
+        ...(phase ? { phase } : {}),
       };
     });
     const errors = root.errors === undefined ? [] : objectArray(root.errors, 'errors').map((row, index) => {

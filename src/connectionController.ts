@@ -147,6 +147,19 @@ const EOF_PROBE_RETRY_MS = 250;
 /** The status line a user sees after declining automatic reconnect on return. */
 export const RECONNECT_DECLINED_MESSAGE = 'The connection closed while PocketShell was in the background. Reconnect to resume.';
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
+/**
+ * Phases in which the controller holds a transport it considers usable — the
+ * only ones {@link ConnectionController.probeSessions} asks on. `error` keeps
+ * its transport (an operation failed on a live link); `background` is left
+ * alone so a verdict query never touches a link inside its grace.
+ */
+const LINK_UP_PHASES: ReadonlySet<ConnectionPhase> = new Set<ConnectionPhase>([
+  'connected',
+  'listing',
+  'attaching',
+  'live',
+  'error',
+]);
 const PTY_READ_WAIT_MS = 250;
 const PTY_READ_MAX_BYTES = 32_768;
 const DEFAULT_TERMINAL_GEOMETRY = { cols: 80, rows: 24 } as const;
@@ -432,12 +445,49 @@ export class ConnectionController {
       if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       if (isUncertainMutation(error) || this.isCurrentTransportFailure(error)) {
         this.startReconnect('session list lost its transport');
+        // The reconnect now owns the phase and has reported itself (its
+        // first `reconnecting`, with this reason). Writing the list error on
+        // top would report the same ladder a second time — on the #2954
+        // abrupt drop, whichever listing (the session panel's poll, a pane)
+        // saw the dead link first doubled the ladder's journal (#3039).
+        if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       }
       const phase = this.snapshot.phase === 'reconnecting'
         ? 'reconnecting'
         : this.hasLiveTerminal() ? 'live' : 'error';
       this.setSnapshot({ error: message, phase });
       return { ok: false, reason: 'failed', message };
+    }
+  }
+
+  /**
+   * A fresh host listing that changes NOTHING here: no snapshot, no session
+   * list update, no reconnect — whatever it finds or fails with (#3039).
+   *
+   * {@link refreshSessions} is the controller's own listing, and a transport
+   * failure it sees is a link-loss signal it acts on. A verdict query is not:
+   * a pane asking "did my session outlive its client?" right as the link
+   * dies must not become a second reconnect trigger (or rewrite the phase the
+   * recovery owns) — that doubled the ladder on the #2954 abrupt-drop path.
+   * The controller's own detection (PTY EOF probe, native `lost`) still owns
+   * recovery. Only a usable link is asked at all: during a dial, a reconnect,
+   * the background grace or after the give-up this answers `not-connected`
+   * without touching the transport.
+   */
+  async probeSessions(): Promise<ConnectionActionResult<SessionsListing>> {
+    const cli = this.hostCli;
+    const connection = this.connection;
+    if (!cli || !connection || !LINK_UP_PHASES.has(this.snapshot.phase)) {
+      return { ok: false, reason: 'not-connected', message: 'No usable connection to list sessions on.' };
+    }
+    try {
+      const listing = await cli.listSessions();
+      if (!this.isCurrentGeneration(connection)) {
+        return { ok: false, reason: 'failed', message: 'The transport was replaced while listing sessions.' };
+      }
+      return { ok: true, value: listing };
+    } catch (error) {
+      return { ok: false, reason: 'failed', message: error instanceof Error ? error.message : String(error) };
     }
   }
 

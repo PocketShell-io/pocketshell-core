@@ -1410,6 +1410,111 @@ describe('one reconnect per lost transport (pocketshell#2943)', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
   });
 
+  it('reports a session list that finds the link dead as ONE ladder entry (pocketshell#3039, #2954)', async () => {
+    // The #2954 abrupt-drop journey counts every retry-0 `reconnecting`
+    // snapshot as a ladder. When a listing (the session panel's 5 s poll, or
+    // a pane) is the first to see the dead link, refreshSessions started the
+    // reconnect — which reports itself — and then wrote its own list error
+    // over it as a second retry-0 `reconnecting`: two "ladders" for one.
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const entries: Array<{ phase: string; retryAttempt: number; error: string | null }> = [];
+    controller.subscribe((snapshot) => {
+      entries.push({ phase: snapshot.phase, retryAttempt: snapshot.retryAttempt, error: snapshot.error });
+    });
+    const exec = capability.exec;
+    let armed = true;
+    capability.exec = async (options) => {
+      if (armed && options.command.includes('sessions list')) {
+        armed = false;
+        throw new SshCapabilityError('SSH connection is no longer available.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+
+    expect((await controller.refreshSessions()).ok).toBe(false);
+    await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
+
+    const firstRung = entries.filter((entry) => entry.phase === 'reconnecting' && entry.retryAttempt === 0);
+    expect(firstRung, JSON.stringify(entries)).toHaveLength(1);
+    expect(firstRung[0]!.error).toBe('session list lost its transport');
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('a verdict probe failing on a dying transport changes nothing and starts no reconnect (pocketshell#3039)', async () => {
+    // The pane's "did my session outlive its client?" query, asked as the
+    // link dies (#3039 review B2): routed through refreshSessions it started
+    // a reconnect AND wrote a second retry-0 `reconnecting` snapshot,
+    // doubling the #2954 abrupt-drop ladder. The probe must be inert.
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const recorder = recordReconnectEntries(controller);
+    const exec = capability.exec;
+    let listCalls = 0;
+    capability.exec = async (options) => {
+      if (options.command.includes('sessions list')) {
+        listCalls += 1;
+        throw new SshCapabilityError('SSH connection is no longer available.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+    const before = controller.getSnapshot();
+
+    const probe = await controller.probeSessions();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(probe).toMatchObject({ ok: false, reason: 'failed' });
+    expect(listCalls).toBe(1);
+    expect(controller.getSnapshot().revision, 'the probe wrote a snapshot').toBe(before.revision);
+    expect(controller.getSnapshot().phase).toBe('live');
+    expect(controller.getSnapshot().error).toBe(before.error);
+    expect(recorder.reconnectEntries(), recorder.phases.join(' -> ')).toBe(0);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    // Liveness of the injected failure: the controller's OWN listing reads
+    // the very same failure as a lost link and recovers it — once.
+    let armed = true;
+    capability.exec = async (options) => {
+      if (armed && options.command.includes('sessions list')) {
+        armed = false;
+        throw new SshCapabilityError('SSH connection is no longer available.', 'CONNECTION_LOST');
+      }
+      return exec(options);
+    };
+    expect((await controller.refreshSessions()).ok).toBe(false);
+    await waitFor(() => capability.connectCalls.length === 2);
+    expect(recorder.phases).toContain('reconnecting');
+  });
+
+  it('a verdict probe never touches the transport while the link is not usable (pocketshell#3039)', async () => {
+    const capability = new FakeCapability();
+    const controller = await liveOnAlpha(capability);
+    const connectGate = deferred<void>();
+    const connect = capability.connect;
+    capability.connect = async (options) => {
+      await connectGate.promise;
+      return connect(options);
+    };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'connecting');
+    const exec = capability.exec;
+    let execCalls = 0;
+    capability.exec = async (options) => {
+      execCalls += 1;
+      return exec(options);
+    };
+    const revision = controller.getSnapshot().revision;
+
+    expect(await controller.probeSessions()).toMatchObject({ ok: false, reason: 'not-connected' });
+    expect(execCalls).toBe(0);
+    expect(controller.getSnapshot().revision).toBe(revision);
+    connectGate.resolve();
+    await waitFor(() => controller.getSnapshot().phase === 'live');
+    capability.exec = exec;
+    const probe = await controller.probeSessions();
+    expect(probe.ok).toBe(true);
+  });
+
   it('keeps a stale session-list failure from rewriting the phase of a reconnect in progress', async () => {
     const capability = new FakeCapability();
     const controller = await liveOnAlpha(capability);

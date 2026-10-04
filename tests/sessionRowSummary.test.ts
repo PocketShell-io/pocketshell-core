@@ -28,6 +28,13 @@ describe('sessionRowToSummary', () => {
   });
 });
 
+describe('sessionRowToSummary phase (#3039)', () => {
+  it('carries the host-reported aplexer phase, and omits it when the host gave none', () => {
+    expect(sessionRowToSummary(row({ name: 'w:a', phase: 'exiting' })).aplexerPhase).toBe('exiting');
+    expect('aplexerPhase' in sessionRowToSummary(row({ name: 'w:b' }))).toBe(false);
+  });
+});
+
 describe('findSessionRow', () => {
   const rows = [
     row({ name: 'a-main', id: 'id-a', workspace: '/w/a', tag: 'main' }),

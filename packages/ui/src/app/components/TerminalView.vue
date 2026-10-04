@@ -53,6 +53,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { applyUnicode11Widths } from '../terminalUnicode';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { useShellsStore } from '../stores/shells';
+import { useConnectionStore } from '../stores/connection';
 import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks';
 import { PathHighlighter } from '../terminalPathHighlights';
 import { decodeOsc52SetClipboard } from '@pocketshell/core';
@@ -211,6 +212,12 @@ const pane = new TerminalPane({
   getAplexerId: () => props.aplexerId,
   isVisible: () => !!containerEl.value?.clientHeight && !!containerEl.value?.clientWidth,
   mayRestoreFocus: mayRestoreTerminalFocus,
+  // Read at exit time, not captured: the store is the one place that knows
+  // whether this pane's link is up or its recovery owner is at work.
+  isLinkUp: () => {
+    const connection = useConnectionStore();
+    return connection.connectionId === props.connectionId && connection.state === 'connected';
+  },
 });
 /** Drives the join veil in the template; the controller arms and clears it. */
 const joinPending = pane.joinPending;
