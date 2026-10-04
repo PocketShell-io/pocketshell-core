@@ -65,6 +65,10 @@ const filtered = computed<readonly ProcessRow[]>(() => {
   );
 });
 const total = computed(() => filtered.value.length);
+/** "1 of 366 processes": the noun pluralizes on the whole set, not the subset. */
+const countSuffix = computed(() =>
+  (query.value ? props.processes.length : total.value) === 1 ? '' : 'es',
+);
 const visible = computed(() =>
   sortProcesses(filtered.value, sortKey.value, descending.value).slice(0, MONITOR_RENDER_CAP),
 );
@@ -73,27 +77,31 @@ const capped = computed(() => total.value > MONITOR_RENDER_CAP);
 /**
  * Headers and cells in the SAME order — `key: null` is the state column,
  * a flag that sorts nowhere. Labels spell htop's names (virt/res/time+);
- * the CSS uppercases them.
+ * the CSS uppercases them. `align` is the column's reading edge: numbers
+ * read against their right edge, so their headers do too — a right-aligned
+ * figure under a left-aligned caption reads as two columns.
  */
 interface Column {
   key: ProcessSortKey | null;
   label: string;
   title: string;
+  align: 'left' | 'right' | 'center';
 }
 const COLUMNS: Column[] = [
-  { key: 'pid', label: 'pid', title: 'Process id' },
-  { key: 'user', label: 'user', title: 'Owner' },
-  { key: 'vszKib', label: 'virt', title: 'Virtual memory' },
-  { key: 'rssKib', label: 'res', title: 'Resident memory' },
+  { key: 'pid', label: 'pid', title: 'Process id', align: 'left' },
+  { key: 'user', label: 'user', title: 'Owner', align: 'left' },
+  { key: 'vszKib', label: 'virt', title: 'Virtual memory', align: 'right' },
+  { key: 'rssKib', label: 'res', title: 'Resident memory', align: 'right' },
   {
     key: null,
     label: 's',
     title: 'State — R running, D disk wait, S sleeping, T stopped, Z zombie',
+    align: 'center',
   },
-  { key: 'cpu', label: 'cpu%', title: 'CPU — ps lifetime average' },
-  { key: 'mem', label: 'mem%', title: 'Memory — share of physical memory' },
-  { key: 'timeS', label: 'time+', title: 'Cumulative CPU time' },
-  { key: 'command', label: 'command', title: 'Command line' },
+  { key: 'cpu', label: 'cpu%', title: 'CPU — ps lifetime average', align: 'right' },
+  { key: 'mem', label: 'mem%', title: 'Memory — share of physical memory', align: 'right' },
+  { key: 'timeS', label: 'time+', title: 'Cumulative CPU time', align: 'right' },
+  { key: 'command', label: 'command', title: 'Command line', align: 'left' },
 ];
 
 /** Same key flips the direction; a new key lands in its heavier direction. */
@@ -178,7 +186,8 @@ function killLabel(pid: number, signal: MonitorSignal): string {
         />
       </div>
       <span class="count muted" role="status">
-        {{ total }} process{{ total === 1 ? '' : 'es' }}<template v-if="capped">
+        {{ total }}<template v-if="query"> of {{ props.processes.length }}</template>
+        process{{ countSuffix }}<template v-if="capped">
           — showing {{ MONITOR_RENDER_CAP }}</template
         >
       </span>
@@ -191,7 +200,7 @@ function killLabel(pid: number, signal: MonitorSignal): string {
         <button
           v-if="col.key"
           class="th sort"
-          :class="{ on: sortKey === col.key }"
+          :class="[`is-${col.align}`, { on: sortKey === col.key }]"
           type="button"
           :aria-pressed="sortKey === col.key"
           :title="col.title"
@@ -200,7 +209,7 @@ function killLabel(pid: number, signal: MonitorSignal): string {
           {{ col.label }}
           <AppIcon v-if="sortKey === col.key" name="arrow-up-down" :size="12" />
         </button>
-        <span v-else class="th" :title="col.title">{{ col.label }}</span>
+        <span v-else class="th" :class="`is-${col.align}`" :title="col.title">{{ col.label }}</span>
       </template>
       <span class="th acts" aria-hidden="true" />
     </div>
@@ -246,7 +255,9 @@ function killLabel(pid: number, signal: MonitorSignal): string {
       <p v-if="capped" class="note muted">
         and {{ total - MONITOR_RENDER_CAP }} more — refine the filter to see them.
       </p>
-      <p v-else-if="total === 0" class="empty">No process matches “{{ filter }}”.</p>
+      <p v-else-if="total === 0" class="empty">
+        {{ query ? `No process matches “${filter.trim()}”.` : 'The host reports no processes.' }}
+      </p>
     </div>
   </div>
 </template>
@@ -316,7 +327,9 @@ function killLabel(pid: number, signal: MonitorSignal): string {
 }
 
 /* Column captions: the app's .th treatment (UsageView), clickable where the
-   column sorts. */
+   column sorts. Each caption sits on its column's reading edge — numeric
+   columns right, the state letter centered — the same edge its cells read
+   against. */
 .th {
   font-size: var(--fs-100);
   line-height: var(--lh-100);
@@ -328,6 +341,12 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   text-align: left;
   overflow: hidden;
   white-space: nowrap;
+}
+.th.is-right {
+  text-align: right;
+}
+.th.is-center {
+  text-align: center;
 }
 .th.sort {
   display: inline-flex;
@@ -342,6 +361,18 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   letter-spacing: inherit;
   color: inherit;
 }
+/* An inline-flex button shrinks to its label; stretching it across the cell
+   puts the label on the column's reading edge instead of the cell's left. */
+.th.sort.is-right,
+.th.sort.is-center {
+  justify-self: stretch;
+}
+.th.sort.is-right {
+  justify-content: flex-end;
+}
+.th.sort.is-center {
+  justify-content: center;
+}
 .th.sort:hover {
   color: var(--fg);
 }
@@ -355,14 +386,19 @@ function killLabel(pid: number, signal: MonitorSignal): string {
 
 .pbody {
   overflow-y: auto;
+  scrollbar-gutter: stable;
   min-height: 120px;
 }
 /* Denser than a settings list — htop's table is a MONITOR, and monitors are
-   read in sweeps, not one row at a time. */
+   read in sweeps, not one row at a time. The hover band is what you aim a
+   kill with: the row under the cursor is the row the buttons act on. */
 .prow {
   min-height: 24px;
   padding: 2px 0;
   border-bottom: 1px solid var(--border-soft);
+}
+.prow:hover {
+  background: var(--state-hover);
 }
 /* Mono figures for the numbers, so the numeric columns form one clean edge. */
 .mono {
@@ -430,31 +466,31 @@ function killLabel(pid: number, signal: MonitorSignal): string {
   gap: var(--sp-1);
   justify-content: flex-end;
 }
-/* The two-step kill's buttons. Ghost at rest — a table where every row
-   carries two loud buttons is a wall of danger; the word shows on hover and
-   the armed press fills. */
+/* The two-step kill's buttons. The kill is this panel's one verb — invisible
+   controls are undiscoverable — so the chips show at rest at metadata
+   emphasis: muted digits, hairline border. Row hover brings them to full
+   contrast; the armed press fills (amber for TERM, red for KILL). */
 .kill {
   height: 20px;
   padding: 0 var(--sp-2);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: var(--r-sm);
-  color: var(--fg-secondary);
+  color: var(--fg-muted);
   font-family: var(--font-ui);
   font-size: 10px;
   font-weight: var(--fw-semibold);
   letter-spacing: 0.04em;
   cursor: pointer;
-  opacity: 0;
   transition:
-    opacity var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 .prow:hover .kill,
-.kill:focus-visible,
-.kill.armed {
-  opacity: 1;
+.kill:focus-visible {
+  border-color: var(--border);
+  color: var(--fg-secondary);
 }
 .kill:hover:not(:disabled) {
   background: var(--state-hover);
