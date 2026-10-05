@@ -448,6 +448,32 @@ function redrawFromIdentity(identity: string): void {
   terminalRefs.get(identity)?.resyncDisplay();
 }
 
+/**
+ * The aplexer address the tab menu's Copy address item offers for [name] —
+ * the immutable UUID, which survives the renames "Rename…" performs and is
+ * what `a attach` and every machine call prefer. Null is the tmux answer (the
+ * bare name needs no copying to be addressable) and hides the item; an
+ * aplexer row whose id has not landed hides it too, rather than copying a
+ * half address.
+ */
+function sessionAddressFor(name: string): string | null {
+  return aplexerRefFor(name)?.aplexerId ?? null;
+}
+
+/**
+ * The bar menu's Copy address, relayed: put the session's aplexer id on the
+ * clipboard. A denied clipboard is swallowed, not a strip-worthy failure —
+ * the same policy copying a path out of the Files tree keeps.
+ */
+async function copySessionAddress(address: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(address);
+  } catch {
+    // The id stays available in the next session's own menu; nothing on
+    // screen depended on the copy landing.
+  }
+}
+
 /** "New Files tab" from the `+` menu: shut the menu, then mint the tab. */
 function addFilesFromMenu(): void {
   addAnchor.value = null;
@@ -654,6 +680,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       :session-tab-title="sessionTabTitle"
       :tab-mark="tabMark"
       :identity-for="identityFor"
+      :address-for="sessionAddressFor"
       :vs-code="folderPath !== null && api.editors !== undefined"
       @select="selectTab"
       @begin-rename="beginRename"
@@ -668,6 +695,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       @add-toggle="toggleAddMenu"
       @add-menu-close="addAnchor = null"
       @redraw="redrawFromIdentity"
+      @copy-address="copySessionAddress"
       @reorder="writeTabOrder"
       @open-vs-code="openInVsCode"
     />

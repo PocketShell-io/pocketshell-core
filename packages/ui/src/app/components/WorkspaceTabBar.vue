@@ -39,6 +39,13 @@ const props = defineProps<{
   /** The workspace-qualified identity for a session name. */
   identityFor: (name: string, like?: string) => string;
   /**
+   * The aplexer address for a session name — the immutable UUID other
+   * sessions reach it by — or null when the row has none to give (a tmux
+   * row, or an aplexer row whose id has not landed). Null is the menu
+   * item's presence decision, made while the row stands.
+   */
+  addressFor: (name: string) => string | null;
+  /**
    * Whether the "Open in VS Code" button shows at all: the workspace has a
    * real folder path to hand over (false for an untracked session's
    * pseudo-folder, which has no path on disk to open) AND the platform
@@ -67,6 +74,7 @@ const emit = defineEmits<{
   addToggle: [box: Box | null];
   addMenuClose: [];
   redraw: [identity: string];
+  copyAddress: [address: string];
   reorder: [next: string[]];
   openVsCode: [];
 }>();
@@ -158,9 +166,14 @@ function onTabDragEnd(): void {
  * `body` and positions from a measured viewport rect, which is exactly what a
  * menu on a scrolling strip needs.
  */
-const tabMenu = ref<{ session: string; identity: string; label: string; anchor: Box } | null>(
-  null,
-);
+const tabMenu = ref<{
+  session: string;
+  identity: string;
+  /** The aplexer address, snapshotted with the rest — null hides Copy. */
+  address: string | null;
+  label: string;
+  anchor: Box;
+} | null>(null);
 
 function openTabMenu(tab: WorkspaceTab, e: MouseEvent): void {
   if (tab.kind !== 'session') return;
@@ -170,10 +183,12 @@ function openTabMenu(tab: WorkspaceTab, e: MouseEvent): void {
   // them, and moved the composer's key with it.
   emit('addMenuClose');
   // The pane's identity is resolved NOW, while the row stands; Redraw reaches
-  // the ref map through it.
+  // the ref map through it. The address is snapshotted with it for the same
+  // reason — the item's presence and its payload both read the row once.
   tabMenu.value = {
     session: tab.session,
     identity: props.identityFor(tab.session),
+    address: props.addressFor(tab.session),
     label: tab.label,
     anchor: pointAnchor(e.clientX, e.clientY),
   };
@@ -198,9 +213,9 @@ function renameFromMenu(): void {
  * the window; nothing here moved, so nothing here re-sends) and why the lever is
  * manual rather than a timer.
  *
- * It sits in the tab menu with Rename and Stop, and its position in that list is
- * the point: it is the only NON-destructive item, so it goes above the
- * separator, next to the other thing that changes nothing you can lose.
+ * It sits in the tab menu with Rename, Copy address and Stop, and its position
+ * in that list is the point: with the menu's other NON-destructive items, above
+ * the separator — the things that change nothing you can lose stay together.
  *
  * Only a session tab has a pane to redraw. The menu is opened from a Files tab
  * too, and the item is simply not rendered there — an item that greys out on
@@ -210,6 +225,21 @@ function redrawFromMenu(): void {
   const target = tabMenu.value;
   tabMenu.value = null;
   if (target) emit('redraw', target.identity);
+}
+
+/**
+ * "Copy address" from the tab menu: the session's aplexer id onto the
+ * clipboard, so it can be pasted into ANOTHER session and the two can reach
+ * each other through `a`.
+ *
+ * The payload is the string snapshotted at open time — the menu's job is to
+ * name one session and hand its address over; the clipboard write itself is
+ * the view's, like every other disposal in this bar.
+ */
+function copyAddressFromMenu(): void {
+  const target = tabMenu.value;
+  tabMenu.value = null;
+  if (target?.address) emit('copyAddress', target.address);
 }
 
 function askStop(): void {
@@ -443,12 +473,16 @@ function onRenameInput(event: Event): void {
       </button>
     </div>
 
-    <!-- Right-clicking a session tab. Two items, and the gap between them is
-         the point: Rename is here because click-to-rename is real but
-         undiscoverable, and Stop is here because the user asked for it and
-         because a live tmux session is not something to put behind a `×`.
-         They are separated and Stop is tinted, so the one thing in this menu
-         that can lose work does not look like the one that cannot. -->
+    <!-- Right-clicking a session tab. Rename is here because click-to-rename
+         is real but undiscoverable, Copy address because a session's id is
+         the thing another session needs to reach it, and Stop because the
+         user asked for it and because a live tmux session is not something
+         to put behind a `×`. The harmless three sit together above the
+         separator and Stop is tinted, so the one thing in this menu that can
+         lose work does not look like the ones that cannot. Copy address is
+         ABSENT rather than disabled when the row has no aplexer id — an item
+         that greys out on half the tabs teaches the eye to skip the whole
+         menu, the rule Redraw's pairing with Files tabs already set. -->
     <PopupMenu
       v-if="tabMenu"
       :anchor="tabMenu.anchor"
@@ -459,6 +493,15 @@ function onRenameInput(event: Event): void {
         <li class="menu-head">{{ tabMenu.session }}</li>
         <li>
           <button class="menu-item" @click="renameFromMenu">Rename…</button>
+        </li>
+        <li v-if="tabMenu.address">
+          <button
+            class="menu-item"
+            title="The aplexer session id — paste it into another session so the two can talk"
+            @click="copyAddressFromMenu"
+          >
+            Copy address
+          </button>
         </li>
         <li>
           <!-- No ellipsis: it acts immediately and asks nothing, which is
