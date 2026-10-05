@@ -122,6 +122,15 @@
  *     plain at the cut. continuesPath reads a pure `../` run as the
  *     path-so-far it is; the matcher's refusal (no link opens `../` alone)
  *     stays.
+ *   - a transcript paragraph wrapped its commit addresses at its own narrow
+ *     width — `…/dapier/commit/` / `bcbfcf5a…40-hex` — while the prose around
+ *     it ran full to the pane. The fit guards of rules 1b and 2 measure
+ *     against the block's widest row, the prose had dragged that to the
+ *     pane's, and the 40-hex head "had room": the join refused, the first row
+ *     fell back to WebLinksAddon's truncated-fragment link (the report's
+ *     404ing underline) and the hash sat dead. A long hex head under a web
+ *     tail is the address's own rest — {@link HEX_FRAGMENT} — and the guard
+ *     stands down for that shape alone ({@link joinedRowSkip}).
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -675,9 +684,22 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
     //     no wider row, the estimate falls back to the block itself and this
     //     guard stops constraining — the tail and head checks then carry the
     //     rule alone, which is the price of surviving resizes.
+    //
+    //     One carve-out, the transcript report: an opportunity wrapper fills
+    //     its rows to its own NARROW width while the paragraph around it runs
+    //     full to the pane's — so the inferred width is the pane's and every
+    //     head "had room". A head that is a long hex run ({@link HEX_FRAGMENT})
+    //     under a WEB tail is the address's own rest regardless — a commit
+    //     hash severed at the `commit/` before it, the shape the report's
+    //     `…/commit/` / `bcbfcf5a…` rows carry. No prose word is eight hex
+    //     chars, so the shape carries the cut evidence the fit guard exists to
+    //     cross-check; the width arithmetic, poisoned by the wide neighbours,
+    //     stands down for it alone. Prose heads (`and cleaned up`) still
+    //     answer to the guard.
     if (!tail.endsWith('-') && !tail.endsWith('/') && !tail.endsWith('?')) return null;
     if (head === '' || head.startsWith('/')) return null;
-    if (prev.lastCol + 1 + head.length <= wrapWidth) return null;
+    if (prev.lastCol + 1 + head.length <= wrapWidth && !(webSchemeTail && HEX_FRAGMENT.test(head)))
+      return null;
     return indent;
   }
 
@@ -715,11 +737,15 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   //     row, the estimate falls back to the block itself and this guard stops
   //     constraining — the tail and head checks then carry the rule alone,
   //     the same price rule 1b pays for surviving resizes.
+  //     Rule 1b's carve-out applies here too: a long hex head under a web
+  //     tail is the address's own rest ({@link HEX_FRAGMENT}), its cut
+  //     evidence independent of widths a full-width paragraph poisons.
   if (!tail.endsWith('/') && !tail.endsWith('-') && !tail.endsWith('?')) return null;
   const rest = next.text.slice(gutter[0].length);
   const head = /^\S+/.exec(rest)?.[0] ?? '';
   if (head === '' || head.startsWith('/')) return null;
-  if (prev.lastCol + 1 + head.length <= wrapWidth) return null;
+  if (prev.lastCol + 1 + head.length <= wrapWidth && !(webSchemeTail && HEX_FRAGMENT.test(head)))
+    return null;
   // The gutter is spaces and a narrow bar character — box-drawing or a left
   // partial block, all ambiguous-width and one cell in xterm — so its string
   // length is also its cell count; no double-width correction is needed.
