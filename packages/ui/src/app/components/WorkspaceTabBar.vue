@@ -76,6 +76,8 @@ const emit = defineEmits<{
   renameInput: [event: Event];
   stop: [session: string];
   closeFiles: [id: string];
+  /** A tool tab's ×: the whole tab rides, so the parent can read the identity it closes. */
+  closeTool: [tab: Extract<WorkspaceTab, { kind: 'tool' }>];
   launch: [];
   addFiles: [];
   addToggle: [box: Box | null];
@@ -399,15 +401,25 @@ function onRenameInput(event: Event): void {
                the one word this app reserves for the kill — and the
                click stops here, so a background tab's `×` does not also
                move the user to it, the same rule the right-click obeys. -->
-          <!-- A TOOL tab wears no `×` at all: it closes nothing — the pane is
-               not a session to stop and not a view the user opened — and its
-               lifetime is the workspace visit itself. Leaving the workspace
-               is its close. -->
+          <!-- A TOOL tab's `×` CLOSES the tool — the one thing that ends it.
+               No confirmation and no Stop: the pane is ours, a viewer process
+               this app spawned, and htop is trivially open again from the
+               same button. The word is Close, never Stop — the kill word
+               stays reserved for the user's sessions. -->
           <span
             v-if="tab.kind === 'session'"
             class="tab-close"
             title="Stop this session"
             @click.stop="askStopTab(tab)"
+            @dblclick.stop
+          >
+            <AppIcon name="close" :size="12" />
+          </span>
+          <span
+            v-else-if="tab.kind === 'tool'"
+            class="tab-close"
+            title="Close this tool"
+            @click.stop="emit('closeTool', tab)"
             @dblclick.stop
           >
             <AppIcon name="close" :size="12" />

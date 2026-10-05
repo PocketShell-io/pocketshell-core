@@ -80,7 +80,7 @@ import { useSettingsStore } from '../stores/settings';
 import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { editingTarget } from '../editingTarget';
-import { MAINTENANCE_ROOT, maintenanceOpenedFor } from '../maintenance';
+import { isMaintenanceFolder, maintenanceToolsFor } from '../maintenance';
 import { useFolderTree } from '../folderTree';
 import { rootHostPath } from '../sessionRoots';
 import { directoryForSession, type SessionDirectory } from '../sessionTree';
@@ -155,6 +155,8 @@ const emit = defineEmits<{
    * than on the one the user asked for.
    */
   select: [folder: SessionDirectory, session?: string];
+  /** A Maintenance row's ×: re-emitted for the host workspace, which disposes (maintenance.ts). */
+  closeTool: [kind: string];
   back: [];
   collapse: [];
 }>();
@@ -605,13 +607,15 @@ defineExpose({ openCreate });
       :active-folder="activeFolder"
       :active-session="activeSession ?? null"
       :show-sessions="showSessions ?? false"
-      :show-maintenance="maintenanceOpenedFor(connection.activeHost?.name) || activeFolder === MAINTENANCE_ROOT"
+      :show-maintenance="isMaintenanceFolder(activeFolder)"
+      :maintenance-tools="maintenanceToolsFor(connection.activeHost?.name)"
       :now="now"
       :default-start-in="defaultStartIn"
       @select="(folder, session) => emit('select', folder, session)"
       @menu="openFolderMenu"
       @create="creating = { startIn: $event }"
       @sort="onRowSort"
+      @close-tool="emit('closeTool', $event)"
     />
 
     <!-- The full-width `New session` button that used to sit here is GONE. It

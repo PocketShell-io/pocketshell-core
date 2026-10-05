@@ -58,7 +58,7 @@ import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
 import UsageView from './UsageView.vue';
-import { MAINTENANCE_ROOT, markMaintenanceOpened } from '../maintenance';
+import { closeMaintenanceToolByName, MAINTENANCE_ROOT, openMaintenanceTool } from '../maintenance';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
@@ -349,17 +349,25 @@ const switcherTitle = computed(() =>
  */
 function openPanel(name: HostPanel): void {
   if (name === 'monitor') {
-    // Marking BEFORE the push is what makes the sidebar section appear: it is
-    // the door back, and this click is the moment there is something to come
-    // back to (maintenance.ts's opened list).
-    markMaintenanceOpened(String(route.params['name']));
+    // Opening the tool is what makes the sidebar section exist: it is the
+    // door back, and this click is the moment there is something to come
+    // back to (maintenance.ts's tool list). Re-opening an open tool just
+    // navigates — the row-click focus rule answers the re-click.
+    const host = String(route.params['name']);
+    openMaintenanceTool(host);
     void router.push({
       name: 'folder',
-      params: { name: String(route.params['name']), folder: MAINTENANCE_ROOT },
+      params: { name: host, folder: MAINTENANCE_ROOT },
     });
     return;
   }
   panel.value = name;
+}
+
+/** A Maintenance row's ×, from the session tree: close that tool on this host. */
+function onCloseMaintenanceTool(kind: string): void {
+  const host = connection.activeHost?.name;
+  if (host) closeMaintenanceToolByName(host, kind);
 }
 
 /* ── Quick actions — the command palette ───────────────────────────────────
@@ -659,6 +667,7 @@ async function onRefreshUsage(): Promise<void> {
           @collapse="onCollapsePanel"
           @panel="openPanel"
           @palette="paletteOpen = true"
+          @close-tool="onCloseMaintenanceTool"
         />
       </aside>
       <div

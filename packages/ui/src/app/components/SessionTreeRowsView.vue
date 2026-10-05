@@ -22,7 +22,7 @@ import { rootHeaderParts, type SessionDirectory, type SessionRootFolder } from '
 import { agentBadge, agentBadges, dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
 import type { AgentBadgeKind } from '../sessionTreeText';
 import { agentMark, type AgentMark } from '@pocketshell/core/shared/agentBadge';
-import { MAINTENANCE_ROOT, maintenanceDirectory } from '../maintenance';
+import MaintenanceSection from './MaintenanceSection.vue';
 
 /** Where a dragged folder row would land: before row `gap` of `root`. */
 export interface FolderDropTarget {
@@ -82,6 +82,13 @@ const props = withDefaults(
      * this component only obeys it.
      */
     showMaintenance?: boolean;
+    /**
+     * The host's open maintenance tools, in open order — one row each, each
+     * closable with its own `×`. Closing the last one retires the section:
+     * that is the user saying "I don't have it". The wrapper reads the list
+     * from maintenance.ts; this component renders it and reports back.
+     */
+    maintenanceTools?: readonly { kind: string; identity: string }[];
   }>(),
   {
     activeFolder: null,
@@ -94,6 +101,7 @@ const props = withDefaults(
     dragging: null,
     dropTarget: null,
     showMaintenance: false,
+    maintenanceTools: () => [],
   },
 );
 
@@ -109,6 +117,8 @@ const emit = defineEmits<{
   menu: [dir: SessionDirectory, e: MouseEvent];
   create: [startIn: string | null];
   sort: [trigger: HTMLButtonElement];
+  /** A maintenance row's ×: the kind names the tool to close (maintenance.ts). */
+  closeTool: [kind: string];
   dragStart: [dir: SessionDirectory, e: DragEvent];
   dragOver: [root: SessionRootFolder, index: number, e: DragEvent];
   drop: [];
@@ -454,36 +464,17 @@ function onFolderClick(dir: SessionDirectory): void {
     </section>
 
     <!-- THE MAINTENANCE SECTION — the door back to the tool workspaces
-         (docs/MONITOR.md), shown once the host's workspace has been opened
-         (`showMaintenance`) and never as permanent chrome. The roots above
-         are the host's own grouping; this section is the app's own, so it
-         sits outside the filter (it is not data a session query narrows),
-         takes no sort and no drag. One row today — the workspace the Host
-         monitor button opens, where `htop` runs in `~`; a second tool
-         workspace slots in here as a sibling row. The row emits the SAME
-         `select` the folder rows do, carrying a key-only directory
-         (maintenance.ts), so navigation, the re-click focus and the
-         `current` tint are the folder rows' own machinery, not a second
-         path. -->
-    <section v-if="showMaintenance" class="folder maintenance-section" aria-label="Maintenance">
-      <div class="folder-header">
-        <span class="dot" />
-        <span class="folder-label">Maintenance</span>
-      </div>
-      <ul class="dir-list">
-        <li>
-          <button
-            class="dir-header maintenance-row"
-            :class="{ current: props.activeFolder === MAINTENANCE_ROOT }"
-            title="Host monitor — htop in ~. Leaving the workspace stops it; quitting htop leaves a shell in ~."
-            @click="emit('select', maintenanceDirectory())"
-          >
-            <AppIcon name="activity" :size="12" class="maintenance-glyph" />
-            <span class="label">htop</span>
-          </button>
-        </li>
-      </ul>
-    </section>
+         (docs/MONITOR.md), shown while the host has open tools and forced on
+         while the workspace itself is on screen. components/
+         MaintenanceSection.vue is the section; the v-if here is the only
+         decision this file keeps. -->
+    <MaintenanceSection
+      v-if="showMaintenance || props.maintenanceTools.length > 0"
+      :tools="props.maintenanceTools"
+      :active-folder="props.activeFolder"
+      @select="(folder, session) => emit('select', folder, session)"
+      @close-tool="emit('closeTool', $event)"
+    />
 
     <!-- Nothing running anywhere on this host. The sentence used to stand
          alone, which made this the one empty state with no way forward: the
@@ -783,13 +774,6 @@ function onFolderClick(dir: SessionDirectory): void {
 }
 .dot.active {
   background: var(--success);
-}
-/* The maintenance section's row leads with the activity glyph instead of the
-   attachment dot: nothing in that workspace can be attached, and the pulse is
-   the register the Host monitor button wears (AppIcon.vue). */
-.maintenance-glyph {
-  flex-shrink: 0;
-  color: var(--fg-muted);
 }
 /* The label wins the width fight; everything else shrinks first.
 

@@ -1,27 +1,32 @@
 /**
  * The maintenance workspace — what "Host monitor" opens instead of a panel
- * that samples the host itself: a hidden root holding one tool pane running
- * `htop` in `~`. docs/MONITOR.md is the feature's decision record; this module
- * is the one home of its constants, so the workspace branch, the tab bar and
- * the trigger cannot drift apart about what the pane is called or what runs
- * in it.
+ * that samples the host itself: a hidden root whose TOOLS run in bare panes,
+ * `htop` in `~` first of all. docs/MONITOR.md is the feature's decision
+ * record; this module is the one home of its state and constants, so the
+ * workspace, the sidebar section and the trigger cannot drift apart about
+ * what is open, what it is called, and what runs in it.
+ *
+ * The TOOL is the persistent thing. `openMaintenanceTool` adds to a
+ * session-only list (per host, never persisted); the sidebar's Maintenance
+ * section renders a closable row per tool, the workspace's tab bar a
+ * closable tab per tool, and the section exists only while the list is
+ * non-empty (or the workspace is on screen) — closing the last tool is how
+ * the user says "I don't have it". The PANE behind a tool is more mortal: it
+ * lives while the host's folder workspace stays mounted — across folder
+ * navigation on the same host the pane rides along mounted-but-hidden, the
+ * way a visited session tab does, so coming back is the SAME htop — but a
+ * host-level navigation or a host switch unmounts it, and the next entry
+ * starts a fresh one. The tool row survives all of that; only its × ends it.
  *
  * The root is `MAINTENANCE_ROOT` (`::maintenance::`, from core) — a stable
- * workspace key that names no directory, which is why it is not a root in the
- * session tree's grouping: the panel renders a Maintenance section for it
- * once the host's workspace has been opened (`markMaintenanceOpened`), and
- * the Host monitor button opens the
- * same route. The pane is
- * BARE (`TerminalView`'s `bare` prop): a plain SSH login shell in the user's
- * `$HOME` — sshd's own default cwd, no `cd` typed on their behalf — with
- * {@link MAINTENANCE_COMMAND} typed into it, so quitting htop leaves a live
- * prompt in `~` and the tab doubles as a maintenance shell.
+ * workspace key that names no directory, which is why it is not a root in
+ * the session tree's grouping: the panel renders a Maintenance section for
+ * it while tools are open, and the Host monitor button opens the same route.
  *
- * Ephemeral by construction: the pane is a PTY of our own, not a host
- * session, and its lifetime is the workspace visit — navigating away prunes
- * the pane (the ordinary pane rule), unmounting the TerminalView closes the
- * SSH shell, and htop dies with it. Nothing is left polling the host, and no
- * session appears in any host-side listing.
+ * A tool pane is BARE (`TerminalView`'s `bare` prop): a plain SSH login
+ * shell in the user's `$HOME` — sshd's own default cwd — with the tool's
+ * command typed into it, so quitting htop leaves a live prompt in `~` and
+ * the tab doubles as a maintenance shell.
  */
 import { ref } from 'vue';
 import { MAINTENANCE_ROOT } from '@pocketshell/core';
@@ -31,20 +36,83 @@ import type { SessionPaneRecord } from './sessionPanes';
 
 export { MAINTENANCE_ROOT };
 
-/** The tool pane's registry identity — `TerminalView`'s `sessionKey` in bare mode. */
-export const MAINTENANCE_IDENTITY = 'tool:htop';
+/** The tools the maintenance workspace can hold. One today; the union grows with the section. */
+export type MaintenanceToolKind = 'htop';
 
-/** Typed into the login shell. Missing htop prints `command not found`, which is the honest answer. */
-export const MAINTENANCE_COMMAND = 'htop';
+/** What runs in a tool pane, keyed by kind. A missing htop prints `command not found` — the honest answer. */
+const TOOL_COMMANDS: Record<MaintenanceToolKind, string> = { htop: 'htop' };
 
-/** The one tab the maintenance bar holds. A fresh object per call: tab labels are mutable display state. */
-export function maintenanceTab(): WorkspaceTab {
-  return { kind: 'tool', id: MAINTENANCE_IDENTITY, label: 'htop' };
+/** One open tool on one host. */
+export interface MaintenanceTool {
+  host: string;
+  kind: MaintenanceToolKind;
 }
 
-/** The one pane record, minted on arrival and pruned on leaving. */
-export function maintenancePane(): SessionPaneRecord {
-  return { id: 'pane-maintenance', session: 'htop', identity: MAINTENANCE_IDENTITY };
+/** The open tools, this app session. Never persisted: a restart forgets, and the button re-teaches. */
+const openTools = ref<readonly MaintenanceTool[]>([]);
+
+/** Open [kind] on [host] — a no-op when it is already open. The trigger's one state change. */
+export function openMaintenanceTool(host: string, kind: MaintenanceToolKind = 'htop'): void {
+  if (maintenanceToolsFor(host).some((tool) => tool.kind === kind)) return;
+  openTools.value = [...openTools.value, { host, kind }];
+}
+
+/** Close [kind] on [host]: the row and the tab go, and the section follows when the last one does. */
+export function closeMaintenanceTool(host: string, kind: MaintenanceToolKind): void {
+  openTools.value = openTools.value.filter((tool) => !(tool.host === host && tool.kind === kind));
+}
+
+/**
+ * Close by kind NAME — for the surfaces that carry the kind as a string
+ * (the sidebar row's event payload). An unknown kind is a no-op, not a
+ * crash: the row and the list can only disagree for one tick, if ever.
+ */
+export function closeMaintenanceToolByName(host: string, kind: string): void {
+  if (kind in TOOL_COMMANDS) closeMaintenanceTool(host, kind as MaintenanceToolKind);
+}
+
+/** [host]'s open tools, in open order. */
+export function maintenanceToolsFor(host: string | null | undefined): readonly MaintenanceTool[] {
+  return host ? openTools.value.filter((tool) => tool.host === host) : [];
+}
+
+/**
+ * The registry identity of a tool pane — HOST-scoped, because vue-router
+ * reuses the folder workspace across hosts and a bare `tool:htop` would let
+ * one host's pane answer for another's.
+ */
+export function maintenanceToolIdentity(host: string, kind: MaintenanceToolKind): string {
+  return `tool:${host}:${kind}`;
+}
+
+/** The kind an identity carries, or null for anything that is not a tool pane. */
+export function maintenanceKindOf(identity: string): MaintenanceToolKind | null {
+  const parts = identity.split(':');
+  const kind = parts.length === 3 ? parts[2] : undefined;
+  return parts[0] === 'tool' && kind !== undefined && kind in TOOL_COMMANDS
+    ? (kind as MaintenanceToolKind)
+    : null;
+}
+
+/** True when [identity] belongs to a maintenance tool pane. */
+export function isMaintenanceIdentity(identity: string): boolean {
+  return maintenanceKindOf(identity) !== null;
+}
+
+/** The command a tool pane runs, or undefined when [identity] is not one of ours. */
+export function maintenanceCommandFor(identity: string): string | undefined {
+  const kind = maintenanceKindOf(identity);
+  return kind ? TOOL_COMMANDS[kind] : undefined;
+}
+
+/** The tab [tool] wears in the maintenance bar. A fresh object per call: tab labels are mutable display state. */
+export function maintenanceToolTab(host: string, tool: MaintenanceTool): WorkspaceTab {
+  return { kind: 'tool', id: maintenanceToolIdentity(host, tool.kind), label: tool.kind };
+}
+
+/** The pane record for a tool identity, minted the first time the tool is shown. */
+export function maintenanceToolPane(identity: string): SessionPaneRecord {
+  return { id: `pane-${identity}`, session: maintenanceKindOf(identity) ?? identity, identity };
 }
 
 /** True when the route's `:folder` is the maintenance root. */
@@ -53,34 +121,12 @@ export function isMaintenanceFolder(folderKey: string | null | undefined): boole
 }
 
 /**
- * The hosts whose maintenance workspace has been opened this app session —
- * the sidebar section's visibility rule. The section is the door BACK, so it
- * appears only once there is something to come back to: the Host monitor
- * button marks the host on its way to the route, and being ON the workspace
- * counts by itself. A reload forgets the list — the button re-teaches it.
- * Deliberately not persisted: a section that outlives its use is the
- * permanent chrome this rule exists to avoid.
- */
-const openedHosts = ref<readonly string[]>([]);
-
-/** Record [host]'s maintenance workspace as opened; its sidebar section follows. */
-export function markMaintenanceOpened(host: string): void {
-  if (!openedHosts.value.includes(host)) openedHosts.value = [...openedHosts.value, host];
-}
-
-/** True once [host]'s maintenance workspace has been opened this session. */
-export function maintenanceOpenedFor(host: string | null | undefined): boolean {
-  return !!host && openedHosts.value.includes(host);
-}
-
-/**
- * The sidebar row's directory shape — what the session tree's pinned
- * Maintenance section hands the SAME `select` event the folder rows emit, so
- * navigation, re-click focus and the current-row tint are the folder rows'
- * own machinery. It models no directory: `rows` is empty and never enters the
- * grouping (the section is chrome the tree renders beside the roots, not a
- * root among them), and `path` is the pseudo-key itself — the row names a
- * workspace, not a place on disk.
+ * The sidebar row's route-level directory — what the session tree's
+ * Maintenance section hands the SAME `select` event the folder rows emit,
+ * with the tool's identity as the tab hand-off. It models no directory:
+ * `rows` is empty and never enters the grouping (the section is chrome the
+ * tree renders beside the roots, not a root among them), and `path` is the
+ * pseudo-key itself — the row names a workspace, not a place on disk.
  */
 export function maintenanceDirectory(): SessionDirectory {
   return {

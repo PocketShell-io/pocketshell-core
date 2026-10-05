@@ -4,9 +4,16 @@ import { applyTabOrder, buildWorkspaceTabs, pushMru, tabAfterClose, type Workspa
 import type { SessionSummary } from '@pocketshell/core';
 import type { useFilesStore } from './stores/files';
 import type { useSessionsStore } from './stores/sessions';
-import { prunePanes, upsertPane, type SessionPaneRecord } from './sessionPanes';
+import { upsertPane, type SessionPaneRecord } from './sessionPanes';
 import { sessionIdentityKey } from './sessionIdentity';
-import { MAINTENANCE_IDENTITY, isMaintenanceFolder, maintenancePane, maintenanceTab } from './maintenance';
+import {
+  isMaintenanceFolder,
+  isMaintenanceIdentity,
+  maintenanceToolIdentity,
+  maintenanceToolPane,
+  maintenanceToolTab,
+  maintenanceToolsFor,
+} from './maintenance';
 import type { SessionDirectory } from './sessionTree';
 import type { useWorkspaceMemory } from './useWorkspaceMemory';
 import { dockContextFor } from './dockContext';
@@ -29,6 +36,8 @@ export interface WorkspaceTabsDeps {
   folderKey: ComputedRef<string>;
   /** The folder's real path, or null for an untracked session's pseudo-folder. */
   folderPath: ComputedRef<string | null>;
+  /** The host alias from the route — the tools and their panes are host-scoped. */
+  hostAlias: ComputedRef<string>;
   sessions: ReturnType<typeof useSessionsStore>;
   files: ReturnType<typeof useFilesStore>;
   /** The remembered tab state and its persistence machinery (useWorkspaceMemory). */
@@ -80,11 +89,16 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   const { filesTabs, selected, mru, tabOrder, persist, pruneAgainst } = deps.memory;
 
   const tabs = computed<WorkspaceTab[]>(() => {
-    // The maintenance workspace derives nothing: no session is listed under
-    // `::maintenance::` (it names no directory), so the bar is the one tool
-    // tab, constant — no build, no collision numbering, no manual order to
-    // apply. See ../maintenance.ts for why the pane is the shape it is.
-    if (isMaintenanceFolder(deps.folderKey.value)) return [maintenanceTab()];
+    // The maintenance workspace derives nothing from the host's grouping: no
+    // session is listed under `::maintenance::` (it names no directory), so
+    // the bar is one tab per OPEN TOOL, in open order — no build, no
+    // collision numbering, no manual order to apply. See ../maintenance.ts
+    // for the tool model and what closing one means.
+    if (isMaintenanceFolder(deps.folderKey.value)) {
+      return maintenanceToolsFor(deps.hostAlias.value).map((tool) =>
+        maintenanceToolTab(deps.hostAlias.value, tool),
+      );
+    }
     // Derived first, then the user's own arrangement on top. The order of the two
     // steps IS the resolution of the two instructions: the automatic order is
     // what a tab gets until the user moves it, and a manual position wins once
@@ -230,11 +244,8 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     const live = new Set<string>();
     for (const tab of tabs.value) {
       if (tab.kind === 'session') live.add(identityFor(tab.session));
+      else if (tab.kind === 'tool') live.add(tab.id);
     }
-    // The maintenance pane's identity is on the bar by construction — the
-    // tool tab IS it — while the workspace is showing. Elsewhere the identity
-    // is foreign, and the prune below retires the pane with it.
-    if (isMaintenanceFolder(deps.folderKey.value)) live.add(MAINTENANCE_IDENTITY);
     return live;
   });
 
@@ -247,9 +258,17 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
    * while a RENAME keeps the pane rendering straight through: the row and the
    * pane record are rewritten in the same tick, so from the filter's point of
    * view the pane's identity never stopped being on the bar.
+   *
+   * A TOOL pane answers to no folder's bar: its host's tools are the authority
+   * (maintenance.ts), and it rides mounted-but-hidden across that host's
+   * folders — the same treatment a visited session tab's pane gets, minus the
+   * session. The render bypass here and the prune bypass below are the two
+   * halves of that; the lifetime rules themselves live in the tabs watcher.
    */
   const sessionPanes = computed(() =>
-    openPanes.value.filter((pane) => liveIdentities.value.has(pane.identity)),
+    openPanes.value.filter(
+      (pane) => isMaintenanceIdentity(pane.identity) || liveIdentities.value.has(pane.identity),
+    ),
   );
 
   const summary = computed(() => localRow(terminalSession.value));
@@ -343,17 +362,7 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     activeSessionIdentity,
     (identity) => {
       const name = activeSession.value;
-      if (!identity || !name) {
-        // The maintenance workspace has no session tab to point at, but its
-        // tool pane is the thing in front exactly as a session pane would be
-        // — the identity, not a session name, is what the v-show and the ref
-        // map read. A null identity in an ordinary folder stays a no-op: that
-        // is the Files tab's usual state.
-        if (isMaintenanceFolder(deps.folderKey.value)) {
-          terminalIdentity.value = MAINTENANCE_IDENTITY;
-        }
-        return;
-      }
+      if (!identity || !name) return;
       terminalSession.value = name;
       terminalIdentity.value = identity;
       const next = upsertPane(
@@ -361,6 +370,25 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
         { session: name, identity },
         () => `pane-${nextPaneId++}`,
       );
+      if (next !== openPanes.value) openPanes.value = next;
+    },
+    { immediate: true },
+  );
+
+  /**
+   * The active TOOL tab mounts its pane the moment it is in front — the same
+   * upsert-on-selection the session tabs get from the identity watcher above,
+   * which cannot fire here: a tool tab has no session, so the identity is
+   * null exactly when the tool pane must mount. Immediate, so a cold mount
+   * straight into the maintenance workspace (the Host monitor button on a
+   * fresh connection) mounts its pane on the first run.
+   */
+  watch(
+    activeTab,
+    (tab) => {
+      if (tab?.kind !== 'tool' || !isMaintenanceFolder(deps.folderKey.value)) return;
+      terminalIdentity.value = tab.id;
+      const next = upsertPane(openPanes.value, maintenanceToolPane(tab.id), () => `pane-${nextPaneId++}`);
       if (next !== openPanes.value) openPanes.value = next;
     },
     { immediate: true },
@@ -411,24 +439,25 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   watch(
     tabs,
     (list) => {
-      // The maintenance pane's lifetime is the workspace visit, and it is
-      // decided HERE rather than by the session-derived rules below: the
-      // maintenance bar holds no session rows, so the session list can say
-      // nothing about whether the pane is alive. Arriving upserts it (one
-      // record, fixed identity), leaving retires it — which unmounts the
-      // TerminalView and closes the PTY, and that is what makes htop die with
-      // the workspace instead of lingering behind the user's back. The
-      // removal runs BEFORE the session-list guard for the same reason: a
-      // host with no sessions would otherwise skip every prune and leave a
-      // hidden htop polling away.
-      if (isMaintenanceFolder(deps.folderKey.value)) {
-        const record = maintenancePane();
-        const next = upsertPane(openPanes.value, record, () => record.id);
-        if (next !== openPanes.value) openPanes.value = next;
-      } else {
-        const kept = openPanes.value.filter((pane) => pane.identity !== MAINTENANCE_IDENTITY);
-        if (kept.length !== openPanes.value.length) openPanes.value = kept;
-      }
+      // The tool panes' lifetime is maintenance.ts's, and it is decided HERE
+      // rather than by the session-derived rules below: no host session
+      // listing can say whether `htop` is open. The rule: a tool pane lives
+      // while its tool is open ON ITS OWN HOST — across folder navigation it
+      // rides along mounted-but-hidden (the render bypass in `sessionPanes`
+      // keeps it that way), so coming back is the same htop; a closed tool
+      // retires its pane, unmounting the TerminalView and closing the PTY,
+      // and so does a host switch, which the host-scoped identity cannot
+      // survive honestly. This runs BEFORE the session-list guard: the tool
+      // rules cannot depend on a session list that may never arrive.
+      const toolIds = new Set(
+        maintenanceToolsFor(deps.hostAlias.value).map((tool) =>
+          maintenanceToolIdentity(deps.hostAlias.value, tool.kind),
+        ),
+      );
+      const afterTools = openPanes.value.filter(
+        (pane) => !isMaintenanceIdentity(pane.identity) || toolIds.has(pane.identity),
+      );
+      if (afterTools.length !== openPanes.value.length) openPanes.value = afterTools;
       // Guarded on the HOST's session list having arrived, not on the bar being
       // non-empty — and the guard must stand over BOTH remembered lists and the
       // panes. A workspace whose sessions have not loaded yet — a deep link, a
@@ -449,16 +478,14 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
       // along, same-named aplexer tags answering for each other. Unmounting closes
       // the pane's SSH shell; for a dead or left-behind session that is the honest
       // teardown, and it is what stops a re-created same-named session from
-      // inheriting a pane still pointed at a dead PTY. The guard above covers this
-      // too: panes exist only once a session list has loaded, so the prune never
-      // runs against a bar that is merely waiting for its rows.
-      const keptPanes = prunePanes(openPanes.value, liveIdentities.value);
+      // inheriting a pane still pointed at a dead PTY. TOOL panes are the
+      // deliberate exception handled above: their authority is the tool list,
+      // not this folder's bar.
+      const keptPanes = openPanes.value.filter(
+        (pane) => isMaintenanceIdentity(pane.identity) || liveIdentities.value.has(pane.identity),
+      );
       if (keptPanes.length !== openPanes.value.length) openPanes.value = keptPanes;
     },
-    // Immediate, so a cold mount straight INTO the maintenance workspace — the
-    // Host monitor button on a fresh connection — mints its pane on the first
-    // run rather than waiting for a tabs change that never comes: the bar is
-    // a constant there.
     { immediate: true },
   );
 

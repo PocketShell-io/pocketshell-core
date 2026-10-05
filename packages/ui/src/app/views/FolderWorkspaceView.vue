@@ -51,7 +51,7 @@
 // useWorkspaceChords; the workspace memory, rename, launch, stop and reveal
 // were already composables of their own.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type VNode } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { registerWorkspaceFocus, unregisterWorkspaceFocus } from '../workspaceFocus';
 import { useConnectionStore } from '../stores/connection';
 import { useSessionsStore } from '../stores/sessions';
@@ -78,7 +78,14 @@ import { absoluteRemoteFolder, vscodeHostToken } from '@pocketshell/core/shared/
 import { errorMessage } from '@pocketshell/core/shared/errors';
 import { recordDiagDetail } from '../diag';
 import { UNTRACKED_PATH } from '../sessionGrouping';
-import { MAINTENANCE_COMMAND, MAINTENANCE_IDENTITY, isMaintenanceFolder } from '../maintenance';
+import {
+  closeMaintenanceTool,
+  isMaintenanceFolder,
+  isMaintenanceIdentity,
+  maintenanceCommandFor,
+  maintenanceKindOf,
+  maintenanceToolsFor,
+} from '../maintenance';
 import { useFolderTree } from '../folderTree';
 import { useWorkspaceMemory } from '../useWorkspaceMemory';
 import { useSessionRename } from '../useSessionRename';
@@ -89,6 +96,7 @@ import { useWorkspaceTabs } from '../useWorkspaceTabs';
 import { useWorkspaceChords } from '../useWorkspaceChords';
 
 const route = useRoute();
+const router = useRouter();
 const connection = useConnectionStore();
 const sessions = useSessionsStore();
 const projects = useProjectsStore();
@@ -139,11 +147,9 @@ const folder = computed(() => folders.value.find((dir) => dir.key === folderKey.
 /** The maintenance workspace — a hidden root whose one pane is a tool, not a session. */
 const isMaintenance = computed(() => isMaintenanceFolder(folderKey.value));
 
-/**
- * The folder's real path, or null for a folder that names no directory: an
- * untracked session's pseudo-folder, or the maintenance root, whose pane runs
- * in `~` by being a login shell's own cwd rather than by any path of ours.
- */
+/** The folder's real path, or null when it names no directory — an untracked
+    session's pseudo-folder, or the maintenance root, whose pane runs in `~`
+    by being a login shell's own cwd. */
 const folderPath = computed(() => {
   if (isMaintenance.value) return null;
   const path = folder.value?.path ?? folderKey.value;
@@ -183,11 +189,30 @@ const {
   folder,
   folderKey,
   folderPath,
+  hostAlias,
   sessions,
   files,
   memory,
   focusActiveTab,
 });
+
+// The last close while standing in the workspace is an exit: an empty bar
+// under a route that names no directory has no honest empty state. Every
+// surface closes through the same tool list; this watcher owns only the exit.
+watch(
+  () => maintenanceToolsFor(hostAlias.value).length,
+  (count) => {
+    if (count === 0 && isMaintenanceFolder(folderKey.value)) {
+      void router.push({ name: 'host-sessions', params: { name: hostAlias.value } });
+    }
+  },
+);
+
+/** A tool tab's ×: close the tool it names. The exit case is the watcher above. */
+function onToolClose(tab: Extract<WorkspaceTab, { kind: 'tool' }>): void {
+  const kind = maintenanceKindOf(tab.id);
+  if (kind) closeMaintenanceTool(hostAlias.value, kind);
+}
 
 /**
  * The engine recorded host-side for the active session, narrowed to what the
@@ -703,6 +728,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       @rename-input="onRenameInput"
       @stop="stopping = $event"
       @close-files="closeFilesTab"
+      @close-tool="onToolClose"
       @launch="openLaunchDialog"
       @add-files="addFilesFromMenu"
       @add-toggle="toggleAddMenu"
@@ -749,9 +775,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
              folder just navigated away from — stops rendering. The match is by
              the workspace-qualified identity, never the bare name: two
              workspaces' `main` tabs must not show each other's terminal. -->
-        <!-- The TOOL pane (the maintenance workspace's htop) shows under the
-             same rule: its tab is on the bar, so its pane is what is in front.
-             It binds bare + command instead of a session — see maintenance.ts. -->
+        <!-- The TOOL pane (the maintenance workspace's htop) shows under the same rule; it binds bare + command instead of a session (maintenance.ts). -->
         <div
           class="terminal-area"
           v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
@@ -767,14 +791,14 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               :ref="(el) => setTerminalRef(pane.identity, el)"
               :connection-id="connection.connectionId"
               :session-key="pane.identity"
-              :bare="pane.identity === MAINTENANCE_IDENTITY"
-              :command="pane.identity === MAINTENANCE_IDENTITY ? MAINTENANCE_COMMAND : undefined"
-              :session-name="pane.identity === MAINTENANCE_IDENTITY ? undefined : pane.session"
+              :bare="isMaintenanceIdentity(pane.identity)"
+              :command="maintenanceCommandFor(pane.identity)"
+              :session-name="isMaintenanceIdentity(pane.identity) ? undefined : pane.session"
               :backend="sessionMeta.get(pane.session)?.backend"
               :workspace="sessionMeta.get(pane.session)?.workspace"
               :aplexer-id="sessionMeta.get(pane.session)?.aplexerId"
               :intercept-typing="
-                pane.identity !== MAINTENANCE_IDENTITY &&
+                !isMaintenanceIdentity(pane.identity) &&
                 interceptTyping &&
                 pane.identity === terminalIdentity
               "
