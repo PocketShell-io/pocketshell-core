@@ -48,7 +48,15 @@ export type WorkspaceTab =
       label: string;
       created: number;
     }
-  | { kind: 'files'; id: string; label: string; path: string | null };
+  | { kind: 'files'; id: string; label: string; path: string | null }
+  /**
+   * A tool pane the CLIENT mints rather than the host lists — today only the
+   * maintenance workspace's `htop`. Never arrives from `buildWorkspaceTabs`
+   * (no session backs it, so it has no `created` and no rename): the caller
+   * whose workspace is a shell around one fixed tool injects it, and the pane
+   * lives exactly as long as that workspace is on screen.
+   */
+  | { kind: 'tool'; id: string; label: string };
 
 /** Files tabs all read `Files`; a second one becomes `Files 2`. */
 export const FILES_LABEL = 'Files';

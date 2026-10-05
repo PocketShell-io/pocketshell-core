@@ -13,6 +13,15 @@ import { sanitisePart } from './sessionNameParts';
 export const OTHER_ROOT = '::other::';
 export const OTHER_LABEL = 'other';
 
+/**
+ * Sentinel key for the maintenance root — the hidden technical workspace the
+ * host monitor opens (`htop` in `~`) instead of a panel that samples the host
+ * itself. Like {@link OTHER_ROOT} it is a stable list key and never a real
+ * path: sessions cannot be filed under it, the `+` on it is refused, and a
+ * client shows it only while its workspace is open.
+ */
+export const MAINTENANCE_ROOT = '::maintenance::';
+
 /* ---------------------------------------------------------------------------
  * Registered roots — the top level, when the user has configured one
  *
@@ -314,11 +323,13 @@ export function directoryKey(folderPath: string, home: string | null): string {
  * which runs no shell, so `~/git` passed through as-is names a directory that
  * does not exist and the browse fails with a confusing "no such file".
  *
- * Null rather than a guess in the three cases where there is no honest answer:
+ * Null rather than a guess in the four cases where there is no honest answer:
  *
  *   - the `other` bucket is not a directory at all — it is where paths that
  *     matched no root went, and there is nothing to create a session *in*;
  *   - {@link UNTRACKED_PATH} is the same, one level down;
+ *   - the maintenance root is a workspace shell around one tool pane (`htop`
+ *     in `~`), not a directory sessions can be created in;
  *   - a `~`-rooted key on a host whose `$HOME` we never learned. Substituting
  *     the literal `~` would put the session somewhere the user did not pick.
  *
@@ -326,7 +337,7 @@ export function directoryKey(folderPath: string, home: string | null): string {
  * (`/srv/apps`) passes straight through: that spelling needs no expansion.
  */
 export function rootHostPath(key: string, home: string | null): string | null {
-  if (key === OTHER_ROOT || key === UNTRACKED_PATH) return null;
+  if (key === OTHER_ROOT || key === UNTRACKED_PATH || key === MAINTENANCE_ROOT) return null;
   const homePrefix = normaliseHome(home);
   if (key === '~' || key === '$HOME') return homePrefix;
   if (key.startsWith('~/')) {

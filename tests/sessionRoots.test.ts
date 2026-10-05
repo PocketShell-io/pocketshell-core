@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { UNTRACKED_PATH } from '../src/sessionGrouping';
 import {
   SESSION_ROOTS_MAX,
+  MAINTENANCE_ROOT,
   OTHER_LABEL,
   OTHER_ROOT,
   bestRootForPath,
@@ -324,6 +325,13 @@ describe('rootHostPath', () => {
     // this is the guard behind that decision rather than a duplicate of it.
     expect(rootHostPath(OTHER_ROOT, home)).toBeNull();
     expect(rootHostPath(UNTRACKED_PATH, home)).toBeNull();
+  });
+
+  it('has no answer for the maintenance root, which shells a tool, not a directory', () => {
+    // The maintenance workspace's pane opens in `~` by running a command in a
+    // login shell; nothing is ever created *in* the root, so a `+` there would
+    // be offering a session under a key that names nothing.
+    expect(rootHostPath(MAINTENANCE_ROOT, home)).toBeNull();
   });
 
   it('refuses to expand `~` when $HOME is unknown, rather than guessing', () => {

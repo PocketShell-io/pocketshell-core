@@ -570,7 +570,9 @@ const { stopping, stopBusy, confirmStop } = useSessionStop({
  */
 function closeActiveTab(tab: WorkspaceTab): void {
   if (tab.kind === 'files') closeFilesTab(tab.id);
-  else stopping.value = tab.session;
+  else if (tab.kind === 'session') stopping.value = tab.session;
+  // A tool pane has no session to stop and no close of its own — it lives
+  // exactly while its workspace is on screen.
 }
 
 /**
