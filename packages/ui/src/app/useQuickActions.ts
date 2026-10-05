@@ -74,10 +74,10 @@ export interface QuickActionsDeps {
    */
   goToFolderPath: (absPath: string) => void;
   /**
-   * The maintenance verbs' landing (Host monitor, Provider usage): OPEN the
-   * tool on this host and navigate to the maintenance workspace — a
-   * navigation, not an overlay flip, and the route is the view's to spell
-   * (docs/MONITOR.md).
+   * The maintenance verbs' landing (Host monitor, Provider usage, Port
+   * forwarding): OPEN the tool on this host and navigate to the maintenance
+   * workspace — a navigation, not an overlay flip, and the route is the
+   * view's to spell (docs/MONITOR.md).
    */
   openMaintenance: (kind: MaintenanceToolKind) => void;
   /** The way out: back to the host list. */
@@ -223,7 +223,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
         label: 'New session…',
         run: () => deps.sessionTree.value?.openCreate(),
       },
-      { id: 'panel:ports', label: 'Port forwarding', run: () => (deps.panel.value = 'ports') },
+      { id: 'panel:ports', label: 'Port forwarding', run: () => deps.openMaintenance('ports') },
       { id: 'panel:usage', label: 'Provider usage', run: () => deps.openMaintenance('usage') },
       { id: 'panel:monitor', label: 'Host monitor', run: () => deps.openMaintenance('htop') },
       { id: 'panel:settings', label: 'Settings', run: () => (deps.panel.value = 'settings') },

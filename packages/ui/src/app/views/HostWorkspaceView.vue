@@ -28,8 +28,10 @@
 //     its own destination, next to where the connection was opened.
 //
 // Folders are the default view of a host, and tabs belong to the selected
-// FOLDER. The host-scoped panels — port forwarding, provider usage and the
-// host monitor — open as overlays, because none is a property of one folder.
+// FOLDER. Port forwarding, provider usage and the host monitor are
+// host-scoped tools now, not overlays: their buttons open them as tabs of
+// the maintenance workspace (docs/MONITOR.md, openPanel below). Settings
+// alone stays an overlay here.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
@@ -54,9 +56,13 @@ import { requestWorkspaceFocus } from '../workspaceFocus';
 import { useFolderTree } from '../folderTree';
 import { adjacentIndex } from '@pocketshell/core/shared/listNavigation';
 import { editingTarget } from '../editingTarget';
-import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
-import { closeMaintenanceToolByName, MAINTENANCE_ROOT, openMaintenanceTool } from '../maintenance';
+import {
+  closeMaintenanceToolByName,
+  MAINTENANCE_ROOT,
+  openMaintenanceTool,
+  type MaintenanceToolKind,
+} from '../maintenance';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
@@ -66,8 +72,10 @@ import { useNarrowWorkspace } from '../useNarrowWorkspace';
 const route = useRoute();
 const router = useRouter();
 const connection = useConnectionStore();
-// Subscribed only while the ports overlay is open — see the autoFwd watch
-// below for why its `autoOn` is mirrored rather than rendered directly.
+// The ports tool's store — its subscription lives while the ports pane is
+// mounted (the maintenance workspace keeps panes across folder navigations),
+// which is why the button reads the autoFwd MIRROR rather than the store
+// directly; see the watch below.
 const forwards = useForwardsStore();
 // Read for the chord table only; see the panel comment below for why settings
 // is otherwise not this view's business.
@@ -88,7 +96,8 @@ watch(
 );
 
 /**
- * Which panel is open as an overlay, if any.
+ * Which panel is open as an overlay, if any — settings only, since the
+ * other three became maintenance tools.
  *
  * `settings` is the odd one out and is here anyway: most settings are app
  * level, while the project-root section is scoped to this connected host. A
@@ -104,12 +113,13 @@ const panel = ref<HostPanel | null>(null);
  * button's ring-and-dot indicator.
  *
  * Deliberately NOT read off the forwards store's own `autoOn`: that ref is
- * only live while the ports overlay is mounted (PortPanelView subscribes on
+ * only live while the ports pane is mounted (PortPanelView subscribes on
  * mount and the store `clear()`s on unmount), and the indicator has to be
  * right the rest of the time — which is most of it. So this asks the engine's
  * own question — `isAutoEnabled`: forwarder running, else the persisted
- * per-host flag — whenever the connection or the overlay changes, and while
- * the overlay IS open the store's live flips are mirrored straight through, so
+ * per-host flag — whenever the connection changes, and the store's live
+ * flips are mirrored straight through while the pane keeps the store
+ * subscribed, so
  * a toggle inside the panel reaches the header button without waiting for a
  * reopen.
  */
@@ -131,14 +141,17 @@ watch(
 watch(
   () => forwards.autoOn,
   (on) => {
-    if (panel.value === 'ports') autoFwd.value = on;
+    // Unconditional on purpose: the store only flips while the ports pane's
+    // subscription is live, so this fires exactly when the flip is real.
+    // The old gate on the overlay's panel ref is gone with the overlay.
+    autoFwd.value = on;
   },
 );
 
 /**
  * How many forwards are live for this host — the Ports button's count pill
  *. Same home as `autoFwd` for the same reason: the
- * forwards store is only fresh while the ports overlay is mounted, and the
+ * forwards store is only fresh while the ports pane is mounted, and the
  * badge has to be right the rest of the time.
  *
  * The engine already BROADCASTS every state change — `forwards:states` goes
@@ -337,17 +350,23 @@ const switcherTitle = computed(() =>
 );
 
 /**
- * The one landing for the maintenance triggers — the Host monitor and
- * Provider usage buttons (header strip, rail) and their palette verbs. Those
- * panels are not overlays any more: they are TOOLS in the maintenance
- * workspace (docs/MONITOR.md), so opening one adds the tool to the host's
- * list and NAVIGATES there. The remaining panel names are overlays and flip
- * the ref as before.
+ * The one landing for the maintenance triggers — the Host monitor, Provider
+ * usage and Port forwarding buttons (header strip, rail) and their palette
+ * verbs. Those panels are not overlays any more: they are TOOLS in the
+ * maintenance workspace (docs/MONITOR.md), so opening one adds the tool to
+ * the host's list and NAVIGATES there. Settings is the one overlay left and
+ * flips the ref as before.
  */
+const TOOL_OF_PANEL: Record<Exclude<HostPanel, 'settings'>, MaintenanceToolKind> = {
+  monitor: 'htop',
+  usage: 'usage',
+  ports: 'ports',
+};
+
 function openPanel(name: HostPanel): void {
-  if (name === 'monitor' || name === 'usage') {
+  if (name !== 'settings') {
     const host = String(route.params['name']);
-    openMaintenanceTool(host, name === 'monitor' ? 'htop' : 'usage');
+    openMaintenanceTool(host, TOOL_OF_PANEL[name]);
     void router.push({
       name: 'folder',
       params: { name: host, folder: MAINTENANCE_ROOT },
@@ -669,30 +688,12 @@ function onBack(): void {
       </main>
     </div>
 
-    <!-- Host-level panels: overlays, never peers of the session tabs. -->
-    <OverlayPanel v-if="panel === 'ports'" title="Port forwarding" @close="panel = null">
-      <!-- Scan lives HERE, in the overlay's action row beside the close
-           control — the same seat Usage's refresh occupies — rather than in
-           the panel's face: the engine rescans on its
-           own every few seconds, so an always-visible Scan button spent the
-           panel's best row on a thing you almost never open the panel to do.
-           One policy-applying pass is what a press means (forwards.ts). -->
-      <template #actions>
-        <button
-          class="icon-btn"
-          :disabled="forwards.loading || !connection.connectionId"
-          title="Scan the host's ports now"
-          @click="connection.connectionId && forwards.scan(connection.connectionId)"
-        >
-          <AppIcon name="refresh" :class="{ spin: forwards.loading }" />
-        </button>
-      </template>
-      <PortPanelView v-if="connection.connectionId" />
-    </OverlayPanel>
-    <!-- Provider usage is not an overlay either: its button and palette verb
-         OPEN the usage tool in the maintenance workspace (openPanel above),
-         where UsageView mounts headed — it owns its own title and refresh
-         there, `embedded` having been the overlay's job. -->
+    <!-- Host-level panels: overlays, never peers of the session tabs.
+         Port forwarding, Provider usage and the Host monitor are NOT here —
+         their buttons and palette verbs OPEN a tool in the maintenance
+         workspace (openPanel above), where each view mounts headed and owns
+         its own chrome: PortPanelView's bar carries Scan, UsageView's its
+         refresh. Settings is the one overlay left. -->
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">
       <SettingsView />
     </OverlayPanel>

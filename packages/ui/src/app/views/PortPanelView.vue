@@ -28,8 +28,9 @@
 //
 // Arrangement: the panel's face is the LIVE table —
 // what is forwarded now. Everything else is one quiet control away: Scan
-// moved up into the overlay header beside the close control (where Usage's
-// refresh already lives), the manual-add form hides behind an "Add forward"
+// sits at the bar's right end (the panel is headed — the maintenance
+// workspace mounts it bare, no overlay header to hold the button), the
+// manual-add form hides behind an "Add forward"
 // expander, and ports that are listening but not forwarded fold under a
 // "N not forwarded" disclosure row instead of leading the table.
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
@@ -350,6 +351,19 @@ function fmtScanTime(epochMs: number | null): string {
       <span v-if="forwards.status" class="muted scan-time">
         last scan {{ fmtScanTime(forwards.status.lastScanAt) }}
       </span>
+      <!-- The panel's own Scan: it lives HERE again because the panel is
+           headed now — the maintenance workspace mounts it bare, and there is
+           no overlay header to hold the button (the seat Usage's refresh
+           occupies in UsageView's own bar). The engine rescans on its own
+           every few seconds; this is the "prove it stale, right now" press. -->
+      <button
+        class="icon-btn scan"
+        :disabled="forwards.loading || !connId"
+        title="Scan the host's ports now"
+        @click="connId && forwards.scan(connId)"
+      >
+        <AppIcon name="refresh" :class="{ spin: forwards.loading }" />
+      </button>
     </div>
 
     <!-- A failing scan is a banner, not a modal: the tunnels that are already
@@ -647,6 +661,10 @@ function fmtScanTime(epochMs: number | null): string {
   min-width: 0;
 }
 .scan-time {
+  /* The bar's flex-wrap lets narrow widths carry the timestamp to the next
+     row; pushing it (and the scan button after it) to the right edge keeps
+     the row's controls reading left-to-right in weight order. */
+  margin-left: auto;
   font-size: var(--fs-100);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

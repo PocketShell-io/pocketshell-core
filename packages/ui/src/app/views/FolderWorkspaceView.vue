@@ -64,6 +64,7 @@ import { api } from '../ipc';
 import AppIcon from '@ui/components/AppIcon.vue';
 import TerminalView from '../components/TerminalView.vue';
 import UsageView from './UsageView.vue';
+import PortPanelView from './PortPanelView.vue';
 import PromptComposer from '../components/PromptComposer.vue';
 import FilesView from './FilesView.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
@@ -794,19 +795,25 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
             />
           </div>
           <!-- A VIEW tool's pane: the workspace mounts the tool's component
-               instead of a terminal (maintenance.ts's TOOL_DEFS decides which
-               is which). Same lifetime rules as a command tool's pane — kept
-               mounted, shown by identity — so switching back to the usage tab
-               is the same view with its data, not a remount. No terminal ref:
-               there is nothing here for focusActiveTab to focus, and its
-               lookup already tolerates that. -->
+               instead of a terminal — the kind decides which (the same
+               maintenance.ts table the rows and tabs render from). Same
+               lifetime rules as a command tool's pane — kept mounted, shown
+               by identity — so switching back to a tool tab is the same view
+               with its data, not a remount. No terminal ref: there is nothing
+               here for focusActiveTab to focus, and its lookup already
+               tolerates that. -->
           <div
             v-for="pane in toolViewPanes"
             :key="pane.id"
             v-show="pane.identity === terminalIdentity"
             class="terminal-slot tool-view-slot"
           >
-            <UsageView v-if="connection.connectionId" />
+            <UsageView
+              v-if="connection.connectionId && maintenanceKindOf(pane.identity) === 'usage'"
+            />
+            <PortPanelView
+              v-else-if="connection.connectionId && maintenanceKindOf(pane.identity) === 'ports'"
+            />
           </div>
           <!-- extensions.ts `terminal.dock`: nothing contributed, nothing drawn. -->
           <ExtensionSlot v-if="terminalDockContext" name="terminal.dock" :context="terminalDockContext" />

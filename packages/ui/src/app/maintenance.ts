@@ -38,19 +38,19 @@ import type { SessionPaneRecord } from './sessionPanes';
 export { MAINTENANCE_ROOT };
 
 /** The tools the maintenance workspace can hold. The union grows with the section. */
-export type MaintenanceToolKind = 'htop' | 'usage';
+export type MaintenanceToolKind = 'htop' | 'usage' | 'ports';
 
 /**
  * One tool's descriptor. A tool is either a COMMAND pane — the workspace
  * types `command` into a bare login shell (htop) — or a VIEW pane, where the
- * workspace mounts the named component instead of a terminal (usage), and
- * `command` is absent. Everything a row or a tab needs to render a tool
+ * workspace mounts the named component instead of a terminal (usage, ports),
+ * and `command` is absent. Everything a row or a tab needs to render a tool
  * rides here, so no surface hard-codes a kind.
  */
 export interface MaintenanceToolDef {
   kind: MaintenanceToolKind;
   /** The sidebar row's and the tab bar's glyph. */
-  icon: 'activity' | 'bar-chart-2';
+  icon: 'activity' | 'bar-chart-2' | 'arrow-right-left';
   /** The row's and the tab's tooltip. */
   description: string;
   /** What a command tool types into its login shell. Absent for a view tool. */
@@ -68,6 +68,11 @@ const TOOL_DEFS: Record<MaintenanceToolKind, MaintenanceToolDef> = {
     kind: 'usage',
     icon: 'bar-chart-2',
     description: 'Provider usage — quota and resets, per provider.',
+  },
+  ports: {
+    kind: 'ports',
+    icon: 'arrow-right-left',
+    description: 'Port forwarding — tunnels and listeners on this host.',
   },
 };
 
