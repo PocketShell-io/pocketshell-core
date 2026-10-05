@@ -58,7 +58,7 @@ import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
 import UsageView from './UsageView.vue';
-import { MAINTENANCE_ROOT } from '../maintenance';
+import { MAINTENANCE_ROOT, markMaintenanceOpened } from '../maintenance';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
@@ -349,6 +349,10 @@ const switcherTitle = computed(() =>
  */
 function openPanel(name: HostPanel): void {
   if (name === 'monitor') {
+    // Marking BEFORE the push is what makes the sidebar section appear: it is
+    // the door back, and this click is the moment there is something to come
+    // back to (maintenance.ts's opened list).
+    markMaintenanceOpened(String(route.params['name']));
     void router.push({
       name: 'folder',
       params: { name: String(route.params['name']), folder: MAINTENANCE_ROOT },

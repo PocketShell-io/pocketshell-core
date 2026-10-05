@@ -73,6 +73,15 @@ const props = withDefaults(
      * arranged folder in an order its own bar no longer wears.
      */
     tabOrders: Record<string, readonly string[]>;
+    /**
+     * Whether the pinned Maintenance section shows at all. It is the door
+     * BACK to the tool workspaces, so it appears once there is something to
+     * come back to — the host's workspace opened this session, or being on
+     * it right now — and stays hidden before that, however many roots the
+     * host has. The wrapper owns the rule (maintenance.ts's opened list);
+     * this component only obeys it.
+     */
+    showMaintenance?: boolean;
   }>(),
   {
     activeFolder: null,
@@ -84,6 +93,7 @@ const props = withDefaults(
     showSessions: false,
     dragging: null,
     dropTarget: null,
+    showMaintenance: false,
   },
 );
 
@@ -443,17 +453,19 @@ function onFolderClick(dir: SessionDirectory): void {
       </ul>
     </section>
 
-    <!-- THE MAINTENANCE SECTION — the pinned door back to the tool workspaces
-         (docs/MONITOR.md). The roots above are the host's own grouping; this
-         section is the app's own chrome, so it renders for every host, sits
-         outside the filter (it is not data a session query narrows), takes no
-         sort and no drag. One row today — the workspace the Host monitor
-         button opens, where `htop` runs in `~`; a second tool workspace slots
-         in here as a sibling row. The row emits the SAME `select` the folder
-         rows do, carrying a key-only directory (maintenance.ts), so
-         navigation, the re-click focus and the `current` tint are the folder
-         rows' own machinery, not a second path. -->
-    <section class="folder maintenance-section" aria-label="Maintenance">
+    <!-- THE MAINTENANCE SECTION — the door back to the tool workspaces
+         (docs/MONITOR.md), shown once the host's workspace has been opened
+         (`showMaintenance`) and never as permanent chrome. The roots above
+         are the host's own grouping; this section is the app's own, so it
+         sits outside the filter (it is not data a session query narrows),
+         takes no sort and no drag. One row today — the workspace the Host
+         monitor button opens, where `htop` runs in `~`; a second tool
+         workspace slots in here as a sibling row. The row emits the SAME
+         `select` the folder rows do, carrying a key-only directory
+         (maintenance.ts), so navigation, the re-click focus and the
+         `current` tint are the folder rows' own machinery, not a second
+         path. -->
+    <section v-if="showMaintenance" class="folder maintenance-section" aria-label="Maintenance">
       <div class="folder-header">
         <span class="dot" />
         <span class="folder-label">Maintenance</span>

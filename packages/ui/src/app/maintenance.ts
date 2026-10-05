@@ -8,8 +8,9 @@
  *
  * The root is `MAINTENANCE_ROOT` (`::maintenance::`, from core) — a stable
  * workspace key that names no directory, which is why it is not a root in the
- * session tree's grouping: the panel renders a pinned Maintenance section for
- * it instead (SessionTreeRowsView), and the Host monitor button opens the
+ * session tree's grouping: the panel renders a Maintenance section for it
+ * once the host's workspace has been opened (`markMaintenanceOpened`), and
+ * the Host monitor button opens the
  * same route. The pane is
  * BARE (`TerminalView`'s `bare` prop): a plain SSH login shell in the user's
  * `$HOME` — sshd's own default cwd, no `cd` typed on their behalf — with
@@ -22,6 +23,7 @@
  * SSH shell, and htop dies with it. Nothing is left polling the host, and no
  * session appears in any host-side listing.
  */
+import { ref } from 'vue';
 import { MAINTENANCE_ROOT } from '@pocketshell/core';
 import type { WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import type { SessionDirectory } from './sessionTree';
@@ -48,6 +50,27 @@ export function maintenancePane(): SessionPaneRecord {
 /** True when the route's `:folder` is the maintenance root. */
 export function isMaintenanceFolder(folderKey: string | null | undefined): boolean {
   return folderKey === MAINTENANCE_ROOT;
+}
+
+/**
+ * The hosts whose maintenance workspace has been opened this app session —
+ * the sidebar section's visibility rule. The section is the door BACK, so it
+ * appears only once there is something to come back to: the Host monitor
+ * button marks the host on its way to the route, and being ON the workspace
+ * counts by itself. A reload forgets the list — the button re-teaches it.
+ * Deliberately not persisted: a section that outlives its use is the
+ * permanent chrome this rule exists to avoid.
+ */
+const openedHosts = ref<readonly string[]>([]);
+
+/** Record [host]'s maintenance workspace as opened; its sidebar section follows. */
+export function markMaintenanceOpened(host: string): void {
+  if (!openedHosts.value.includes(host)) openedHosts.value = [...openedHosts.value, host];
+}
+
+/** True once [host]'s maintenance workspace has been opened this session. */
+export function maintenanceOpenedFor(host: string | null | undefined): boolean {
+  return !!host && openedHosts.value.includes(host);
 }
 
 /**

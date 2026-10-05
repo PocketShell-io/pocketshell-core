@@ -80,6 +80,7 @@ import { useSettingsStore } from '../stores/settings';
 import { useWorkspaceRootsStore } from '../stores/workspaceRoots';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { editingTarget } from '../editingTarget';
+import { MAINTENANCE_ROOT, maintenanceOpenedFor } from '../maintenance';
 import { useFolderTree } from '../folderTree';
 import { rootHostPath } from '../sessionRoots';
 import { directoryForSession, type SessionDirectory } from '../sessionTree';
@@ -604,6 +605,7 @@ defineExpose({ openCreate });
       :active-folder="activeFolder"
       :active-session="activeSession ?? null"
       :show-sessions="showSessions ?? false"
+      :show-maintenance="maintenanceOpenedFor(connection.activeHost?.name) || activeFolder === MAINTENANCE_ROOT"
       :now="now"
       :default-start-in="defaultStartIn"
       @select="(folder, session) => emit('select', folder, session)"
