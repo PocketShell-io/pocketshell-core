@@ -72,6 +72,12 @@ export interface QuickActionsDeps {
    * spells keys (home-relative, tmux's two spellings folded).
    */
   goToFolderPath: (absPath: string) => void;
+  /**
+   * The Host monitor verb's landing: the maintenance workspace. A navigation,
+   * not an overlay flip — the monitor is a tab in a hidden root now, and the
+   * route is the view's to spell (docs/MONITOR.md).
+   */
+  openMonitor: () => void;
   /** The way out: back to the host list. */
   onBack: () => void;
 }
@@ -217,7 +223,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
       },
       { id: 'panel:ports', label: 'Port forwarding', run: () => (deps.panel.value = 'ports') },
       { id: 'panel:usage', label: 'Provider usage', run: () => (deps.panel.value = 'usage') },
-      { id: 'panel:monitor', label: 'Host monitor', run: () => (deps.panel.value = 'monitor') },
+      { id: 'panel:monitor', label: 'Host monitor', run: () => deps.openMonitor() },
       { id: 'panel:settings', label: 'Settings', run: () => (deps.panel.value = 'settings') },
     ];
     for (const key of FOLDER_SORT_KEYS) {

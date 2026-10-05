@@ -1,5 +1,6 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 import { pushMru, pruneTabIds, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
+import { MAINTENANCE_ROOT } from '@pocketshell/core';
 import {
   readWorkspaceMemory,
   workspaceMemoryKey,
@@ -194,7 +195,14 @@ export function useWorkspaceMemory(deps: WorkspaceMemoryDeps): {
     };
     memory.set(memoryKey.value, record);
     writeWorkspaceMemory(workspaceMemoryKey(deps.hostAlias.value, deps.folderKey.value), record);
-    writeLastFolder(deps.hostAlias.value, deps.folderKey.value);
+    // The maintenance root is never the relaunch destination: it is hidden by
+    // definition, and a lastFolder pointing at it would auto-launch htop —
+    // open a PTY, run a process — on every boot until the user clicked
+    // something else. The workspace memory record still persists; it is just
+    // inert while nothing links to the key.
+    if (deps.folderKey.value !== MAINTENANCE_ROOT) {
+      writeLastFolder(deps.hostAlias.value, deps.folderKey.value);
+    }
   }
 
   /**

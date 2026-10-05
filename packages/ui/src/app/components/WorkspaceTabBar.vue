@@ -52,6 +52,13 @@ const props = defineProps<{
    * provides the editors capability — the parent folds both halves in.
    */
   vsCode: boolean;
+  /**
+   * Whether the `+` shows at all. False for the maintenance workspace, whose
+   * bar is one fixed tool pane: a session created "in `::maintenance::`"
+   * would be filed by its real cwd somewhere else entirely and never appear
+   * on this bar, and a Files tab has no directory to open.
+   */
+  addable?: boolean;
 }>();
 
 /**
@@ -339,7 +346,13 @@ function onRenameInput(event: Event): void {
               'drop-after': dropGap === tabs.length && i === tabs.length - 1,
             },
           ]"
-          :title="tab.kind === 'session' ? sessionTabTitle(tab.session) : 'File browser'"
+          :title="
+            tab.kind === 'session'
+              ? sessionTabTitle(tab.session)
+              : tab.kind === 'tool'
+                ? 'Maintenance — htop in ~'
+                : 'File browser'
+          "
           draggable="true"
           @click="emit('select', tab)"
           @dblclick="emit('beginRename', tab)"
@@ -386,6 +399,10 @@ function onRenameInput(event: Event): void {
                the one word this app reserves for the kill — and the
                click stops here, so a background tab's `×` does not also
                move the user to it, the same rule the right-click obeys. -->
+          <!-- A TOOL tab wears no `×` at all: it closes nothing — the pane is
+               not a session to stop and not a view the user opened — and its
+               lifetime is the workspace visit itself. Leaving the workspace
+               is its close. -->
           <span
             v-if="tab.kind === 'session'"
             class="tab-close"
@@ -396,7 +413,7 @@ function onRenameInput(event: Event): void {
             <AppIcon name="close" :size="12" />
           </span>
           <span
-            v-else
+            v-else-if="tab.kind === 'files'"
             class="tab-close"
             title="Close this Files tab"
             @click.stop="emit('closeFiles', tab.id)"
@@ -411,8 +428,9 @@ function onRenameInput(event: Event): void {
     <!-- The `+` sits OUTSIDE the scrolling strip, which is both a fix and an
          improvement: inside it, a folder with many tabs scrolled its own
          "new tab" button off the end. Its menu is teleported (PopupMenu), so
-         the strip's clipping cannot reach it either way. -->
-    <div class="add-wrap">
+         the strip's clipping cannot reach it either way. Absent where creating
+         makes no sense (the maintenance workspace). -->
+    <div v-if="addable !== false" class="add-wrap">
       <button
         ref="addButtonEl"
         class="tab add"

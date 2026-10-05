@@ -58,7 +58,7 @@ import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
 import UsageView from './UsageView.vue';
-import MonitorPanelView from './MonitorPanelView.vue';
+import { MAINTENANCE_ROOT } from '../maintenance';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
@@ -340,14 +340,23 @@ const switcherTitle = computed(() =>
 );
 
 /**
- * The monitor overlay names the box it is reading: kills are aimed at a host,
- * and the title is the one place that survives every scroll and filter. Falls
- * back to the bare word while no host is claimed.
+ * The one landing for every "Host monitor" trigger — the header strip, the
+ * rail, and the palette verb. The monitor is not an overlay any more: it is
+ * the maintenance workspace, a hidden root whose one pane runs `htop` in `~`
+ * (docs/MONITOR.md), so opening it is a NAVIGATION — the same folder route
+ * every workspace uses, keyed by the root's stable pseudo-key. The remaining
+ * panel names are overlays and flip the ref as before.
  */
-const monitorTitle = computed(() => {
-  const name = connection.activeHost?.name;
-  return name ? `Host monitor — ${name}` : 'Host monitor';
-});
+function openPanel(name: HostPanel): void {
+  if (name === 'monitor') {
+    void router.push({
+      name: 'folder',
+      params: { name: String(route.params['name']), folder: MAINTENANCE_ROOT },
+    });
+    return;
+  }
+  panel.value = name;
+}
 
 /* ── Quick actions — the command palette ───────────────────────────────────
  * One summoned overlay listing the workspace's verbs, in the VS Code Ctrl+P
@@ -396,6 +405,7 @@ const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   onSelectFolder,
   onConnectHost,
   goToFolderPath,
+  openMonitor: () => openPanel('monitor'),
   onBack,
 });
 
@@ -565,7 +575,7 @@ async function onRefreshUsage(): Promise<void> {
         <HostPanelButtons
           :auto-forward="autoFwd"
           :forward-count="fwdCount"
-          @select="panel = $event"
+          @select="openPanel"
         />
         <button class="icon-btn" title="Settings" @click="panel = 'settings'">
           <AppIcon name="settings" :size="14" />
@@ -643,7 +653,7 @@ async function onRefreshUsage(): Promise<void> {
           @select="onSelectFolder"
           @back="onBack"
           @collapse="onCollapsePanel"
-          @panel="panel = $event"
+          @panel="openPanel"
           @palette="paletteOpen = true"
         />
       </aside>
@@ -696,16 +706,10 @@ async function onRefreshUsage(): Promise<void> {
       <!-- `embedded`: the overlay header renders the title AND the refresh. -->
       <UsageView v-if="connection.connectionId" embedded />
     </OverlayPanel>
-    <!-- The host monitor (docs/MONITOR.md). Wide, like the ports table: the
-         process table is the panel's body and a table wants columns. The
-         title names the host — kills are aimed at a named box. Unlike Ports
-         and Usage there is no #actions row up here — the panel's pause and
-         sample controls sit beside the meters they freeze, and the poll
-         itself dies with the overlay (the composable's onScopeDispose), so a
-         closed monitor costs the host nothing. -->
-    <OverlayPanel v-if="panel === 'monitor'" :title="monitorTitle" size="lg" @close="panel = null">
-      <MonitorPanelView v-if="connection.connectionId" />
-    </OverlayPanel>
+    <!-- The host monitor is not an overlay: the Host monitor button and the
+         palette verb NAVIGATE to the maintenance workspace — a hidden root
+         whose one pane runs `htop` in `~` (docs/MONITOR.md, openPanel above).
+         Nothing samples the host here any more. -->
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">
       <SettingsView />
     </OverlayPanel>

@@ -68,6 +68,7 @@ import FilesView from './FilesView.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import LaunchSessionDialog from '../components/LaunchSessionDialog.vue';
 import WorkspaceTabBar from '../components/WorkspaceTabBar.vue';
+import StopSessionDialog from '../components/StopSessionDialog.vue';
 import ExtensionSlot from '../components/ExtensionSlot.vue';
 import type { Box } from '@pocketshell/core/shared/popupPlacement';
 import type { WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
@@ -77,6 +78,7 @@ import { absoluteRemoteFolder, vscodeHostToken } from '@pocketshell/core/shared/
 import { errorMessage } from '@pocketshell/core/shared/errors';
 import { recordDiagDetail } from '../diag';
 import { UNTRACKED_PATH } from '../sessionGrouping';
+import { MAINTENANCE_COMMAND, MAINTENANCE_IDENTITY, isMaintenanceFolder } from '../maintenance';
 import { useFolderTree } from '../folderTree';
 import { useWorkspaceMemory } from '../useWorkspaceMemory';
 import { useSessionRename } from '../useSessionRename';
@@ -134,8 +136,16 @@ const { selected, mru, tabOrder, writeTabOrder, loadFolderState, persist } = mem
  */
 const folder = computed(() => folders.value.find((dir) => dir.key === folderKey.value) ?? null);
 
-/** The folder's real path, or null for an untracked session's pseudo-folder. */
+/** The maintenance workspace — a hidden root whose one pane is a tool, not a session. */
+const isMaintenance = computed(() => isMaintenanceFolder(folderKey.value));
+
+/**
+ * The folder's real path, or null for a folder that names no directory: an
+ * untracked session's pseudo-folder, or the maintenance root, whose pane runs
+ * in `~` by being a login shell's own cwd rather than by any path of ours.
+ */
 const folderPath = computed(() => {
+  if (isMaintenance.value) return null;
   const path = folder.value?.path ?? folderKey.value;
   return path === UNTRACKED_PATH ? null : path;
 });
@@ -684,6 +694,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       :identity-for="identityFor"
       :address-for="sessionAddressFor"
       :vs-code="folderPath !== null && api.editors !== undefined"
+      :addable="!isMaintenance"
       @select="selectTab"
       @begin-rename="beginRename"
       @commit-rename="commitRename"
@@ -738,7 +749,13 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
              folder just navigated away from — stops rendering. The match is by
              the workspace-qualified identity, never the bare name: two
              workspaces' `main` tabs must not show each other's terminal. -->
-        <div class="terminal-area" v-show="activeTab?.kind === 'session'">
+        <!-- The TOOL pane (the maintenance workspace's htop) shows under the
+             same rule: its tab is on the bar, so its pane is what is in front.
+             It binds bare + command instead of a session — see maintenance.ts. -->
+        <div
+          class="terminal-area"
+          v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
+        >
           <div
             v-for="pane in sessionPanes"
             :key="pane.id"
@@ -750,11 +767,17 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               :ref="(el) => setTerminalRef(pane.identity, el)"
               :connection-id="connection.connectionId"
               :session-key="pane.identity"
-              :session-name="pane.session"
+              :bare="pane.identity === MAINTENANCE_IDENTITY"
+              :command="pane.identity === MAINTENANCE_IDENTITY ? MAINTENANCE_COMMAND : undefined"
+              :session-name="pane.identity === MAINTENANCE_IDENTITY ? undefined : pane.session"
               :backend="sessionMeta.get(pane.session)?.backend"
               :workspace="sessionMeta.get(pane.session)?.workspace"
               :aplexer-id="sessionMeta.get(pane.session)?.aplexerId"
-              :intercept-typing="interceptTyping && pane.identity === terminalIdentity"
+              :intercept-typing="
+                pane.identity !== MAINTENANCE_IDENTITY &&
+                interceptTyping &&
+                pane.identity === terminalIdentity
+              "
               @typed="onTyped"
               @paste-into-composer="onPasteIntoComposer"
               @drop-into-composer="onDropIntoComposer"
@@ -813,33 +836,15 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       </div>
     </div>
 
-    <!-- THE ONLY DESTRUCTIVE CONFIRMATION IN THIS APP.
-
-         It names the SESSION — the same string the tab reads, verbatim, so
-         what is being destroyed is spelled out in full and a tab called
-         `main` never leaves the user guessing which workspace's `main` it
-         is. It also says what goes, because "Stop" undersells it — a session
-          is usually an agent mid-task, and its scrollback and process
-          tree go with it.
-
-         Escape and the backdrop cancel, and Cancel is the DEFAULT-looking
-         button while Stop carries the error tint, so the dangerous half of the
-         dialog is the half that has to be aimed at. -->
-    <OverlayPanel v-if="stopping" title="Stop session" size="sm" @close="stopping = null">
-      <div class="stop-confirm">
-        <p>Stop <code>{{ stopping }}</code> ?</p>
-        <p class="muted">
-          This kills the session on the host. Anything running in it stops, its scrollback goes,
-          and there is no undo.
-        </p>
-        <footer class="actions">
-          <button class="btn-secondary" @click="stopping = null">Cancel</button>
-          <button class="btn-danger" :disabled="stopBusy" @click="confirmStop">
-            {{ stopBusy ? 'Stopping…' : 'Stop session' }}
-          </button>
-        </footer>
-      </div>
-    </OverlayPanel>
+    <!-- THE ONLY DESTRUCTIVE CONFIRMATION IN THIS APP — components/
+         StopSessionDialog.vue, which carries the naming and the aiming
+         rules; the state and the kill stay here (useSessionStop). -->
+    <StopSessionDialog
+      :session="stopping"
+      :busy="stopBusy"
+      @close="stopping = null"
+      @confirm="confirmStop"
+    />
 
     <!-- Nothing is created until `confirm` fires, so Escape, the backdrop and
          Cancel all cost the user exactly nothing. -->
@@ -866,64 +871,6 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
      relationship with the composer, and custom properties inherit, so
      PromptComposer reads the same number without being handed it. */
   --composer-inset: var(--sp-3);
-}
-/* The confirm sheet. `sm` OverlayPanel, two paragraphs and two buttons — the
-   dialog is short because the decision is, and a longer one would bury the
-   session's name. */
-.stop-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-  font-size: var(--fs-300);
-  line-height: var(--lh-300);
-}
-.stop-confirm p {
-  margin: 0;
-}
-.stop-confirm code {
-  font-family: var(--font-mono);
-  word-break: break-all;
-}
-.stop-confirm .actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--border);
-}
-.stop-confirm .btn-secondary,
-.stop-confirm .btn-danger {
-  height: var(--control-h);
-  display: inline-flex;
-  align-items: center;
-  padding: 0 var(--sp-4);
-  border-radius: var(--r-md);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--fs-300);
-  font-weight: var(--fw-semibold);
-  transition: background var(--dur-fast) var(--ease);
-}
-.stop-confirm .btn-secondary {
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--fg);
-}
-.stop-confirm .btn-secondary:hover {
-  background: var(--state-hover);
-}
-/* Solid error, not a tinted ghost. This is the button that destroys the
-   session, and a confirm dialog whose dangerous option is the quieter of the
-   two is a trap. */
-.stop-confirm .btn-danger {
-  background: var(--error);
-  border: 1px solid var(--error);
-  color: var(--on-accent);
-}
-.stop-confirm .btn-danger:disabled {
-  opacity: var(--disabled-opacity);
-  cursor: default;
 }
 /* A failed create is a sentence, not a dialog: the tab bar is still usable and
    the message is about the one action that did not happen. A failed rename

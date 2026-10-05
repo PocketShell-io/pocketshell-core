@@ -46,7 +46,7 @@ export interface HostPanelItem {
   icon: 'arrow-right-left' | 'bar-chart-2' | 'activity';
 }
 
-/** The three overlay buttons, in strip order. */
+/** The three panel buttons, in strip order. Monitor is the odd one out: its trigger NAVIGATES to the maintenance workspace (docs/MONITOR.md) rather than flipping the `panel` ref. */
 export const HOST_PANEL_ITEMS: readonly HostPanelItem[] = [
   { panel: 'ports', label: 'Port forwarding', icon: 'arrow-right-left' },
   { panel: 'usage', label: 'Provider usage', icon: 'bar-chart-2' },
