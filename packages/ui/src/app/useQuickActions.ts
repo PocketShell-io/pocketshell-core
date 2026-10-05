@@ -43,6 +43,7 @@ import { watch } from 'vue';
 import type { HostPanel } from './hostPanels';
 import type { HostEntry, RepoEntry } from '@pocketshell/core';
 import type { SessionDirectory, SessionRootFolder } from './sessionTree';
+import type { MaintenanceToolKind } from './maintenance';
 
 export interface QuickActionsDeps {
   /** Every folder on the host, pre-filter — the palette's jump list. */
@@ -73,11 +74,12 @@ export interface QuickActionsDeps {
    */
   goToFolderPath: (absPath: string) => void;
   /**
-   * The Host monitor verb's landing: the maintenance workspace. A navigation,
-   * not an overlay flip — the monitor is a tab in a hidden root now, and the
-   * route is the view's to spell (docs/MONITOR.md).
+   * The maintenance verbs' landing (Host monitor, Provider usage): OPEN the
+   * tool on this host and navigate to the maintenance workspace — a
+   * navigation, not an overlay flip, and the route is the view's to spell
+   * (docs/MONITOR.md).
    */
-  openMonitor: () => void;
+  openMaintenance: (kind: MaintenanceToolKind) => void;
   /** The way out: back to the host list. */
   onBack: () => void;
 }
@@ -222,8 +224,8 @@ export function useQuickActions(deps: QuickActionsDeps): {
         run: () => deps.sessionTree.value?.openCreate(),
       },
       { id: 'panel:ports', label: 'Port forwarding', run: () => (deps.panel.value = 'ports') },
-      { id: 'panel:usage', label: 'Provider usage', run: () => (deps.panel.value = 'usage') },
-      { id: 'panel:monitor', label: 'Host monitor', run: () => deps.openMonitor() },
+      { id: 'panel:usage', label: 'Provider usage', run: () => deps.openMaintenance('usage') },
+      { id: 'panel:monitor', label: 'Host monitor', run: () => deps.openMaintenance('htop') },
       { id: 'panel:settings', label: 'Settings', run: () => (deps.panel.value = 'settings') },
     ];
     for (const key of FOLDER_SORT_KEYS) {

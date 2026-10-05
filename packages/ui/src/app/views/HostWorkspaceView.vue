@@ -32,7 +32,6 @@
 // host monitor — open as overlays, because none is a property of one folder.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useAgentsStore } from '../stores/agents';
 import { useConnectionStore } from '../stores/connection';
 import { useForwardsStore } from '../stores/forwards';
 import { api } from '../ipc';
@@ -57,7 +56,6 @@ import { adjacentIndex } from '@pocketshell/core/shared/listNavigation';
 import { editingTarget } from '../editingTarget';
 import PortPanelView from './PortPanelView.vue';
 import SettingsView from './SettingsView.vue';
-import UsageView from './UsageView.vue';
 import { closeMaintenanceToolByName, MAINTENANCE_ROOT, openMaintenanceTool } from '../maintenance';
 import type { HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
@@ -68,7 +66,6 @@ import { useNarrowWorkspace } from '../useNarrowWorkspace';
 const route = useRoute();
 const router = useRouter();
 const connection = useConnectionStore();
-const agents = useAgentsStore();
 // Subscribed only while the ports overlay is open — see the autoFwd watch
 // below for why its `autoOn` is mirrored rather than rendered directly.
 const forwards = useForwardsStore();
@@ -340,21 +337,17 @@ const switcherTitle = computed(() =>
 );
 
 /**
- * The one landing for every "Host monitor" trigger — the header strip, the
- * rail, and the palette verb. The monitor is not an overlay any more: it is
- * the maintenance workspace, a hidden root whose one pane runs `htop` in `~`
- * (docs/MONITOR.md), so opening it is a NAVIGATION — the same folder route
- * every workspace uses, keyed by the root's stable pseudo-key. The remaining
- * panel names are overlays and flip the ref as before.
+ * The one landing for the maintenance triggers — the Host monitor and
+ * Provider usage buttons (header strip, rail) and their palette verbs. Those
+ * panels are not overlays any more: they are TOOLS in the maintenance
+ * workspace (docs/MONITOR.md), so opening one adds the tool to the host's
+ * list and NAVIGATES there. The remaining panel names are overlays and flip
+ * the ref as before.
  */
 function openPanel(name: HostPanel): void {
-  if (name === 'monitor') {
-    // Opening the tool is what makes the sidebar section exist: it is the
-    // door back, and this click is the moment there is something to come
-    // back to (maintenance.ts's tool list). Re-opening an open tool just
-    // navigates — the row-click focus rule answers the re-click.
+  if (name === 'monitor' || name === 'usage') {
     const host = String(route.params['name']);
-    openMaintenanceTool(host);
+    openMaintenanceTool(host, name === 'monitor' ? 'htop' : 'usage');
     void router.push({
       name: 'folder',
       params: { name: host, folder: MAINTENANCE_ROOT },
@@ -417,7 +410,7 @@ const { open: paletteOpen, commands: paletteCommands } = useQuickActions({
   onSelectFolder,
   onConnectHost,
   goToFolderPath,
-  openMonitor: () => openPanel('monitor'),
+  openMaintenance: (kind) => openPanel(kind === 'htop' ? 'monitor' : 'usage'),
   onBack,
 });
 
@@ -512,15 +505,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown, { c
 
 function onBack(): void {
   void router.push({ name: 'hosts' });
-}
-
-/**
- * The usage panel's refresh lives in the OVERLAY header, beside the close
- * control, rather than floating at the top of the panel body where it read as
- * orphaned debris. The overlay owns the chrome, so the host owns this button.
- */
-async function onRefreshUsage(): Promise<void> {
-  if (connection.connectionId) await agents.loadUsage(connection.connectionId);
 }
 </script>
 
@@ -705,24 +689,10 @@ async function onRefreshUsage(): Promise<void> {
       </template>
       <PortPanelView v-if="connection.connectionId" />
     </OverlayPanel>
-    <OverlayPanel v-if="panel === 'usage'" title="Provider usage" size="md" @close="panel = null">
-      <template #actions>
-        <button
-          class="icon-btn"
-          :disabled="agents.loading"
-          title="Refresh"
-          @click="onRefreshUsage"
-        >
-          <AppIcon name="refresh" :class="{ spin: agents.loading }" />
-        </button>
-      </template>
-      <!-- `embedded`: the overlay header renders the title AND the refresh. -->
-      <UsageView v-if="connection.connectionId" embedded />
-    </OverlayPanel>
-    <!-- The host monitor is not an overlay: the Host monitor button and the
-         palette verb NAVIGATE to the maintenance workspace — a hidden root
-         whose one pane runs `htop` in `~` (docs/MONITOR.md, openPanel above).
-         Nothing samples the host here any more. -->
+    <!-- Provider usage is not an overlay either: its button and palette verb
+         OPEN the usage tool in the maintenance workspace (openPanel above),
+         where UsageView mounts headed — it owns its own title and refresh
+         there, `embedded` having been the overlay's job. -->
     <OverlayPanel v-if="panel === 'settings'" title="Settings" size="md" @close="panel = null">
       <SettingsView />
     </OverlayPanel>

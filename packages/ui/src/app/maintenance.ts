@@ -23,10 +23,11 @@
  * the session tree's grouping: the panel renders a Maintenance section for
  * it while tools are open, and the Host monitor button opens the same route.
  *
- * A tool pane is BARE (`TerminalView`'s `bare` prop): a plain SSH login
- * shell in the user's `$HOME` — sshd's own default cwd — with the tool's
- * command typed into it, so quitting htop leaves a live prompt in `~` and
- * the tab doubles as a maintenance shell.
+ * A COMMAND tool's pane is BARE (`TerminalView`'s `bare` prop): a plain SSH
+ * login shell in the user's `$HOME` — sshd's own default cwd — with the
+ * tool's command typed into it, so quitting htop leaves a live prompt in `~`
+ * and the tab doubles as a maintenance shell. A VIEW tool's pane is the
+ * workspace mounting that tool's component instead of a terminal.
  */
 import { ref } from 'vue';
 import { MAINTENANCE_ROOT } from '@pocketshell/core';
@@ -36,11 +37,55 @@ import type { SessionPaneRecord } from './sessionPanes';
 
 export { MAINTENANCE_ROOT };
 
-/** The tools the maintenance workspace can hold. One today; the union grows with the section. */
-export type MaintenanceToolKind = 'htop';
+/** The tools the maintenance workspace can hold. The union grows with the section. */
+export type MaintenanceToolKind = 'htop' | 'usage';
 
-/** What runs in a tool pane, keyed by kind. A missing htop prints `command not found` — the honest answer. */
-const TOOL_COMMANDS: Record<MaintenanceToolKind, string> = { htop: 'htop' };
+/**
+ * One tool's descriptor. A tool is either a COMMAND pane — the workspace
+ * types `command` into a bare login shell (htop) — or a VIEW pane, where the
+ * workspace mounts the named component instead of a terminal (usage), and
+ * `command` is absent. Everything a row or a tab needs to render a tool
+ * rides here, so no surface hard-codes a kind.
+ */
+export interface MaintenanceToolDef {
+  kind: MaintenanceToolKind;
+  /** The sidebar row's and the tab bar's glyph. */
+  icon: 'activity' | 'bar-chart-2';
+  /** The row's and the tab's tooltip. */
+  description: string;
+  /** What a command tool types into its login shell. Absent for a view tool. */
+  command?: string;
+}
+
+const TOOL_DEFS: Record<MaintenanceToolKind, MaintenanceToolDef> = {
+  htop: {
+    kind: 'htop',
+    icon: 'activity',
+    description: 'Host monitor — htop in ~. Quitting htop leaves a shell in ~.',
+    command: 'htop',
+  },
+  usage: {
+    kind: 'usage',
+    icon: 'bar-chart-2',
+    description: 'Provider usage — quota and resets, per provider.',
+  },
+};
+
+/** The descriptor for [kind]. Every kind in the union has one, by construction. */
+export function maintenanceToolDef(kind: MaintenanceToolKind): MaintenanceToolDef {
+  return TOOL_DEFS[kind];
+}
+
+/** The descriptor an identity carries, or null for anything that is not a tool pane. */
+export function maintenanceToolDefFor(identity: string): MaintenanceToolDef | null {
+  const kind = maintenanceKindOf(identity);
+  return kind ? TOOL_DEFS[kind] : null;
+}
+
+/** The descriptor by kind NAME — for surfaces that carry the kind as a string (the sidebar row's payload). */
+export function maintenanceToolDefByName(kind: string): MaintenanceToolDef | null {
+  return kind in TOOL_DEFS ? TOOL_DEFS[kind as MaintenanceToolKind] : null;
+}
 
 /** One open tool on one host. */
 export interface MaintenanceTool {
@@ -68,7 +113,7 @@ export function closeMaintenanceTool(host: string, kind: MaintenanceToolKind): v
  * crash: the row and the list can only disagree for one tick, if ever.
  */
 export function closeMaintenanceToolByName(host: string, kind: string): void {
-  if (kind in TOOL_COMMANDS) closeMaintenanceTool(host, kind as MaintenanceToolKind);
+  if (kind in TOOL_DEFS) closeMaintenanceTool(host, kind as MaintenanceToolKind);
 }
 
 /** [host]'s open tools, in open order. */
@@ -89,7 +134,7 @@ export function maintenanceToolIdentity(host: string, kind: MaintenanceToolKind)
 export function maintenanceKindOf(identity: string): MaintenanceToolKind | null {
   const parts = identity.split(':');
   const kind = parts.length === 3 ? parts[2] : undefined;
-  return parts[0] === 'tool' && kind !== undefined && kind in TOOL_COMMANDS
+  return parts[0] === 'tool' && kind !== undefined && kind in TOOL_DEFS
     ? (kind as MaintenanceToolKind)
     : null;
 }
@@ -99,10 +144,13 @@ export function isMaintenanceIdentity(identity: string): boolean {
   return maintenanceKindOf(identity) !== null;
 }
 
-/** The command a tool pane runs, or undefined when [identity] is not one of ours. */
+/**
+ * The command a tool pane runs. Undefined for a VIEW tool — the workspace
+ * mounts its component instead of a terminal — and for anything that is not
+ * one of ours.
+ */
 export function maintenanceCommandFor(identity: string): string | undefined {
-  const kind = maintenanceKindOf(identity);
-  return kind ? TOOL_COMMANDS[kind] : undefined;
+  return maintenanceToolDefFor(identity)?.command;
 }
 
 /** The tab [tool] wears in the maintenance bar. A fresh object per call: tab labels are mutable display state. */

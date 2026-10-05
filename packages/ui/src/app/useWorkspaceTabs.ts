@@ -9,6 +9,7 @@ import { sessionIdentityKey } from './sessionIdentity';
 import {
   isMaintenanceFolder,
   isMaintenanceIdentity,
+  maintenanceCommandFor,
   maintenanceToolIdentity,
   maintenanceToolPane,
   maintenanceToolTab,
@@ -63,7 +64,8 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   terminalIdentity: Ref<string | null>;
   openPanes: Ref<SessionPaneRecord[]>;
   liveIdentities: ComputedRef<Set<string>>;
-  sessionPanes: ComputedRef<SessionPaneRecord[]>;
+  terminalPanes: ComputedRef<SessionPaneRecord[]>;
+  toolViewPanes: ComputedRef<SessionPaneRecord[]>;
   summary: ComputedRef<SessionSummary | null>;
   activeSessionMeta: ComputedRef<
     { backend: 'tmux' | 'aplexer'; workspace: string | null; aplexerId: string | null } | undefined
@@ -250,24 +252,37 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   });
 
   /**
-   * The session tabs that currently have a mounted pane, in visit order.
+   * The panes that render as TERMINALS, in visit order.
    *
-   * The panes are filtered against the live identities rather than trusted, so a
-   * session that was killed on the host — or left behind on the folder the user
-   * just navigated away from — stops rendering the moment it leaves the bar,
-   * while a RENAME keeps the pane rendering straight through: the row and the
-   * pane record are rewritten in the same tick, so from the filter's point of
-   * view the pane's identity never stopped being on the bar.
+   * Session panes are filtered against the live identities rather than
+   * trusted, so a session that was killed on the host — or left behind on the
+   * folder the user just navigated away from — stops rendering the moment it
+   * leaves the bar, while a RENAME keeps the pane rendering straight through:
+   * the row and the pane record are rewritten in the same tick, so from the
+   * filter's point of view the pane's identity never stopped being on the
+   * bar.
    *
    * A TOOL pane answers to no folder's bar: its host's tools are the authority
    * (maintenance.ts), and it rides mounted-but-hidden across that host's
    * folders — the same treatment a visited session tab's pane gets, minus the
-   * session. The render bypass here and the prune bypass below are the two
-   * halves of that; the lifetime rules themselves live in the tabs watcher.
+   * session. The render bypass here and in `toolViewPanes`, and the prune
+   * bypass in the tabs watcher, are the halves of that; the lifetime rules
+   * themselves live in the watcher. Command tools render here; a VIEW tool's
+   * pane mounts its component instead and lives in `toolViewPanes`.
    */
-  const sessionPanes = computed(() =>
+  const terminalPanes = computed(() =>
+    openPanes.value.filter((pane) =>
+      isMaintenanceIdentity(pane.identity)
+        ? maintenanceCommandFor(pane.identity) !== undefined
+        : liveIdentities.value.has(pane.identity),
+    ),
+  );
+
+  /** The VIEW tool panes — maintenance identities whose tool mounts a component, not a terminal. */
+  const toolViewPanes = computed(() =>
     openPanes.value.filter(
-      (pane) => isMaintenanceIdentity(pane.identity) || liveIdentities.value.has(pane.identity),
+      (pane) =>
+        isMaintenanceIdentity(pane.identity) && maintenanceCommandFor(pane.identity) === undefined,
     ),
   );
 
@@ -443,7 +458,7 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
       // rather than by the session-derived rules below: no host session
       // listing can say whether `htop` is open. The rule: a tool pane lives
       // while its tool is open ON ITS OWN HOST — across folder navigation it
-      // rides along mounted-but-hidden (the render bypass in `sessionPanes`
+      // rides along mounted-but-hidden (the render bypass in the pane lists
       // keeps it that way), so coming back is the same htop; a closed tool
       // retires its pane, unmounting the TerminalView and closing the PTY,
       // and so does a host switch, which the host-scoped identity cannot
@@ -639,7 +654,8 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     terminalIdentity,
     openPanes,
     liveIdentities,
-    sessionPanes,
+    terminalPanes,
+    toolViewPanes,
     summary,
     activeSessionMeta,
     sessionMeta,

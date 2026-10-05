@@ -1,10 +1,12 @@
 /**
- * The host-scoped overlay destinations, named once.
+ * The host-scoped panel destinations, named once.
  *
  * Ports, Usage and the host Monitor are reachable from two surfaces that
  * must never disagree — the session panel's header and the collapsed rail —
- * and their open/closed state lives in a third place, `HostWorkspaceView`'s
- * `panel` ref. Three files, one vocabulary.
+ * and Ports' open/closed state lives in a third place, `HostWorkspaceView`'s
+ * `panel` ref. Monitor and Usage are maintenance triggers instead: they OPEN
+ * a tool and navigate (docs/MONITOR.md), so no ref holds them. Three files,
+ * one vocabulary.
  *
  * How they are reached changed by direct order: the overflow
  * menu (components/HostActionsMenu.vue) is gone, and each of Ports, Usage
@@ -46,7 +48,7 @@ export interface HostPanelItem {
   icon: 'arrow-right-left' | 'bar-chart-2' | 'activity';
 }
 
-/** The three panel buttons, in strip order. Monitor is the odd one out: its trigger NAVIGATES to the maintenance workspace (docs/MONITOR.md) rather than flipping the `panel` ref. */
+/** The three panel buttons, in strip order. Ports flips the `panel` ref; Monitor and Usage are maintenance triggers — they OPEN a tool and navigate (docs/MONITOR.md). */
 export const HOST_PANEL_ITEMS: readonly HostPanelItem[] = [
   { panel: 'ports', label: 'Port forwarding', icon: 'arrow-right-left' },
   { panel: 'usage', label: 'Provider usage', icon: 'bar-chart-2' },

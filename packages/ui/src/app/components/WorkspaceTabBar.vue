@@ -14,6 +14,7 @@ import PopupMenu from './PopupMenu.vue';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
 import { agentMark } from '@pocketshell/core/shared/agentBadge';
 import { canDropTabAt, reorderTabs, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
+import { maintenanceToolDefFor } from '../maintenance';
 import { useStripDrag } from '../useStripDrag';
 
 const props = defineProps<{
@@ -352,7 +353,7 @@ function onRenameInput(event: Event): void {
             tab.kind === 'session'
               ? sessionTabTitle(tab.session)
               : tab.kind === 'tool'
-                ? 'Maintenance — htop in ~'
+                ? (maintenanceToolDefFor(tab.id)?.description ?? 'Maintenance')
                 : 'File browser'
           "
           draggable="true"

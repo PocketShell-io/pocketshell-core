@@ -13,7 +13,11 @@
 // with the tool's kind, and closing the last one retires the section — the
 // user saying "I don't have it".
 import AppIcon from '@ui/components/AppIcon.vue';
-import { MAINTENANCE_ROOT, maintenanceDirectory } from '../maintenance';
+import {
+  MAINTENANCE_ROOT,
+  maintenanceDirectory,
+  maintenanceToolDefByName,
+} from '../maintenance';
 
 defineProps<{
   /** The host's open maintenance tools, in open order — one row each. */
@@ -41,14 +45,14 @@ const emit = defineEmits<{
         <button
           class="dir-header maintenance-row"
           :class="{ current: activeFolder === MAINTENANCE_ROOT }"
-          :title="
-            tool.kind === 'htop'
-              ? 'Host monitor — htop in ~. Quitting htop leaves a shell in ~.'
-              : tool.kind
-          "
+          :title="maintenanceToolDefByName(tool.kind)?.description ?? tool.kind"
           @click="emit('select', maintenanceDirectory(), tool.identity)"
         >
-          <AppIcon name="activity" :size="12" class="maintenance-glyph" />
+          <AppIcon
+            :name="maintenanceToolDefByName(tool.kind)?.icon ?? 'activity'"
+            :size="12"
+            class="maintenance-glyph"
+          />
           <span class="label">{{ tool.kind }}</span>
           <span
             class="maintenance-close"

@@ -63,11 +63,13 @@ import { useShellsStore } from '../stores/shells';
 import { api } from '../ipc';
 import AppIcon from '@ui/components/AppIcon.vue';
 import TerminalView from '../components/TerminalView.vue';
+import UsageView from './UsageView.vue';
 import PromptComposer from '../components/PromptComposer.vue';
 import FilesView from './FilesView.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import LaunchSessionDialog from '../components/LaunchSessionDialog.vue';
 import WorkspaceTabBar from '../components/WorkspaceTabBar.vue';
+import BarErrorStrip from '../components/BarErrorStrip.vue';
 import StopSessionDialog from '../components/StopSessionDialog.vue';
 import ExtensionSlot from '../components/ExtensionSlot.vue';
 import type { Box } from '@pocketshell/core/shared/popupPlacement';
@@ -170,7 +172,8 @@ const {
   terminalSession,
   terminalIdentity,
   openPanes,
-  sessionPanes,
+  terminalPanes,
+  toolViewPanes,
   summary,
   activeSessionMeta,
   sessionMeta,
@@ -739,27 +742,10 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       @open-vs-code="openInVsCode"
     />
 
-    <!-- Create and rename refusals share this one strip; see `barError` in the
-         script for why. The dismiss is the app's ghost `.icon-btn sm` register
-         (App.vue) and nothing louder: the strip is already error-tinted, and a
-         button that outshouted the sentence would make the remedy read like a
-         second problem. `@mousedown.prevent` is load-bearing, not tidiness:
-         while a rename field is open, an unprevented mousedown here would blur
-         the field, the blur would re-run the failing commit, and the message
-         would be re-set moments after the click cleared it — a dismiss button
-         that un-dismisses itself. -->
-    <p v-if="barError" class="bar-error">
-      <span class="bar-error-text">{{ barError }}</span>
-      <button
-        class="icon-btn sm bar-error-dismiss"
-        title="Dismiss"
-        aria-label="Dismiss this message"
-        @mousedown.prevent
-        @click="dismissBarError"
-      >
-        <AppIcon name="close" :size="12" />
-      </button>
-    </p>
+    <!-- Create and rename refusals share this one strip — components/
+         BarErrorStrip.vue carries the markup, the styles and the
+         mousedown rule; this view owns the `barError` state and the dismiss. -->
+    <BarErrorStrip :message="barError" @dismiss="dismissBarError" />
 
     <div class="workspace-body">
       <div class="tab-body">
@@ -770,18 +756,18 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
              the tabs, and the key is the record's stable id: a tab's own id is
              the session name, so keying on it would read a rename as "one pane
              gone, another appeared" and pay a full re-join for a relabel.
-             `sessionPanes` filters the records against the live identities, so
+             `terminalPanes` filters the records against the live identities, so
              a pane whose session is killed on the host — or left behind on the
              folder just navigated away from — stops rendering. The match is by
              the workspace-qualified identity, never the bare name: two
              workspaces' `main` tabs must not show each other's terminal. -->
-        <!-- The TOOL pane (the maintenance workspace's htop) shows under the same rule; it binds bare + command instead of a session (maintenance.ts). -->
+        <!-- The COMMAND tool pane (the maintenance workspace's htop) shows under the same rule; it binds bare + command instead of a session (maintenance.ts). A VIEW tool's pane mounts its component in the second v-for. -->
         <div
           class="terminal-area"
           v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
         >
           <div
-            v-for="pane in sessionPanes"
+            v-for="pane in terminalPanes"
             :key="pane.id"
             v-show="pane.identity === terminalIdentity"
             class="terminal-slot"
@@ -806,6 +792,21 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               @paste-into-composer="onPasteIntoComposer"
               @drop-into-composer="onDropIntoComposer"
             />
+          </div>
+          <!-- A VIEW tool's pane: the workspace mounts the tool's component
+               instead of a terminal (maintenance.ts's TOOL_DEFS decides which
+               is which). Same lifetime rules as a command tool's pane — kept
+               mounted, shown by identity — so switching back to the usage tab
+               is the same view with its data, not a remount. No terminal ref:
+               there is nothing here for focusActiveTab to focus, and its
+               lookup already tolerates that. -->
+          <div
+            v-for="pane in toolViewPanes"
+            :key="pane.id"
+            v-show="pane.identity === terminalIdentity"
+            class="terminal-slot tool-view-slot"
+          >
+            <UsageView v-if="connection.connectionId" />
           </div>
           <!-- extensions.ts `terminal.dock`: nothing contributed, nothing drawn. -->
           <ExtensionSlot v-if="terminalDockContext" name="terminal.dock" :context="terminalDockContext" />
@@ -899,30 +900,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
 /* A failed create is a sentence, not a dialog: the tab bar is still usable and
    the message is about the one action that did not happen. A failed rename
    rents the same line now, for the same reason (see `barError` in the script).
-   Flex, so the dismiss button sits at the end of the strip; the TEXT is the
-   flexible child, so the three-line launch-timeout remedy wraps under itself
-   rather than under the button. */
-.bar-error {
-  margin: 0;
-  padding: var(--sp-1) var(--sp-3);
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--error);
-  background: var(--error-soft);
-  border-bottom: 1px solid var(--border);
-  font-size: var(--fs-200);
-  line-height: var(--lh-200);
-}
-.bar-error-text {
-  flex: 1;
-  min-width: 0;
-}
-/* The shared `.icon-btn` is square by construction; pinned rigid here so a
-   long message cannot squeeze it below its tap target. */
-.bar-error-dismiss {
-  flex: 0 0 auto;
-}
+   The strip's own markup and styles are components/BarErrorStrip.vue. */
 .workspace-body {
   display: flex;
   flex-direction: column;
