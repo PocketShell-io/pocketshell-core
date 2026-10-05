@@ -89,6 +89,17 @@ const props = defineProps<{
    * instead of joining.
    */
   command?: string;
+  /**
+   * Run [command] in a PTY of our own and NEVER attach. A bare pane has no
+   * session behind it — the maintenance workspace's `htop` pane is the user —
+   * so the [sessionKey] prop is only its registry identity, and a missing
+   * [sessionName] must not be read as "the session named by the key": that
+   * fallback exists for session-shaped panes, and obeying it here would ask
+   * main to join a session that does not exist. Bare is also why the registry
+   * key reads [sessionKey] directly instead of through `targetSession`, whose
+   * '' would key every bare pane in the app to the same registry slot.
+   */
+  bare?: boolean;
   /** A key that, when changed, re-points the pane (used to switch sessions). */
   sessionKey?: string;
   /**
@@ -142,7 +153,9 @@ const emit = defineEmits<{
 }>();
 
 /** The tmux session this pane should be showing, or '' for a bare shell. */
-const targetSession = computed(() => props.sessionName ?? props.sessionKey ?? '');
+const targetSession = computed(() =>
+  props.bare ? '' : (props.sessionName ?? props.sessionKey ?? ''),
+);
 
 /**
  * The shells-registry key for this pane.
@@ -150,10 +163,12 @@ const targetSession = computed(() => props.sessionName ?? props.sessionKey ?? ''
  * Same workspace rule as the join: a bare tag repeats across workspaces, so
  * the registration carries the workspace for aplexer panes and two folders
  * holding same-named tags resolve to their own PTYs. tmux names are
- * host-global and stay bare. See `renderer/sessionIdentity.ts`.
+ * host-global and stay bare. A bare pane registers under its [sessionKey]
+ * identity — it has no session name to derive one from. See
+ * `renderer/sessionIdentity.ts`.
  */
 const registryKey = computed(() =>
-  sessionIdentityKey(targetSession.value, {
+  sessionIdentityKey(props.bare ? (props.sessionKey ?? '') : targetSession.value, {
     backend: props.backend,
     workspace: props.workspace ?? undefined,
   }),
