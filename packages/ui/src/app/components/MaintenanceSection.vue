@@ -67,6 +67,79 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
+/* CARRIED from SessionTreeRowsView.vue's stylesheet, and it must move with
+   it: scoped styles do not cross the component boundary (the reason that
+   file's own header gives for carrying its rules beside its rows), so this
+   component's rows would render as bare default buttons without their own
+   copies. The custom properties (--row-h, --row-pad-x, --sp-*, colour and
+   state tokens) are global (src/tokens.css) and need no carrying. When a row
+   rule changes THERE, change it here — the section must read as the same
+   tree it sits beside. */
+.folder {
+  margin-bottom: var(--sp-1);
+}
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--row-h);
+  padding: 0 var(--row-pad-x) 0 var(--sp-3);
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+}
+.folder-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dir-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dir-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: var(--row-h);
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--fg);
+  text-align: left;
+  padding: 0 var(--row-pad-x) 0 18px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--fs-300);
+  line-height: var(--lh-300);
+  overflow: hidden;
+}
+.dir-header:hover {
+  background: var(--state-hover);
+}
+/* Selection is accent-tinted and railed, the folder rows' own rule. */
+.dir-header.current {
+  background: var(--state-selected);
+  border-left-color: var(--accent);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex-shrink: 0;
+}
+.label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
 /* The section's row leads with the activity glyph instead of the attachment
    dot: nothing in that workspace can be attached, and the pulse is the
    register the Host monitor button wears (AppIcon.vue). */
