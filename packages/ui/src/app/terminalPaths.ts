@@ -461,10 +461,21 @@ function countChar(s: string, ch: string): number {
  * mid-token exactly like an absolute path's. One slash stays out: `and/or`,
  * `w/o`, `client/server`, `9/10` are prose, and a prose row ending in one
  * must never pick up the row below it.
+ *
+ * The detector's own refusal of an anchor that names nothing (`../`, `../..` —
+ * there is no link to open) does not carry over to a TAIL, where the anchor is
+ * not the destination but the address so far: a wrapper that broke a relative
+ * address right after its parent ref leaves `…procedure is ../` on the row
+ * above and `dataops-knowledge/…` on the one below, and refusing the tail
+ * severed the address's own head from it — the rows below joined into a link
+ * one directory short of where the address points. A pure `../` run is the
+ * tail this reads, and it is the only anchor admitted here: `./` and a bare
+ * `/` name just as little, but no wrapper in the reports has cut after them,
+ * and each admission is prose-join surface (`…in ../` + `and the next…`).
  */
 export function continuesPath(token: string): boolean {
   const match = matchCandidate(token, 0, 0, token.length);
-  if (match === null) return false;
+  if (match === null) return /^(?:\.\.\/)+$/.test(token);
   const p = match.path;
   if (
     p.startsWith('/') ||

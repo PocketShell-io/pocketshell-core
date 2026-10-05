@@ -114,6 +114,14 @@
  *     so even a `?`-admitting tail would have left two padding cells in the
  *     stream to tear the token apart. The gutter absorbs the border's padding
  *     run ({@link GUTTER}) and rule 2 takes the `?` tail rule 1b takes.
+ *   - a transcript cut a relative address right after its `../` anchor —
+ *     `…procedure is ../` / `dataops-knowledge/…` — and the tail gate refused
+ *     an anchor that names nothing on its own row. The address's own head then
+ *     joined WITHOUT the anchor: a link to `dataops-knowledge/…`, one
+ *     directory short of where the address points, with the `../` orphaned
+ *     plain at the cut. continuesPath reads a pure `../` run as the
+ *     path-so-far it is; the matcher's refusal (no link opens `../` alone)
+ *     stays.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
