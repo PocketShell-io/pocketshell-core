@@ -22,6 +22,7 @@ import { rootHeaderParts, type SessionDirectory, type SessionRootFolder } from '
 import { agentBadge, agentBadges, dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
 import type { AgentBadgeKind } from '../sessionTreeText';
 import { agentMark, type AgentMark } from '@pocketshell/core/shared/agentBadge';
+import { MAINTENANCE_ROOT, maintenanceDirectory } from '../maintenance';
 
 /** Where a dragged folder row would land: before row `gap` of `root`. */
 export interface FolderDropTarget {
@@ -442,6 +443,36 @@ function onFolderClick(dir: SessionDirectory): void {
       </ul>
     </section>
 
+    <!-- THE MAINTENANCE SECTION — the pinned door back to the tool workspaces
+         (docs/MONITOR.md). The roots above are the host's own grouping; this
+         section is the app's own chrome, so it renders for every host, sits
+         outside the filter (it is not data a session query narrows), takes no
+         sort and no drag. One row today — the workspace the Host monitor
+         button opens, where `htop` runs in `~`; a second tool workspace slots
+         in here as a sibling row. The row emits the SAME `select` the folder
+         rows do, carrying a key-only directory (maintenance.ts), so
+         navigation, the re-click focus and the `current` tint are the folder
+         rows' own machinery, not a second path. -->
+    <section class="folder maintenance-section" aria-label="Maintenance">
+      <div class="folder-header">
+        <span class="dot" />
+        <span class="folder-label">Maintenance</span>
+      </div>
+      <ul class="dir-list">
+        <li>
+          <button
+            class="dir-header maintenance-row"
+            :class="{ current: props.activeFolder === MAINTENANCE_ROOT }"
+            title="Host monitor — htop in ~. Leaving the workspace stops it; quitting htop leaves a shell in ~."
+            @click="emit('select', maintenanceDirectory())"
+          >
+            <AppIcon name="activity" :size="12" class="maintenance-glyph" />
+            <span class="label">htop</span>
+          </button>
+        </li>
+      </ul>
+    </section>
+
     <!-- Nothing running anywhere on this host. The sentence used to stand
          alone, which made this the one empty state with no way forward: the
          header's `+` covers it in principle, but it is an unlabelled 14px
@@ -740,6 +771,13 @@ function onFolderClick(dir: SessionDirectory): void {
 }
 .dot.active {
   background: var(--success);
+}
+/* The maintenance section's row leads with the activity glyph instead of the
+   attachment dot: nothing in that workspace can be attached, and the pulse is
+   the register the Host monitor button wears (AppIcon.vue). */
+.maintenance-glyph {
+  flex-shrink: 0;
+  color: var(--fg-muted);
 }
 /* The label wins the width fight; everything else shrinks first.
 
