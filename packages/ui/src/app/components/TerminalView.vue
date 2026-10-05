@@ -46,7 +46,7 @@
 // prompt composer and leave as `paste-into-composer` (see onCustomKey). The
 // MIDDLE click does nothing at all (see onTerminalAuxClick): xterm's own
 // middle-click paste would feed the clipboard to the shell silently.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -63,7 +63,7 @@ import { resolveMonoStack } from '@ui/fonts';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
 import { isTypingKey } from '@pocketshell/core/shared/composerText';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
-import { sessionIdentityKey } from '../sessionIdentity';
+import { usePaneIdentity } from '../paneIdentity';
 import { recordDiagDetail } from '../diag';
 import { TerminalPane } from '../terminalPane';
 import { extensionsFor } from '../extensions';
@@ -90,14 +90,9 @@ const props = defineProps<{
    */
   command?: string;
   /**
-   * Run [command] in a PTY of our own and NEVER attach. A bare pane has no
-   * session behind it — the maintenance workspace's `htop` pane is the user —
-   * so the [sessionKey] prop is only its registry identity, and a missing
-   * [sessionName] must not be read as "the session named by the key": that
-   * fallback exists for session-shaped panes, and obeying it here would ask
-   * main to join a session that does not exist. Bare is also why the registry
-   * key reads [sessionKey] directly instead of through `targetSession`, whose
-   * '' would key every bare pane in the app to the same registry slot.
+   * Run [command] in a PTY of our own and never attach. A bare pane has no
+   * session behind it — [sessionKey] is only its registry identity, never a
+   * session to join. Why it exists and what it serves: ../maintenance.ts.
    */
   bare?: boolean;
   /** A key that, when changed, re-points the pane (used to switch sessions). */
@@ -152,27 +147,10 @@ const emit = defineEmits<{
   (e: 'drop-into-composer', files: File[]): void;
 }>();
 
-/** The tmux session this pane should be showing, or '' for a bare shell. */
-const targetSession = computed(() =>
-  props.bare ? '' : (props.sessionName ?? props.sessionKey ?? ''),
-);
-
-/**
- * The shells-registry key for this pane.
- *
- * Same workspace rule as the join: a bare tag repeats across workspaces, so
- * the registration carries the workspace for aplexer panes and two folders
- * holding same-named tags resolve to their own PTYs. tmux names are
- * host-global and stay bare. A bare pane registers under its [sessionKey]
- * identity — it has no session name to derive one from. See
- * `renderer/sessionIdentity.ts`.
- */
-const registryKey = computed(() =>
-  sessionIdentityKey(props.bare ? (props.sessionKey ?? '') : targetSession.value, {
-    backend: props.backend,
-    workspace: props.workspace ?? undefined,
-  }),
-);
+// The two identities this pane answers to — which session it shows (never
+// one, when bare) and the key its PTY registers under. The reasoning lives
+// with them in ../paneIdentity.ts.
+const { targetSession, registryKey } = usePaneIdentity(props);
 
 const containerEl = ref<HTMLDivElement | null>(null);
 let term: Terminal | null = null;
