@@ -62,7 +62,7 @@ import {
   openMaintenanceTool,
   type MaintenanceToolKind,
 } from '../maintenance';
-import type { HostEntry } from '@pocketshell/core';
+import { missingHostTools, missingHostToolsText, type HostEntry } from '@pocketshell/core';
 import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
 import { useWorkspaceRootsBinding } from '../stores/workspaceRoots';
@@ -218,31 +218,15 @@ const { width: panelWidth, onDragStart } = usePaneWidth({
 /**
  * The host tools that are not installed.
  *
- * `tmuxctl` is listed like the others but it is not like the others: it is
- * the binary the session-join command invokes, and the raw `tmux attach` and
- * `pocketshell sessions` fallbacks are gone, so a host without it can open no
- * session at all. Naming it here is the difference between finding that out
- * now and finding it out after clicking a session and getting a diagnostic in
- * the terminal.
- *
- * A Windows host is the exception: helper, tmuxctl and tmux cannot exist
- * there at all, so the strip would name the same three absent binaries for
- * the life of the connection. That is not information, it is noise — the
- * platform answer from bootstrap suppresses the whole list.
+ * The rule lives in the shared core (`missingHostTools`): `pocketshell` is
+ * the one requirement — it carries aplexer as a bundled dependency, so the
+ * session paths never needed tmuxctl or tmux on a current host. Demanding
+ * them here used to tell a pocketshell-only host it was broken.
  */
-const missingTools = computed(() => {
-  const b = connection.bootstrap;
-  if (!b) return [];
-  if (b.platform === 'windows') return [];
-  return (['pocketshell', 'tmuxctl', 'tmux'] as const).filter((t) => !b[t].installed);
-});
+const missingTools = computed(() => missingHostTools(connection.bootstrap));
 
-/** "tmuxctl", "tmuxctl and tmux", "pocketshell, tmuxctl and tmux". */
-const missingToolsText = computed(() => {
-  const names = missingTools.value;
-  if (names.length <= 1) return names.join('');
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-});
+/** "pocketshell"; the joined form only matters if the list grows back. */
+const missingToolsText = computed(() => missingHostToolsText(missingTools.value));
 
 /** Folder named by the route, so the panel can highlight the current row. */
 const activeFolder = computed(() => (route.params['folder'] as string | undefined) ?? null);

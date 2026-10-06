@@ -96,3 +96,33 @@ export async function runHostBootstrap(
 
   return { platform, pocketshell, tmuxctl, tmux, aplexer, installer, daemonRunning, daemonEnabled };
 }
+
+/**
+ * The tools a host must have for PocketShell to work here — the names the
+ * missing-tools strip lists.
+ *
+ * One name: `pocketshell`. Since helper 0.5.x the CLI carries aplexer as a
+ * pinned hard dependency and resolves its bundled `a` itself (the app finds
+ * the same copy through USER_BIN_DIRS), so every session path — list, create,
+ * join, stop, rename — rides the one binary. `tmuxctl` and `tmux` are not
+ * part of that story: the 0.5.x `sessions` group is aplexer-only, and the
+ * raw-tmux arms beneath it are legacy fallbacks for hosts that predate the
+ * bundled layout, not requirements. Demanding them here told every current
+ * host — pocketshell installed, nothing else — that it was broken.
+ *
+ * A Windows host stays the exception in its own right: the helper cannot
+ * exist there at all, and the strip would name the same absent binary for
+ * the life of the connection. That is not information, it is noise — the
+ * platform answer suppresses the whole list.
+ */
+export function missingHostTools(bootstrap: BootstrapResult | null): string[] {
+  if (!bootstrap) return [];
+  if (bootstrap.platform === 'windows') return [];
+  return bootstrap.pocketshell.installed ? [] : ['pocketshell'];
+}
+
+/** "pocketshell"; "pocketshell and tmuxctl" when the list grows back. */
+export function missingHostToolsText(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}

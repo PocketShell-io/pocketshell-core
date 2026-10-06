@@ -106,11 +106,17 @@ export interface BootstrapResult {
   platform: HostPlatform;
   pocketshell: ToolState;
   /**
-   * The binary the session-join command invokes (src/shared/attachCommand.ts).
-   * Separate from `pocketshell` because a host can have one without the other,
-   * and it is this one that decides whether clicking a session works.
+   * Probed for the record, not for readiness: the 0.5.x helper's `sessions`
+   * group is aplexer-only, so the join no longer hangs off this binary on a
+   * current host — `missingHostTools` names the one real requirement. It
+   * stays in the answer because a host that HAS it is a pre-0.5 helper whose
+   * legacy tmux paths still run through it.
    */
   tmuxctl: ToolState;
+  /**
+   * Raw tmux, the same story as `tmuxctl`: the legacy fallbacks' binary,
+   * never a requirement on a host with a current helper.
+   */
   tmux: ToolState;
   /**
    * The aplexer CLI (`a`) — the MAIN session manager when present.

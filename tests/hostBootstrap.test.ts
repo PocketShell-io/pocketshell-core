@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { runHostBootstrap } from '../src/hostBootstrap';
+import { missingHostTools, missingHostToolsText, runHostBootstrap } from '../src/hostBootstrap';
+import type { BootstrapResult } from '../src/types';
 import type { ExecResult } from '../src/types';
 
 function hostWith(binaries: Record<string, string>) {
@@ -98,5 +99,47 @@ describe('runHostBootstrap on a Windows host', () => {
     expect(result.platform).toBe('posix');
     expect(result.tmux.installed).toBe(true);
     expect(result.aplexer.installed).toBe(false);
+  });
+});
+
+describe('missingHostTools', () => {
+  function bootstrapWith(pocketshell: boolean, platform: 'posix' | 'windows' = 'posix'): BootstrapResult {
+    const installed = { installed: true, path: '/usr/bin/x', version: null };
+    const absent = { installed: false, path: null, version: null };
+    return {
+      platform,
+      pocketshell: pocketshell ? installed : absent,
+      tmuxctl: absent,
+      tmux: absent,
+      aplexer: installed,
+      installer: 'uv',
+      daemonRunning: null,
+      daemonEnabled: null,
+    };
+  }
+
+  it('names pocketshell alone — a current helper carries aplexer and needs neither tmuxctl nor tmux', () => {
+    // The host the strip used to call broken: pocketshell installed, every
+    // other tool absent. That is the documented install, and every session
+    // path (list, create, join, stop, rename) rides the bundled aplexer.
+    const b = bootstrapWith(true);
+    expect(b.tmuxctl.installed).toBe(false);
+    expect(b.tmux.installed).toBe(false);
+    expect(missingHostTools(b)).toEqual([]);
+  });
+
+  it('names pocketshell when the helper is absent, and nothing else', () => {
+    expect(missingHostTools(bootstrapWith(false))).toEqual(['pocketshell']);
+  });
+
+  it('stays quiet before the probe lands and on windows hosts', () => {
+    expect(missingHostTools(null)).toEqual([]);
+    expect(missingHostTools(bootstrapWith(false, 'windows'))).toEqual([]);
+  });
+
+  it('joins the text the strip renders', () => {
+    expect(missingHostToolsText([])).toBe('');
+    expect(missingHostToolsText(['pocketshell'])).toBe('pocketshell');
+    expect(missingHostToolsText(['pocketshell', 'tmuxctl'])).toBe('pocketshell and tmuxctl');
   });
 });
