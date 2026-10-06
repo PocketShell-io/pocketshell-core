@@ -140,6 +140,15 @@
  *     the cut. A hyphenated fragment of three or more groups is no prose
  *     word either ({@link SLUG_FRAGMENT}), and the head test admits it
  *     beside the hex.
+ *   - the same transcript's tool blocks open every row with an elbow marker
+ *     (`⎿ `), and a long command echo ran INTO its block: the bullet row
+ *     wrapped after `/home/alexey/tmp/` and the command's own tail landed
+ *     on the block's first row, elbow and all. The elbow was no gutter the
+ *     rules knew and no space the hanging indent reads past — the head read
+ *     `⎿` and the fit guard refused — so the lock path stayed two fragments,
+ *     the first opening a directory, the second linkifying alone as a
+ *     relative path resolving nowhere. The elbow joins the gutter family
+ *     ({@link GUTTER}), and the command echo comes whole.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -299,18 +308,20 @@ const WRAP_SHORTFALL = 4;
  * a long attachment path at an internal hyphen, so the continuation row was
  * `▏ Webpage_3.pdf`.
  *
- * Box-drawing and the left partial blocks only, with the trailing spaces the
- * TUIs actually emit — up to four for either. The bars' border sits left of
- * the text it decorates, and the inspector transcript's block border pads its
- * text three columns past the `│`; the padding is the renderer's LAYOUT, not
- * token content, and what the guards must judge is the content after it. ASCII
- * `|` is deliberately NOT here: `| ` starts a markdown table row and appears
- * in the middle of shell pipelines, and admitting it would let this rule glue
- * together two rows of a table. A bar RUN never matches either — the class
- * must be followed by a space, so `▌▌▌▌ 40%` stops being a gutter at its own
- * second bar.
+ * Box-drawing, the transcript elbow (`⎿`, the marker its tool blocks open
+ * every row with) and the left partial blocks only, with the trailing spaces
+ * the TUIs actually emit — up to four for either. The bars' border sits left
+ * of the text it decorates, and the inspector transcript's block border pads
+ * its text three columns past the `│`; the padding is the renderer's LAYOUT,
+ * not token content, and what the guards must judge is the content after it.
+ * ASCII `|` is deliberately NOT here: `| ` starts a markdown table row and
+ * appears in the middle of shell pipelines, and admitting it would let this
+ * rule glue together two rows of a table. A bar RUN never matches either —
+ * the class must be followed by a space, so `▌▌▌▌ 40%` stops being a gutter
+ * at its own second bar, and a tree drawing's `└──` keeps its second dash
+ * where a space would have to be.
  */
-const GUTTER = /^ {0,8}(?:[│┃] {1,4}|[▏▎▍▌▋▊▉] {1,4})/;
+const GUTTER = /^ {0,8}(?:[│┃⎿] {1,4}|[▏▎▍▌▋▊▉] {1,4})/;
 
 /**
  * The hanging indent a transcript renderer puts in front of the wrapped rows of
@@ -774,9 +785,10 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   if (head === '' || head.startsWith('/')) return null;
   if (prev.lastCol + 1 + head.length <= wrapWidth && !(webSchemeTail && HEX_FRAGMENT.test(head)))
     return null;
-  // The gutter is spaces and a narrow bar character — box-drawing or a left
-  // partial block, all ambiguous-width and one cell in xterm — so its string
-  // length is also its cell count; no double-width correction is needed.
+  // The gutter is spaces and a narrow marker character — box-drawing, the
+  // transcript elbow or a left partial block, all ambiguous-width and one
+  // cell in xterm — so its string length is also its cell count; no
+  // double-width correction is needed.
   return gutter[0].length;
 }
 
