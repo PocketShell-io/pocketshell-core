@@ -131,6 +131,15 @@
  *     404ing underline) and the hash sat dead. A long hex head under a web
  *     tail is the address's own rest — {@link HEX_FRAGMENT} — and the guard
  *     stands down for that shape alone ({@link joinedRowSkip}).
+ *   - an SOP portal's markdown list printed its addresses plain, and the
+ *     renderer cut them mid-word a few columns short of the pane —
+ *     `…/sops/get-t` / `he-openai-invoice-and-receipt-from-chatgpt`. Rule
+ *     1a's head test knew a `/`-rest and a hex hash but not a slug's rest —
+ *     hyphens only, no slash anywhere — so three of the list's four
+ *     addresses stayed two plain fragments each, the underline stopping at
+ *     the cut. A hyphenated fragment of three or more groups is no prose
+ *     word either ({@link SLUG_FRAGMENT}), and the head test admits it
+ *     beside the hex.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -146,7 +155,9 @@
  * after its `?`, or mid-hex at a row full to the margin — and the shape the
  * eleventh report arrived in: GitHub commit URLs cut right BEFORE a segment
  * (`https://github.com` / `/AI-Shipping-Labs/…`) and mid-segment or mid-hash
- * at the transcript's inset rows. WebLinksAddon cannot see past the break (it
+ * at the transcript's inset rows — and the twelfth's: a hyphenated slug
+ * severed mid-word at that same inset width (`…/sops/get-t` / `he-openai-…`).
+ * WebLinksAddon cannot see past the break (it
  * reads one row at a time), so the reconstructed line is scanned by
  * terminalUrls.ts and the address's links — one per row it spans, see
  * {@link linksPerRow} — are registered BEFORE the addon, whose priority rule
@@ -345,6 +356,18 @@ function webPathOf(tail: string): string {
  * `facade` — all live below it, and a line of prose can begin with one.
  */
 const HEX_FRAGMENT = /^[0-9a-f]{8,}$/i;
+
+/**
+ * A hyphenated slug fragment — what a URL's path segment cut mid-word hands
+ * the next row (`he-openai-invoice-and-receipt-from-chatgpt`, the twelfth
+ * report's SOP links). Three hyphen-separated groups is the floor because two
+ * is still prose (`well-known`, `e-mail`), and the letter the groups must
+ * contain somewhere keeps a date (`2027-04-03`, the same shape in digits)
+ * out. What the bar admits that is not URL material is the triple-hyphenated
+ * compound (`mother-in-law`) — the same accepted trade {@link HEX_FRAGMENT}
+ * makes with `added`, at a rarity one notch deeper.
+ */
+const SLUG_FRAGMENT = /^(?=[a-z0-9-]*[a-z])[a-z0-9]+(?:-[a-z0-9]+){2,}$/i;
 
 /** One flattened logical line, plus the cell each character came from. */
 export interface ScannedLine {
@@ -628,8 +651,10 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
     //     eleventh report's transcript cut its commit addresses right before
     //     a segment (`https://github.com` / `/AI-Shipping-Labs/…`) and
     //     mid-segment at its inset rows, so the head must be the URL's OWN
-    //     rest — a new segment, a fragment with more segments behind it, or a
-    //     run of hex ({@link HEX_FRAGMENT}) — and never the bare word a
+    //     rest — a new segment, a fragment with more segments behind it, a
+    //     run of hex ({@link HEX_FRAGMENT}), or a hyphenated slug fragment
+    //     ({@link SLUG_FRAGMENT}, the twelfth report's mid-word cut) — and
+    //     never the bare word a
     //     space-wrap moves down after a complete, not-quite-full address
     //     (`docs: https://x.io/guide` two columns short, `available online`
     //     below: `available` is prose, and the head test is what refuses it,
@@ -646,7 +671,10 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
     //     characters make.
     const left = prev.width - 1 - prev.lastCol;
     const continuesUrl =
-      head.startsWith('/') || head.includes('/') || HEX_FRAGMENT.test(head);
+      head.startsWith('/') ||
+      head.includes('/') ||
+      HEX_FRAGMENT.test(head) ||
+      SLUG_FRAGMENT.test(head);
     if (
       head !== '' &&
       left <= WRAP_SHORTFALL &&
