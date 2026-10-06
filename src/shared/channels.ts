@@ -20,6 +20,13 @@ export const ipc = {
     /** Open or focus the dedicated Account & sync window. */
     openAccount: 'win:openAccount',
     /**
+     * Open another workspace window (the desktop's multi-window support).
+     * Carries an optional `{ host }` naming the host the new window should
+     * dial at launch; without it the window lands on the host picker. A
+     * platform with one window per app simply does not expose the method.
+     */
+    openNewWindow: 'win:openNewWindow',
+    /**
      * Main -> renderer: the user pressed a zoom chord. Carries the INTENT
      * ('in' | 'out' | 'reset'), never a zoom value, because main deliberately
      * does not know what the current zoom is — the renderer's settings store

@@ -39,7 +39,9 @@ import {
   autoConnectAttempted,
   decideAutoConnect,
   defaultHostStatus,
+  launchDefaultHost,
   markAutoConnectAttempted,
+  readLaunchRequest,
 } from '../autoConnect';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
@@ -59,6 +61,40 @@ const connectingKey = ref<string | null>(null);
 const settingsOpen = ref(false);
 const reloadingHosts = ref(false);
 const hostReloadError = ref<string | null>(null);
+
+/**
+ * What this window's launch asked for, read once off the load URL. A launch
+ * that names a host (`?host=`) dials THAT instead of the stored default, and
+ * its banner wording drops the "(your default host)" claim; a secondary
+ * window (`?window=workspace`) offers no default at all — see
+ * {@link readLaunchRequest}.
+ */
+const launch = readLaunchRequest(window.location.search);
+const requestedConnect = launch.requestedHost !== null;
+
+/**
+ * A launch-named host that is not in the host list. The stored default's
+ * absence has its own banner and its own Clear button; this one has nobody
+ * to clear — the name came from a launch argument or a deep link, and the
+ * fix is on the side that spelled it.
+ */
+const requestedMissing = computed(() =>
+  launch.requestedHost !== null &&
+  defaultHostStatus(launch.requestedHost, connection.hosts) === 'missing',
+);
+
+/**
+ * Whether the platform can open another workspace window. Probed the
+ * platformCapabilities way: only a real method counts, so the button is
+ * absent — not disabled — where the concept does not exist.
+ */
+const canOpenNewWindow = (() => {
+  try {
+    return typeof api.win?.openNewWindow === 'function';
+  } catch {
+    return false;
+  }
+})();
 
 /**
  * The platform's local host source, or null when it declares none. Every
@@ -162,6 +198,11 @@ function onAccountAction(): void {
   void api.win.openAccount();
 }
 
+/** Open another workspace window on this platform (see {@link canOpenNewWindow}). */
+function onNewWindow(): void {
+  void api.win.openNewWindow?.();
+}
+
 function refreshAccountStatus(): void {
   void sync.refreshStatus().catch(() => {
     // A status read failure leaves the safe, signed-out presentation in place.
@@ -207,7 +248,7 @@ onMounted(async () => {
     hostReloadError.value = `Could not read ${sourceName}${detail}`;
   }
   const decision = decideAutoConnect({
-    defaultHost: hostList.defaultHostKey,
+    defaultHost: launchDefaultHost(launch, hostList.defaultHostKey),
     hosts: connection.hosts,
     attempted: autoConnectAttempted(),
     connected: connection.connectionId !== null,
@@ -378,6 +419,17 @@ function onClearDefault(): void {
         >
           <AppIcon name="refresh" :class="{ spin: reloadingHosts }" />
         </button>
+        <!-- Another window for another host — the desktop's multi-window
+             support. Absent where the platform holds one window. -->
+        <button
+          v-if="canOpenNewWindow"
+          class="icon-btn"
+          title="New window"
+          aria-label="Open a new window"
+          @click="onNewWindow"
+        >
+          <AppIcon name="plus" />
+        </button>
         <button class="icon-btn" title="Settings" @click="settingsOpen = true">
           <AppIcon name="settings" />
         </button>
@@ -406,7 +458,10 @@ function onClearDefault(): void {
            whole picker for the 30s backstop with nothing to press. Only the
            wording knows which kind of dial it is. -->
       <p v-if="connectingTo !== null" class="auto-banner">
-        <span v-if="autoConnecting">
+        <!-- "(your default host)" only when it IS the default: a launch that
+             named its host explicitly (a command line, a deep link) must not
+             borrow the setting's authority for a name nobody stored. -->
+        <span v-if="autoConnecting && !requestedConnect">
           Connecting to <strong>{{ connectingTo }}</strong> (your default host)…
         </span>
         <span v-else>Connecting to <strong>{{ connectingTo }}</strong>…</span>
@@ -425,6 +480,20 @@ function onClearDefault(): void {
           in the host list.
         </span>
         <button class="btn-ghost" @click="onClearDefault">Clear</button>
+      </p>
+      <!-- Same treatment for a host a LAUNCH named: it is on the picker
+           because the name did not resolve, and it deserves to know that is
+           why. No Clear — there is no stored setting behind this one. -->
+      <p v-if="requestedMissing && connectingTo === null" class="auto-banner stale">
+        <AppIcon name="alert-triangle" :size="14" />
+        <span v-if="hostSource">
+          This window was opened for <strong>{{ launch.requestedHost }}</strong>, which is
+          not in <code>{{ hostSource.sourceName }}</code>.
+        </span>
+        <span v-else>
+          This window was opened for <strong>{{ launch.requestedHost }}</strong>, which is not
+          in the host list.
+        </span>
       </p>
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:

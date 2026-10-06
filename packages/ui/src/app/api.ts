@@ -119,6 +119,13 @@ export interface PocketShellApi {
     "win": {
     "setTitle": (title: string) => void;
     "openAccount": () => Promise<void>;
+    /**
+     * Optional: open another workspace window, optionally naming the host it
+     * should dial at launch. Only a platform that can hold several windows
+     * over one app exposes it; where it is absent the shared UI hides its
+     * new-window affordances.
+     */
+    "openNewWindow"?: (request?: { host?: string }) => Promise<void>;
     "setZoom": (factor: number) => void;
     "onZoomCommand": (handler: (command: ZoomCommand) => void) => Unsubscribe;
     };

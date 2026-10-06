@@ -117,3 +117,59 @@ export function markAutoConnectAttempted(): void {
 export function resetAutoConnectLatch(): void {
   attempted = false;
 }
+
+/**
+ * What THIS window's launch was told to do, read once off the load URL's
+ * query.
+ *
+ * The desktop can open several workspace windows over one app instance, and
+ * each window is an independent renderer with its own launch: the first one
+ * has no opinion and follows the stored default as always, while a window the
+ * user (or a command line) asked for later carries its instructions in the
+ * query — `?window=workspace` marks a SECONDARY window, which must not dial
+ * the stored default (the first window already owns that connection, and two
+ * dials at one host compete for the same local forwarded ports), and
+ * `?host=NAME` names the one host this launch is for, which then stands in
+ * for the default entirely.
+ */
+export interface LaunchRequest {
+  /** The host this launch names explicitly (`?host=NAME`), or null. */
+  requestedHost: string | null;
+  /** Whether the stored default host may be dialled on this launch. */
+  defaultAutoConnectAllowed: boolean;
+}
+
+/**
+ * Parse the load URL's query into a {@link LaunchRequest}.
+ *
+ * A malformed or empty `host` value reads as "no requested host" — the query
+ * is a preference, not a command, and a bad value must leave the user on the
+ * picker rather than invent a dial. Anything unparsable as a query at all is
+ * a plain first launch.
+ */
+export function readLaunchRequest(search: string): LaunchRequest {
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(search);
+  } catch {
+    return { requestedHost: null, defaultAutoConnectAllowed: true };
+  }
+  const host = (params.get('host') ?? '').trim();
+  return {
+    requestedHost: host === '' ? null : host,
+    defaultAutoConnectAllowed: params.get('window') !== 'workspace',
+  };
+}
+
+/**
+ * The default a launch actually offers {@link decideAutoConnect}: an
+ * explicitly requested host replaces the stored one, and a secondary window
+ * offers none at all.
+ *
+ * A pure function of the request and the store's value because the picker's
+ * decision — and its tests — sit on the resolved name, not on where it came
+ * from.
+ */
+export function launchDefaultHost(request: LaunchRequest, storedDefault: string | null): string | null {
+  return request.requestedHost ?? (request.defaultAutoConnectAllowed ? storedDefault : null);
+}
