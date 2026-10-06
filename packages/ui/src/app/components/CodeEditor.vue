@@ -68,6 +68,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { bracketMatching, indentOnInput } from '@codemirror/language';
 import { codeThemeFor } from '../codeEditorTheme';
 import { loadLanguage } from '../codeEditorLanguages';
+import { clearNavHistory, cursorNavHistory, navGoBack, navGoForward } from '../codeEditorNavigation';
 import { PLAIN_TEXT, languageIdForFilename, shouldHighlight } from '../codeLanguage';
 import { resolveTheme } from '@ui/themes';
 import { useSettingsStore } from '../stores/settings';
@@ -164,6 +165,11 @@ const baseExtensions = [
   highlightActiveLine(),
   highlightSpecialChars(),
   history(),
+  // The cursor-location walk behind FilesView's `files.editorBack` /
+  // `files.editorForward` chords — VS Code's Go Back / Go Forward. The field
+  // itself records nothing on its own; see codeEditorNavigation.ts for what
+  // becomes a location.
+  cursorNavHistory,
   drawSelection(),
   dropCursor(),
   rectangularSelection(),
@@ -221,6 +227,26 @@ onMounted(() => {
   void syncLanguage();
 });
 
+/**
+ * Walk the cursor-location history — VS Code's Go Back / Go Forward, over the
+ * locations codeEditorNavigation.ts records. FilesView owns the chords (the
+ * registry's `files.editorBack` / `files.editorForward`) and calls these: the
+ * keydown arrives here bubbled out of CodeMirror, which claims Alt+Arrow only
+ * on macOS (word movement) and leaves it to the pane everywhere else. Boolean
+ * returns, so a chord with an empty history does not even claim the key.
+ */
+function navigateBack(): boolean {
+  const editor = view.value;
+  return editor ? navGoBack(editor) : false;
+}
+
+function navigateForward(): boolean {
+  const editor = view.value;
+  return editor ? navGoForward(editor) : false;
+}
+
+defineExpose({ navigateBack, navigateForward });
+
 onBeforeUnmount(() => {
   // An EditorView holds DOM listeners and a ResizeObserver; leaving them behind
   // on a tab switch is the classic slow leak in a long-lived Electron window.
@@ -250,6 +276,10 @@ watch(
         // one, so the cursor goes home rather than to a position that meant
         // something in a file that is no longer open.
         selection: { anchor: 0 },
+        // And the location history goes with the old buffer: a remembered
+        // offset in yesterday's document is not a location in this one, and
+        // walking into it would silently re-aim the new file.
+        effects: clearNavHistory.of(null),
       });
     } finally {
       applyingExternal = false;

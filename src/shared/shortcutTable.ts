@@ -488,6 +488,24 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     rebindable: false,
     note: 'CodeMirror’s accessibility escape hatch, kept intact because Tab indents in this editor. Electron’s default menu also binds Ctrl+M to Minimize, and the menu wins — see the collisions section.',
   },
+  {
+    id: 'files.editorBack',
+    surface: 'files',
+    label: 'Go back to the previous cursor location',
+    defaults: ['Alt+ArrowLeft'],
+    owner: 'app',
+    rebindable: true,
+    note: 'VS Code’s Go Back, on VS Code’s own Windows/Linux chord, within the open file: every deliberate jump — a click, a page move, Ctrl+Home — remembers where the cursor was, and this chord walks the memory backwards. Drift does not create locations: arrows and typing move the cursor without a record, which is what makes "back" mean something (codeEditorNavigation.ts carries the full rule). Alt is affordable only HERE: the Files pane has no terminal, and at a shell Alt+Arrow is a meta sequence (ESC [ 1 ; 3 D) programs can bind — the same asymmetry that lets this pane hold Ctrl+S. On macOS CodeMirror’s default keymap spends Alt+Arrow on word movement and the pane stands down when the editor has already claimed the key, so the chord is effectively Windows/Linux — the same trade VS Code makes, whose macOS Go Back sits on a different chord entirely.',
+  },
+  {
+    id: 'files.editorForward',
+    surface: 'files',
+    label: 'Go forward to the location before going back',
+    defaults: ['Alt+ArrowRight'],
+    owner: 'app',
+    rebindable: true,
+    note: 'The other half of files.editorBack — undo the undo. See that entry for why the chord is Alt, why it lives only in the Files pane, and why macOS stands down.',
+  },
 
   // --- Annotate -----------------------------------------------------------
   {

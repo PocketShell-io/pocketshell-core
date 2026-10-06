@@ -131,6 +131,15 @@ const treeRef = ref<{ editPath: () => void; focusSearch: () => void; goRoot: () 
   null,
 );
 
+/**
+ * The open file's CodeMirror instance, for the cursor-history chords below —
+ * the editor exposes `navigateBack` / `navigateForward` (see CodeEditor.vue)
+ * and keeps the location stack itself; this view only aims the chords at it.
+ * Typed by the two methods called rather than the component's instance type,
+ * like `treeRef` above.
+ */
+const editorRef = ref<{ navigateBack: () => boolean; navigateForward: () => boolean } | null>(null);
+
 function onKeydown(e: KeyboardEvent): void {
   const bindings = settings.shortcutBindings;
   if (isShortcut(bindings, 'files.save', e)) {
@@ -165,6 +174,27 @@ function onKeydown(e: KeyboardEvent): void {
   if (isShortcut(bindings, 'files.goRoot', e)) {
     e.preventDefault();
     void treeRef.value?.goRoot();
+  }
+  // Alt+Left / Alt+Right walk the editor's cursor-location history — VS Code's
+  // Go Back / Go Forward, on VS Code's own Windows/Linux chord (the registry
+  // entries carry the full reasoning, including why Alt is affordable only in
+  // this pane). The keydown arrives here bubbled out of CodeMirror, which
+  // claims Alt+Arrow only on macOS, where it is word movement — that event
+  // lands here already preventDefaulted, and acting on it too would move the
+  // cursor twice with one keystroke: the doubled-gesture bug this app has
+  // landed three times. So a claimed key stands down and macOS keeps
+  // CodeMirror's word movement, the same trade VS Code itself makes.
+  if (isShortcut(bindings, 'files.editorBack', e)) {
+    if (!e.defaultPrevented) {
+      e.preventDefault();
+      editorRef.value?.navigateBack();
+    }
+  }
+  if (isShortcut(bindings, 'files.editorForward', e)) {
+    if (!e.defaultPrevented) {
+      e.preventDefault();
+      editorRef.value?.navigateForward();
+    }
   }
 }
 
@@ -307,6 +337,7 @@ defineExpose({ focus });
              two-way. -->
         <CodeEditor
           v-else-if="files.openMode === 'text'"
+          ref="editorRef"
           :model-value="files.openContent"
           :filename="files.openPath"
           @update:model-value="files.setContent"
