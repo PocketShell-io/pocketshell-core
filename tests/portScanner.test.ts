@@ -8,6 +8,7 @@ import {
   parseProcessInfo,
   parseSsTln,
   parseSsTlnp,
+  parseNetstatWindowsAno,
   PORT_LISTENER_SCAN_COMMAND,
   procCwdCommand,
   splitSections,
@@ -95,5 +96,43 @@ describe('portable remote listener parser', () => {
     expect(PORT_LISTENER_SCAN_COMMAND).toContain('netstat -tlnp 2>/dev/null');
     expect(PORT_LISTENER_SCAN_COMMAND.trimEnd().endsWith('true')).toBe(true);
     expect(Object.keys(splitSections(scanStdout({ ssTln: 'payload' })))).toHaveLength(4);
+  });
+});
+
+describe('parseNetstatWindowsAno', () => {
+  const LISTENER_OUTPUT = [
+    '\r\nActive Connections\r\n',
+    '',
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1288',
+    '  TCP    127.0.0.1:5040         0.0.0.0:0              LISTENING       5420',
+    '  TCP    [::]:445               [::]:0                 LISTENING       1288',
+    '  TCP    10.0.0.5:49665         10.0.0.9:443           ESTABLISHED     3396',
+    '  UDP    0.0.0.0:5353           *:*                                    8888',
+    '',
+  ].join('\n');
+
+  it('reads the TCP LISTENING rows, IPv4 and IPv6, with their PIDs', () => {
+    const ports = parseNetstatWindowsAno(LISTENER_OUTPUT);
+    expect(ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([135, 445, 5040]);
+    const v4 = ports.find((p) => p.port === 135);
+    expect(v4).toMatchObject({ port: 135, pid: 1288, process: null, cwd: null });
+    expect(ports.find((p) => p.port === 445)?.pid).toBe(1288);
+  });
+
+  it('collapses the IPv4 and IPv6 bindings of one port into one row', () => {
+    const both = [
+      'Active Connections',
+      '  Proto  Local Address          Foreign Address        State           PID',
+      '  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1000',
+      '  TCP    [::]:8080              [::]:0                 LISTENING       1000',
+    ].join('\n');
+    expect(parseNetstatWindowsAno(both).map((p) => p.port)).toEqual([8080]);
+  });
+
+  it('answers empty for a host with nothing listening and for noise', () => {
+    expect(parseNetstatWindowsAno('Active Connections\n\n  Proto  Local Address ...\n')).toEqual([]);
+    expect(parseNetstatWindowsAno('')).toEqual([]);
+    expect(parseNetstatWindowsAno('netstat: command not found\n')).toEqual([]);
   });
 });

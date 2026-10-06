@@ -121,6 +121,51 @@ export function procCwdCommand(pids: readonly number[]): string {
   );
 }
 
+/** Section sentinel emitted by {@link PORT_LISTENER_SCAN_COMMAND_WINDOWS}. */
+export const SECTION_WIN_NETSTAT_ANO = 'PS_WIN_NETSTAT_ANO';
+
+/**
+ * The Windows arm of the listener scan: one exec, `netstat -ano`.
+ *
+ * Windows has neither `ss` nor net-tools; its own `netstat.exe` answers
+ * `-ano` (all sockets, numeric addresses, owning PID) and resolves fine from
+ * a bash DefaultShell because System32 is on PATH. `-n` matters — without it
+ * every row costs a reverse-DNS lookup — and `-a` is what makes listeners
+ * show at all. `-b` (process names) needs elevation, so attribution stops at
+ * the PID.
+ */
+export const PORT_LISTENER_SCAN_COMMAND_WINDOWS = [
+  'echo "<<<PS_WIN_NETSTAT_ANO>>>"; netstat -ano 2>/dev/null;',
+  'true',
+].join(' ');
+
+/**
+ * Parse `netstat -ano` output (Windows).
+ *
+ * A TCP row reads `Proto Local Foreign State PID`; only `LISTENING` rows
+ * count. UDP rows carry no State column and are skipped by that same check,
+ * as are the "Active Connections" banner and its blank lines. The local
+ * address may be `0.0.0.0:135` or `[::]:445` — {@link extractPort} reads
+ * either. Process names are not available without an elevated `netstat -b`,
+ * so attribution is the PID alone.
+ */
+export function parseNetstatWindowsAno(stdout: string): RemotePort[] {
+  const out: RemotePort[] = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 5 || (tokens[0] ?? '').toUpperCase() !== 'TCP') continue;
+    if ((tokens[3] ?? '').toUpperCase() !== 'LISTENING') continue;
+    const port = extractPort(tokens[1] ?? '');
+    if (port === null) continue;
+    const pidRaw = Number.parseInt(tokens[4] ?? '', 10);
+    const pid = Number.isInteger(pidRaw) && pidRaw > 0 ? pidRaw : null;
+    out.push({ port, process: null, pid, cwd: null });
+  }
+  return dedupe(out);
+}
+
 /**
  * Parse one `ss` / `netstat` process blob into a name and a PID.
  *
