@@ -11,7 +11,36 @@ export interface SshKeyHandleCredential {
 export type SshCredential =
   | { kind: 'private-key'; privateKeyPem: string; passphrase?: string | null }
   | { kind: 'password'; password: string }
-  | SshKeyHandleCredential;
+  | SshKeyHandleCredential
+  /** The shared relay token — the only secret a link host needs
+   * (docs/link-transport.md in pocketshell-cli). Never meaningful to the
+   * native SSH transports; a dial carrying it must route to the link
+   * capability. */
+  | { kind: 'link-token'; token: string };
+
+/**
+ * The link transport dial info: the relay to meet on and the host_id the
+ * daemon registered under. The token rides {@link SshCredential} as
+ * `link-token` — one secret per host, wherever that client keeps secrets.
+ */
+export interface LinkTransportTarget {
+  /** Relay origin, e.g. `wss://relay.example:8765`. */
+  relayUrl: string;
+  /** The `--host-id` the daemon was started with. */
+  hostId: string;
+}
+
+/** Validate the portable link-target shape without reaching the network. */
+export function isLinkTransportTarget(value: unknown): value is LinkTransportTarget {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.relayUrl === 'string' &&
+    candidate.relayUrl.trim().length > 0 &&
+    typeof candidate.hostId === 'string' &&
+    candidate.hostId.trim().length > 0
+  );
+}
 
 /** Validate the portable shape without resolving or normalizing the handle. */
 export function isValidSshKeyHandleCredential(value: unknown): value is SshKeyHandleCredential {
@@ -31,6 +60,12 @@ export interface SshHostTarget {
   port: number;
   username: string;
   credential: SshCredential;
+  /**
+   * Set when the host has no inbound SSH and the dial rides the link
+   * transport (relay + daemon, docs/link-transport.md). `credential` must
+   * then be `link-token`; `hostname`/`port` are display-only for such hosts.
+   */
+  link?: LinkTransportTarget;
 }
 
 export interface SshConnectionRef {
@@ -56,6 +91,11 @@ export interface SshResourceSnapshot extends SshAck {
   ptys: number;
   sftpClients: number;
   forwards: number;
+}
+
+/** True when this dial must ride the link transport, not SSH. */
+export function isLinkDial(target: SshHostTarget): boolean {
+  return isLinkTransportTarget(target.link) && target.credential.kind === 'link-token';
 }
 
 export interface SshConnectOptions extends SshHostTarget {
@@ -87,6 +127,13 @@ export interface SshExecOptions extends SshConnectionRef {
   requestId: string;
   command: string;
   timeoutMs: number;
+  /**
+   * Written to the command's stdin, then EOF — how `pocketshell env set`
+   * receives its JSON payload without putting values on a `ps`-readable
+   * command line. Optional; the SSH transports always support it, the link
+   * transport since the exec-stdin protocol addition.
+   */
+  stdinBase64?: string;
 }
 
 export interface SshExecResult extends SshConnectionRef {

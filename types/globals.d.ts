@@ -17,11 +17,32 @@ declare function clearTimeout(id: number | undefined): void;
 
 declare function atob(data: string): string;
 
+declare function btoa(data: string): string;
+
 declare const TextDecoder: {
   new (
     label?: string,
     options?: { fatal?: boolean; ignoreBOM?: boolean },
   ): {
     decode(input?: Uint8Array, options?: { stream?: boolean }): string;
+  };
+};
+
+declare const TextEncoder: {
+  new (): {
+    encode(input?: string): Uint8Array;
+  };
+};
+
+/** Minimal browser WebSocket surface (browsers, Electron, Node 18+, WebView). */
+declare const WebSocket: {
+  new (url: string | URL): {
+    binaryType: string;
+    onopen: (() => void) | null;
+    onmessage: ((event: { data: unknown }) => void) | null;
+    onclose: ((event: { code: number; reason: string }) => void) | null;
+    onerror: (() => void) | null;
+    send(data: string | Uint8Array): void;
+    close(code?: number, reason?: string): void;
   };
 };

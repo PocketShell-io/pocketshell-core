@@ -55,6 +55,7 @@ export * from './composerSend';
 export * from './dictationController';
 export * from './terminalKeys';
 export * from './sshCapability';
+export * from './linkCapability';
 export * from './connectionController';
 export * from './hostBootstrap';
 export * from './sessionRowSummary';

@@ -6,6 +6,8 @@
  * {@link ConnectionId}s and parsed results only.
  */
 
+import type { LinkTransportTarget } from './sshCapability';
+
 /** Opaque handle for a live SSH connection in the main process. */
 export type ConnectionId = string;
 
@@ -14,6 +16,13 @@ export type ShellId = string;
 
 /** A host parsed from ~/.ssh/config or entered manually. */
 export interface HostEntry {
+  /**
+   * Set when the host has no inbound SSH (a laptop behind NAT) and dials
+   * ride the link transport instead (docs/link-transport.md in
+   * pocketshell-cli). The relay token is NOT here — it lives wherever the
+   * client keeps that host's secret.
+   */
+  link?: LinkTransportTarget;
   /**
    * Stable host identity, for a host whose platform owns its host list (a
    * saved host, see `savedHosts.ts`): the key for the default host, trust
