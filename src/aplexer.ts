@@ -133,11 +133,31 @@ export function aplexerSelector(workspace: string, tag: string): string {
  * mode runs it (see the "why the join ends with `exit`" note on
  * {@link sessionAttachCommand}).
  *
+ * The PATH assignment is deliberately UNQUOTED: an assignment value is never
+ * word-split, so the quotes only ever served readability — and on a Windows
+ * host they are fatal (see {@link AplexerAttachWindowsOptions.windows}).
+ *
  * The join is by UUID when [id] is known — renames change the tag, never the
  * id, so an id join cannot be orphaned the way a name join can — and by
  * `--workspace/--tag` otherwise. `a attach` repaints the live screen
  * tmux-style on reattach, so there is no socket sweep and no second arm: one
  * spelling reaches every session the snapshot lists.
+ *
+ * ## [windows]: the ConPTY exec re-splits the command
+ *
+ * Windows OpenSSH's PTY exec path hands the DefaultShell the command as
+ * `bash -c <raw>` with no quoting, so the shell's argv parse splits it at
+ * every space and `bash -c` takes ONLY the first word as its script — the
+ * panel's execs (no PTY) are fine, and a join (PTY) runs `a` bare, or `(`
+ * alone, which is the `syntax error: unexpected end of file from '('` a
+ * Windows join used to answer. Two counters, both carried by the [windows]
+ * form: the whole script is wrapped in ONE pair of double quotes (argv then
+ * reassembles to the original text) and it contains NO double quotes of its
+ * own (they would close the wrapper). The UUID arm is also dropped there:
+ * aplexer 0.1.10 on Windows answers a bare-UUID attach with its picker, so
+ * the join goes `cd <workspace> && a attach <tag>` — the tag is
+ * workspace-scoped by the cd, which is the resolution the uuid arm was
+ * buying.
  */
 export function aplexerAttachCommand(options: {
   /** Immutable session id. Preferred; survives renames. */
@@ -146,6 +166,8 @@ export function aplexerAttachCommand(options: {
   workspace?: string | null;
   /** Tag within the workspace. Required when [id] is absent. */
   tag?: string | null;
+  /** The ConPTY-safe spelling — see the windows note above. */
+  windows?: boolean;
 }): string {
   const { id, workspace, tag } = options;
   // A blank workspace must stay blank (fail closed: `a` refuses it) rather
@@ -157,13 +179,26 @@ export function aplexerAttachCommand(options: {
     workspace != null && workspace.trim() !== ''
       ? shellQuoteRemotePath(workspace)
       : shellQuote(workspace ?? '');
-  const target = id != null && id !== '' ? shellQuote(id) : `--workspace ${workspaceArg} --tag ${shellQuote(tag ?? '')}`;
-  const label = tag ?? workspace ?? id ?? 'session';
+  const label = shellQuote(tag ?? workspace ?? id ?? 'session');
   const failure =
     '\\n[PocketShell] could not join session %s. ' +
     'The aplexer session is gone, or `a` is not installed on this host any more.\\n';
+  const pathPrefix = `PATH=${USER_BIN_PATH}:$PATH`;
+  if (options.windows === true) {
+    // `cd` scopes the bare tag to this workspace (aplexer 0.1.10 on Windows
+    // has no uuid attach and reads a bare tag against the cwd). Everything
+    // inside is double-quote-free so the outer pair survives the argv round
+    // trip; the `||` fallback then only fires for a dead session or a missing
+    // `a`, as on POSIX.
+    const selector =
+      workspace != null && workspace.trim() !== '' && tag != null && tag !== ''
+        ? `cd ${shellQuoteRemotePath(workspace)} && a attach ${shellQuote(tag)}`
+        : `a attach ${label}`;
+    return `"( ${pathPrefix}; ${selector} ) || printf '${failure}' ${label}; exit"`;
+  }
+  const target = id != null && id !== '' ? shellQuote(id) : `--workspace ${workspaceArg} --tag ${shellQuote(tag ?? '')}`;
   return (
-    `( PATH="${USER_BIN_PATH}:$PATH"; a attach ${target} ) || ` +
-    `printf '${failure}' ${shellQuote(label)}; exit`
+    `( ${pathPrefix}; a attach ${target} ) || ` +
+    `printf '${failure}' ${label}; exit`
   );
 }
