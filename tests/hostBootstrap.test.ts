@@ -64,11 +64,17 @@ describe('runHostBootstrap on a Windows host', () => {
     expect(result.tmux).toEqual({ installed: false, path: null, version: null });
     expect(result.aplexer.installed).toBe(true);
     expect(result.daemonRunning).toBeNull();
-    const probed = host.commands.filter((c) => /command -v/.test(c));
-    expect(probed.some((c) => c.includes('pocketshell'))).toBe(false);
-    expect(probed.some((c) => c.includes('tmuxctl'))).toBe(false);
-    expect(probed.some((c) => c.includes("'tmux'"))).toBe(false);
-    expect(probed.some((c) => /command -v a$/.test(c.replace(/'$/, '')))).toBe(true);
+    // The probed BINARY names, not whole-command substrings: every probe
+    // rides the path-aware wrapper whose USER_BIN_PATH legitimately contains
+    // `.../uv/tools/pocketshell/bin` (the bundled-aplexer dir), so a substring
+    // match would fire on commands that never name pocketshell as their target.
+    const probed = host.commands
+      .map((c) => /command -v ([^\s']+)'?$/.exec(c)?.[1])
+      .filter((name): name is string => name !== undefined);
+    expect(probed).not.toContain('pocketshell');
+    expect(probed).not.toContain('tmuxctl');
+    expect(probed).not.toContain('tmux');
+    expect(probed).toContain('a');
   });
 
   it('honours a pre-detected platform and skips the uname exec', async () => {
