@@ -140,3 +140,25 @@ describe('aplexerRecordToSummary', () => {
     expect(aplexerRecordToSummary(oldHost).agentKind).toBe('grok');
   });
 });
+
+describe('aplexerRecordToSummary on a Windows host', () => {
+  it('folds the host backslash workspace to the forward-drive form the app speaks', () => {
+    const summary = aplexerRecordToSummary({
+      ...LIVE_ROW,
+      workspace: 'C:\\Users\\User\\git\\aplexer',
+      cwd: 'C:\\Users\\User\\git\\aplexer',
+    });
+    expect(summary.workspace).toBe('C:/Users/User/git/aplexer');
+    expect(summary.path).toBe('C:/Users/User/git/aplexer');
+  });
+
+  it('leaves POSIX workspaces untouched', () => {
+    const summary = aplexerRecordToSummary({
+      ...LIVE_ROW,
+      workspace: '/home/u/git/aplexer',
+      cwd: '/home/u/git/aplexer',
+    });
+    expect(summary.workspace).toBe('/home/u/git/aplexer');
+    expect(summary.path).toBe('/home/u/git/aplexer');
+  });
+});

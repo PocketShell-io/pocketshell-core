@@ -17,6 +17,7 @@
 import type { SessionSummary } from './types';
 import type { AplexerSessionRecord, AplexerSortKey, AplexerWarning } from './aplexer';
 import { APLEXER_LIST_SORT } from './aplexer';
+import { windowsWorkspaceForm } from './windowsPaths';
 import {
   aplexerAckCommand,
   aplexerKillCommand,
@@ -201,15 +202,19 @@ export class AplexerCore {
     workspace: string,
     tag: string,
   ): Promise<AplexerSessionRecord | null> {
+    const wanted = windowsWorkspaceForm(workspace);
     const records = await this.snapshotRecords();
-    return records.find((r) => r.workspace === workspace && r.tag === tag) ?? null;
+    return records.find((r) => windowsWorkspaceForm(r.workspace) === wanted && r.tag === tag) ?? null;
   }
 
   /** All live tags in [workspace] — the client-side free-name walk's input. */
   async liveTags(workspace: string): Promise<Set<string> | null> {
     if (!(await this.isAvailable())) return null;
+    const wanted = windowsWorkspaceForm(workspace);
     const records = await this.snapshotRecords();
-    return new Set(records.filter((r) => r.workspace === workspace).map((r) => r.tag));
+    return new Set(
+      records.filter((r) => windowsWorkspaceForm(r.workspace) === wanted).map((r) => r.tag),
+    );
   }
 
   /**
@@ -220,9 +225,13 @@ export class AplexerCore {
    * else non-zero is a real failure with the host's own sentence.
    */
   async startSession(opts: { workspace: string; tag: string }): Promise<AplexerStartOutcome> {
+    // The host stores the workspace in its own normalised spelling; sending
+    // the folded drive form keeps what we search for and what it records the
+    // same string, whatever spelling the caller was handed by the picker.
+    const workspace = windowsWorkspaceForm(opts.workspace);
     let res;
     try {
-      res = await this.transport.exec(pathAwareCommand(aplexerStartCommand(opts.workspace, opts.tag)));
+      res = await this.transport.exec(pathAwareCommand(aplexerStartCommand(workspace, opts.tag)));
     } catch (e) {
       return { ok: false, id: null, tag: null, liveRefusal: false, error: String(e).slice(0, 300) };
     }

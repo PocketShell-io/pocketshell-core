@@ -13,6 +13,7 @@
 
 import type { SessionAgentKind, SessionSummary } from './types';
 import type { AplexerSessionRecord, AplexerWarning } from './aplexer';
+import { normaliseWindowsPath } from './sessionGrouping';
 
 /**
  * Records oldest-created first, ties in document order (Array#sort is
@@ -227,6 +228,12 @@ export function parseSingleAplexerRecord(stdout: string): AplexerSessionRecord |
  * {@link agentKindFromEngine}, so the vocabulary stays the one table.
  */
 export function aplexerRecordToSummary(record: AplexerSessionRecord): SessionSummary {
+  // The host folds every workspace spelling to its own backslash form
+  // (`C:\Users\u\git`); the app speaks the forward-drive form everywhere
+  // (`C:/Users/u/git`), so the record boundary is where the two meet. POSIX
+  // workspaces pass through untouched — a colon cannot appear in one.
+  const workspace = normaliseWindowsPath(record.workspace) ?? record.workspace;
+  const cwd = normaliseWindowsPath(record.cwd ?? '') ?? record.cwd ?? null;
   return {
     name: record.tag,
     created: Math.floor(record.created_at_ms / 1000),
@@ -235,10 +242,10 @@ export function aplexerRecordToSummary(record: AplexerSessionRecord): SessionSum
         ? Math.floor(record.last_activity_ms / 1000)
         : Math.floor(record.created_at_ms / 1000),
     attached: false,
-    path: record.workspace || record.cwd || null,
+    path: workspace || cwd,
     agentKind: agentKindFromEngine(record.agent) ?? agentKindFromEngine(record.engine),
     backend: 'aplexer',
-    workspace: record.workspace,
+    workspace,
     tag: record.tag,
     aplexerId: record.id,
     ...(record.profile ? { profile: record.profile } : {}),

@@ -6,7 +6,15 @@
  * under. Extracted from sessionGrouping.ts, which keeps the row model this
  * feeds; the tree assembly that consumes both lives in sessionTree.ts.
  */
-import { canonicalisePath, defaultLabelForPath, UNTRACKED_PATH } from './sessionGrouping';
+import {
+  canonicalisePath,
+  defaultLabelForPath,
+  driveToMsysPath,
+  isWindowsDrivePath,
+  msysToDrivePath,
+  normaliseWindowsPath,
+  UNTRACKED_PATH,
+} from './sessionGrouping';
 import { sanitisePart } from './sessionNameParts';
 
 /** Sentinel key for the catch-all root. Stable list key, never a real path. */
@@ -87,9 +95,11 @@ export function normaliseRootPath(value: unknown): string | null {
   // resolved from is not a root. The phone refuses it too
   // (WatchedFoldersViewModel.kt:368-388).
   if (canonical.split('/').includes('..')) return null;
-  // Anchored, as on the phone: absolute, or under `~`. A bare `git` would be
-  // relative to nothing this panel can name.
-  if (canonical !== '~' && !canonical.startsWith('~/') && !canonical.startsWith('/')) return null;
+  // Anchored, as on the phone: absolute, under `~`, or a Windows drive path
+  // (`C:/Users/u` — `canonicalisePath` has already folded the backslash and
+  // SFTP spellings into it). A bare `git` would be relative to nothing this
+  // panel can name.
+  if (canonical !== '~' && !canonical.startsWith('~/') && !canonical.startsWith('/') && !isWindowsDrivePath(canonical)) return null;
   return canonical;
 }
 
@@ -264,14 +274,30 @@ export function inferHome(paths: (string | null | undefined)[]): string | null {
  * literal unexpanded `~/git/x` that `session_path` can carry
  * (helper/parsers.ts:163) — into a single key. A `~` prefix needs no `home` to
  * resolve: `~` *is* home, whatever it expands to.
+ *
+ * Windows hosts add a third fold: aplexer reports drive spellings
+ * (`C:/Users/u/...`), while a Git-for-Windows host's `$HOME` arrives in the
+ * MSYS spelling (`/c/Users/u`). The two name one directory, so whichever side
+ * carries the drive form is converted to the other's form for the comparison
+ * — the home-relative RESULT is spelling-free (`git/x`), which is the point.
  */
 function homeRelative(folderPath: string, home: string | null): string | null {
   if (folderPath === '~' || folderPath === '$HOME') return '';
   if (folderPath.startsWith('~/')) return folderPath.slice(2);
   const homePrefix = normaliseHome(home);
   if (homePrefix === null) return null;
-  if (folderPath === homePrefix) return '';
-  if (folderPath.startsWith(`${homePrefix}/`)) return folderPath.slice(homePrefix.length + 1);
+  let folder = folderPath;
+  let prefix = homePrefix;
+  const folderDrive = isWindowsDrivePath(folder);
+  const homeDrive = isWindowsDrivePath(prefix);
+  if (folderDrive && !homeDrive) {
+    folder = driveToMsysPath(folder) ?? folder;
+  } else if (!folderDrive && homeDrive) {
+    prefix = normaliseWindowsPath(prefix) ?? prefix;
+    folder = msysToDrivePath(folder) ?? folder;
+  }
+  if (folder === prefix) return '';
+  if (folder.startsWith(`${prefix}/`)) return folder.slice(prefix.length + 1);
   return null;
 }
 
@@ -339,12 +365,24 @@ export function directoryKey(folderPath: string, home: string | null): string {
 export function rootHostPath(key: string, home: string | null): string | null {
   if (key === OTHER_ROOT || key === UNTRACKED_PATH || key === MAINTENANCE_ROOT) return null;
   const homePrefix = normaliseHome(home);
-  if (key === '~' || key === '$HOME') return homePrefix;
+  // An MSYS-form home (`/c/Users/u`) is the signature of a Git-for-Windows
+  // host: its directories reach SFTP only as `/C:/...`. Gating on the home's
+  // form keeps a POSIX host's genuinely single-letter first segment (`/a/b`)
+  // from being misread as a drive mount.
+  const windowsHost = homePrefix !== null && /^\/[A-Za-z]\//.test(homePrefix);
+  const toSftp = (path: string): string => {
+    if (!windowsHost) return path;
+    const drive = msysToDrivePath(path);
+    return drive ? `/${drive}` : path;
+  };
+  if (key === '~' || key === '$HOME') return homePrefix === null ? null : toSftp(homePrefix);
   if (key.startsWith('~/')) {
     if (homePrefix === null) return null;
     const rest = key.slice(2).replace(/\/+$/, '');
-    return rest ? `${homePrefix}/${rest}` : homePrefix;
+    const abs = rest ? `${homePrefix}/${rest}` : homePrefix;
+    return toSftp(abs);
   }
+  if (isWindowsDrivePath(key)) return `/${key}`;
   return key.startsWith('/') ? key : null;
 }
 

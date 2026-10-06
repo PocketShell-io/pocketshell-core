@@ -93,16 +93,69 @@ export interface SessionFolder {
   active: boolean;
 }
 
+/** True when [value] is already in the folded drive form (`C:/...`). */
+export function isWindowsDrivePath(value: string): boolean {
+  return /^[A-Za-z]:\//.test(value);
+}
+
+/**
+ * One Windows drive path, spelled the way every other consumer here spells
+ * it: forward slashes, upper-case drive letter. `C:\Users\u\git`,
+ * `C:/Users/u/git` and the SFTP spelling `/C:/Users/u/git` all fold to
+ * `C:/Users/u/git`; anything that is not a drive path answers null and the
+ * POSIX rules apply untouched. The drive letter is the whole discriminator —
+ * a colon is not legal in a POSIX path component, so `X:/...` can only ever
+ * be Windows.
+ */
+export function normaliseWindowsPath(value: string): string | null {
+  const slashed = value.replace(/\\/g, '/');
+  const drive = /^\/?([A-Za-z]):(\/.*)$/.exec(slashed);
+  if (!drive) return null;
+  return `${drive[1]!.toUpperCase()}:${drive[2]}`;
+}
+
+/**
+ * An MSYS-spelled path (`/c/Users/u`) as the equivalent drive path
+ * (`C:/Users/u`). Git-for-Windows bash, whose `$HOME` the session tree reads
+ * (`HOME_COMMAND`), reports MSYS spellings, while aplexer records and the
+ * SFTP server speak drive spellings — the same directory, three ways. Null
+ * when the value is not an MSYS drive mount.
+ */
+export function msysToDrivePath(value: string): string | null {
+  const msys = /^\/([A-Za-z])(\/.*)$/.exec(value);
+  if (!msys) return null;
+  return `${msys[1]!.toUpperCase()}:${msys[2]}`;
+}
+
+/** The inverse of {@link msysToDrivePath}: `C:/Users/u` -> `/c/Users/u`. */
+export function driveToMsysPath(value: string): string | null {
+  const drive = /^([A-Za-z]):(\/.*)$/.exec(value);
+  if (!drive) return null;
+  return `/${drive[1]!.toLowerCase()}${drive[2]}`;
+}
+
 /**
  * Canonicalise a session's working directory into a grouping key.
  * Trailing slashes are dropped so `/srv/app/` and `/srv/app` are one folder;
  * blank/unknown collapses to {@link UNTRACKED_PATH}. `~` is deliberately NOT
  * expanded — tmux reports absolute paths, so a literal `~` means the helper
  * could not resolve one.
+ *
+ * Windows drive paths (backslash, forward-slash, or the SFTP `/X:/` spelling)
+ * are folded to one form first: aplexer records `C:\Users\u\git`, and
+ * grouping on the raw backslash string would give the same directory as many
+ * keys and a label that is the whole path.
  */
 export function canonicalisePath(value: string | null | undefined): string {
   const trimmed = (value ?? '').trim();
   if (!trimmed) return UNTRACKED_PATH;
+  const windows = normaliseWindowsPath(trimmed);
+  if (windows) {
+    // Same trailing-slash rule as the POSIX branch below — but a bare `C:/`
+    // must survive the strip (it is the drive root, not an empty key).
+    const stripped = windows.replace(/\/+$/, '');
+    return stripped.length > 2 ? stripped : windows;
+  }
   const stripped = trimmed.replace(/\/+$/, '');
   return stripped || '/';
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 // `UNTRACKED_PATH` is the grouping module's sentinel; a root test only ever
 // passes it through, to pin that the sentinels are keys like any other.
-import { UNTRACKED_PATH } from '../src/sessionGrouping';
+import { UNTRACKED_PATH, canonicalisePath } from '../src/sessionGrouping';
 import {
   SESSION_ROOTS_MAX,
   MAINTENANCE_ROOT,
@@ -349,5 +349,42 @@ describe('rootHostPath', () => {
 
   it('rejects a relative key, which is not a root anything can resolve', () => {
     expect(rootHostPath('git', home)).toBeNull();
+  });
+});
+
+describe('windows drive paths', () => {
+  // A Git-for-Windows host: aplexer reports drive spellings, `$HOME` arrives
+  // in the MSYS spelling, and the SFTP server accepts only `/X:/`. The tree
+  // must fold all of it into the same keys a POSIX host builds.
+  const WIN_HOME = '/c/Users/User';
+
+  it('canonicalisePath folds every Windows spelling to one drive form', () => {
+    expect(canonicalisePath('C:\\Users\\User\\git\\aplexer')).toBe('C:/Users/User/git/aplexer');
+    expect(canonicalisePath('/C:/Users/User/git/aplexer')).toBe('C:/Users/User/git/aplexer');
+    expect(canonicalisePath('C:/Users/User/git/aplexer/')).toBe('C:/Users/User/git/aplexer');
+  });
+
+  it('groups a drive-form workspace under the MSYS home', () => {
+    const key = directoryKey('C:/Users/User/git/aplexer', WIN_HOME);
+    expect(key).toBe('~/git/aplexer');
+  });
+
+  it('accepts a drive path as a registered root', () => {
+    expect(normaliseRootPath('C:/Users/User/git')).toBe('C:/Users/User/git');
+    expect(normaliseRootPath('C:\\Users\\User\\git')).toBe('C:/Users/User/git');
+  });
+
+  it('hands the file browser the SFTP spelling it insists on', () => {
+    expect(rootHostPath('~/git', WIN_HOME)).toBe('/C:/Users/User/git');
+    expect(rootHostPath('~', WIN_HOME)).toBe('/C:/Users/User');
+    expect(rootHostPath('C:/Users/User/git', WIN_HOME)).toBe('/C:/Users/User/git');
+  });
+
+  it('leaves POSIX hosts exactly as they were', () => {
+    expect(rootHostPath('~/git', '/home/alexey')).toBe('/home/alexey/git');
+    expect(rootHostPath('/srv/apps', '/home/alexey')).toBe('/srv/apps');
+    expect(directoryKey('/srv/apps/x', '/home/alexey')).toBe('/srv/apps/x');
+    // A genuinely single-letter POSIX directory is not a drive mount.
+    expect(rootHostPath('/a/b', '/home/alexey')).toBe('/a/b');
   });
 });

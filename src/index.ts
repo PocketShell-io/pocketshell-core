@@ -23,6 +23,7 @@ export * from './osc52';
 export * from './sftpCore';
 export * from './hostProbeParsers';
 export * from './hostPlatform';
+export * from './windowsPaths';
 export * from './usageParsers';
 export * from './usagePolicy';
 export * from './portScanner';
