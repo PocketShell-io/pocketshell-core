@@ -8,9 +8,9 @@
  *
  * The TOOL is the persistent thing. `openMaintenanceTool` adds to a
  * session-only list (per host, never persisted); the sidebar's Maintenance
- * section renders a closable row per tool, the workspace's tab bar a
- * closable tab per tool, and the section exists only while the list is
- * non-empty (or the workspace is on screen) — closing the last tool is how
+ * section is ONE row (the door, with the open-tool count), the workspace's
+ * tab bar a closable tab per tool, and the row exists only while the list is
+ * non-empty (or the workspace is on screen) — closing the last tab is how
  * the user says "I don't have it". The PANE behind a tool is more mortal: it
  * lives while the host's folder workspace stays mounted — across folder
  * navigation on the same host the pane rides along mounted-but-hidden, the
@@ -87,11 +87,6 @@ export function maintenanceToolDefFor(identity: string): MaintenanceToolDef | nu
   return kind ? TOOL_DEFS[kind] : null;
 }
 
-/** The descriptor by kind NAME — for surfaces that carry the kind as a string (the sidebar row's payload). */
-export function maintenanceToolDefByName(kind: string): MaintenanceToolDef | null {
-  return kind in TOOL_DEFS ? TOOL_DEFS[kind as MaintenanceToolKind] : null;
-}
-
 /** One open tool on one host. */
 export interface MaintenanceTool {
   host: string;
@@ -107,18 +102,9 @@ export function openMaintenanceTool(host: string, kind: MaintenanceToolKind = 'h
   openTools.value = [...openTools.value, { host, kind }];
 }
 
-/** Close [kind] on [host]: the row and the tab go, and the section follows when the last one does. */
+/** Close [kind] on [host]: the tab goes, and the sidebar row's count follows. */
 export function closeMaintenanceTool(host: string, kind: MaintenanceToolKind): void {
   openTools.value = openTools.value.filter((tool) => !(tool.host === host && tool.kind === kind));
-}
-
-/**
- * Close by kind NAME — for the surfaces that carry the kind as a string
- * (the sidebar row's event payload). An unknown kind is a no-op, not a
- * crash: the row and the list can only disagree for one tick, if ever.
- */
-export function closeMaintenanceToolByName(host: string, kind: string): void {
-  if (kind in TOOL_DEFS) closeMaintenanceTool(host, kind as MaintenanceToolKind);
 }
 
 /** [host]'s open tools, in open order. */
@@ -176,16 +162,17 @@ export function isMaintenanceFolder(folderKey: string | null | undefined): boole
 /**
  * The sidebar row's route-level directory — what the session tree's
  * Maintenance section hands the SAME `select` event the folder rows emit,
- * with the tool's identity as the tab hand-off. It models no directory:
- * `rows` is empty and never enters the grouping (the section is chrome the
- * tree renders beside the roots, not a root among them), and `path` is the
- * pseudo-key itself — the row names a workspace, not a place on disk.
+ * with no tab hand-off: which tool tab lands in front is the workspace's
+ * own memory. It models no directory: `rows` is empty and never enters the
+ * grouping (the section is chrome the tree renders beside the roots, not a
+ * root among them), and `path` is the pseudo-key itself — the row names a
+ * workspace, not a place on disk.
  */
 export function maintenanceDirectory(): SessionDirectory {
   return {
     key: MAINTENANCE_ROOT,
     path: MAINTENANCE_ROOT,
-    label: 'htop',
+    label: 'Maintenance',
     rows: [],
     mostRecentActivity: 0,
     active: false,

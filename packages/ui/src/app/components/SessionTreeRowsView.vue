@@ -75,20 +75,20 @@ const props = withDefaults(
     tabOrders: Record<string, readonly string[]>;
     /**
      * Whether the pinned Maintenance section shows at all. It is the door
-     * BACK to the tool workspaces, so it appears once there is something to
-     * come back to — the host's workspace opened this session, or being on
-     * it right now — and stays hidden before that, however many roots the
-     * host has. The wrapper owns the rule (maintenance.ts's opened list);
-     * this component only obeys it.
+     * to the tool workspaces, so it appears once there is something to open
+     * — the host has tools open, or the workspace itself is on screen right
+     * now — and stays hidden before that, however many roots the host has.
+     * The wrapper owns the rule (maintenance.ts's opened list); this
+     * component only obeys it.
      */
     showMaintenance?: boolean;
     /**
-     * The host's open maintenance tools, in open order — one row each, each
-     * closable with its own `×`. Closing the last one retires the section:
-     * that is the user saying "I don't have it". The wrapper reads the list
-     * from maintenance.ts; this component renders it and reports back.
+     * How many maintenance tools the host has open. Drives the section's
+     * visibility (the wrapper's rule: open tools force it on) and its
+     * count; the tools themselves are the workspace's tabs and are listed
+     * nowhere in this panel.
      */
-    maintenanceTools?: readonly { kind: string; identity: string }[];
+    maintenanceCount?: number;
   }>(),
   {
     activeFolder: null,
@@ -101,7 +101,7 @@ const props = withDefaults(
     dragging: null,
     dropTarget: null,
     showMaintenance: false,
-    maintenanceTools: () => [],
+    maintenanceCount: 0,
   },
 );
 
@@ -117,8 +117,6 @@ const emit = defineEmits<{
   menu: [dir: SessionDirectory, e: MouseEvent];
   create: [startIn: string | null];
   sort: [trigger: HTMLButtonElement];
-  /** A maintenance row's ×: the kind names the tool to close (maintenance.ts). */
-  closeTool: [kind: string];
   dragStart: [dir: SessionDirectory, e: DragEvent];
   dragOver: [root: SessionRootFolder, index: number, e: DragEvent];
   drop: [];
@@ -463,17 +461,17 @@ function onFolderClick(dir: SessionDirectory): void {
       </ul>
     </section>
 
-    <!-- THE MAINTENANCE SECTION — the door back to the tool workspaces
+    <!-- THE MAINTENANCE SECTION — the door to the tool workspaces
          (docs/MONITOR.md), shown while the host has open tools and forced on
-         while the workspace itself is on screen. components/
-         MaintenanceSection.vue is the section; the v-if here is the only
-         decision this file keeps. -->
+         while the workspace itself is on screen. One row: the tools are the
+         workspace's tabs, listed there and nowhere here.
+         components/MaintenanceSection.vue is the section; the v-if here is
+         the only decision this file keeps. -->
     <MaintenanceSection
-      v-if="showMaintenance || props.maintenanceTools.length > 0"
-      :tools="props.maintenanceTools"
+      v-if="showMaintenance || props.maintenanceCount > 0"
+      :count="props.maintenanceCount"
       :active-folder="props.activeFolder"
-      @select="(folder, session) => emit('select', folder, session)"
-      @close-tool="emit('closeTool', $event)"
+      @select="(folder) => emit('select', folder)"
     />
 
     <!-- Nothing running anywhere on this host. The sentence used to stand

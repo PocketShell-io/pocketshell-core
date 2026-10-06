@@ -58,7 +58,6 @@ import { adjacentIndex } from '@pocketshell/core/shared/listNavigation';
 import { editingTarget } from '../editingTarget';
 import SettingsView from './SettingsView.vue';
 import {
-  closeMaintenanceToolByName,
   MAINTENANCE_ROOT,
   openMaintenanceTool,
   type MaintenanceToolKind,
@@ -376,14 +375,7 @@ function openPanel(name: HostPanel): void {
   panel.value = name;
 }
 
-/** A Maintenance row's ×, from the session tree: close that tool on this host. */
-function onCloseMaintenanceTool(kind: string): void {
-  const host = connection.activeHost?.name;
-  if (host) closeMaintenanceToolByName(host, kind);
-}
-
-/* ── Quick actions — the command palette ───────────────────────────────────
- * One summoned overlay listing the workspace's verbs, in the VS Code Ctrl+P
+/* ── Quick actions — the command palette ─────────────────────────────────── * One summoned overlay listing the workspace's verbs, in the VS Code Ctrl+P
  * shape (`workspace.quickActions` in the registry — a pair with Ctrl+Shift+P,
  * both opening the same surface). This view owns it for the same reason it
  * owns `Ctrl+↑`/`Ctrl+↓`: every verb the palette speaks is something this
@@ -670,7 +662,6 @@ function onBack(): void {
           @collapse="onCollapsePanel"
           @panel="openPanel"
           @palette="paletteOpen = true"
-          @close-tool="onCloseMaintenanceTool"
         />
       </aside>
       <div
