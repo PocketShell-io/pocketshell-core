@@ -224,10 +224,16 @@ const { width: panelWidth, onDragStart } = usePaneWidth({
  * session at all. Naming it here is the difference between finding that out
  * now and finding it out after clicking a session and getting a diagnostic in
  * the terminal.
+ *
+ * A Windows host is the exception: helper, tmuxctl and tmux cannot exist
+ * there at all, so the strip would name the same three absent binaries for
+ * the life of the connection. That is not information, it is noise — the
+ * platform answer from bootstrap suppresses the whole list.
  */
 const missingTools = computed(() => {
   const b = connection.bootstrap;
   if (!b) return [];
+  if (b.platform === 'windows') return [];
   return (['pocketshell', 'tmuxctl', 'tmux'] as const).filter((t) => !b[t].installed);
 });
 
