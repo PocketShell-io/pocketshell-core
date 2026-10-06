@@ -7,11 +7,23 @@
  * web client's `platform/hostHelper.ts`, which mirrored the desktop's
  * `main/helper/bootstrap.ts` call for call.
  */
-import type { BootstrapResult, ExecResult, ToolState } from './types';
+import type { BootstrapResult, ExecResult, HostPlatform, ToolState } from './types';
 import { pathAwareCommand } from './aplexerCommands';
 import { parseCommandV } from './hostProbeParsers';
+import { detectHostPlatform } from './hostPlatform';
 
 export type BootstrapExec = (command: string) => Promise<ExecResult>;
+
+/** Options for {@link runHostBootstrap}. */
+export interface HostBootstrapOptions {
+  /**
+   * The host's platform when the caller already knows it (a per-connection
+   * cache, a platform that detected it earlier). When omitted the probe runs
+   * its own detection — one extra exec — so every caller can pass the result
+   * through unchanged.
+   */
+  platform?: HostPlatform;
+}
 
 /** Probe one tool: `command -v <binary>` under the path-aware shell. */
 async function probeTool(exec: BootstrapExec, binary: string): Promise<ToolState> {
@@ -40,17 +52,32 @@ function systemdUserCommand(command: string): string {
   return pathAwareCommand(`export ${env}; ${command}`);
 }
 
+const NOT_INSTALLED: ToolState = { installed: false, path: null, version: null };
+
 /**
  * The probe itself: the `pocketshell` helper, the tmux join binary
  * (`tmuxctl`), raw tmux, and `a` (aplexer), plus the installer and the
  * daemon state. Probes run in parallel; the exec effect decides how a
  * transport failure is reported.
+ *
+ * On a Windows host the helper, `tmuxctl` and tmux cannot exist — OpenSSH for
+ * Windows has neither, and no amount of probing installs them. Probing anyway
+ * costs five round trips to report exactly what is already known, so on
+ * `platform: 'windows'` those three are answered WITHOUT an exec and only
+ * `a` (aplexer — the session manager Windows hosts are expected to gain) and
+ * the installer are probed. The daemon check stays gated on the helper and
+ * therefore skips itself.
  */
-export async function runHostBootstrap(exec: BootstrapExec): Promise<BootstrapResult> {
+export async function runHostBootstrap(
+  exec: BootstrapExec,
+  options: HostBootstrapOptions = {},
+): Promise<BootstrapResult> {
+  const platform = options.platform ?? (await detectHostPlatform(exec));
+  const posixOnly = platform === 'windows';
   const [pocketshell, tmuxctl, tmux, aplexer, installer] = await Promise.all([
-    probeTool(exec, 'pocketshell'),
-    probeTool(exec, 'tmuxctl'),
-    probeTool(exec, 'tmux'),
+    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'pocketshell'),
+    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'tmuxctl'),
+    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'tmux'),
     probeTool(exec, 'a'),
     detectInstaller(exec),
   ]);
@@ -67,5 +94,5 @@ export async function runHostBootstrap(exec: BootstrapExec): Promise<BootstrapRe
     }
   }
 
-  return { pocketshell, tmuxctl, tmux, aplexer, installer, daemonRunning, daemonEnabled };
+  return { platform, pocketshell, tmuxctl, tmux, aplexer, installer, daemonRunning, daemonEnabled };
 }

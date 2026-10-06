@@ -92,8 +92,18 @@ export interface HostKeyTrustRequest {
   fingerprintSha256: string;
 }
 
+/** The remote host's operating-system family, as far as we can tell. */
+export type HostPlatform = 'posix' | 'windows';
+
 /** Bootstrap probe result for a connected host. */
 export interface BootstrapResult {
+  /**
+   * The host's OS family. Windows hosts (OpenSSH for Windows, usually with a
+   * bash DefaultShell) can never carry tmux or the helper, so the clients
+   * hide their permanently-missing chips and skip the paths that need them
+   * instead of listing the same three absent binaries forever.
+   */
+  platform: HostPlatform;
   pocketshell: ToolState;
   /**
    * The binary the session-join command invokes (src/shared/attachCommand.ts).
