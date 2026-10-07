@@ -10,6 +10,7 @@ import {
   resumeWriteBufferAfterError,
 } from './xtermWriteBuffer';
 import { sessionOutlivedClient, type ConnectionId, type GeometryProbe, type PaneScrollProbe, type ShellId } from '@pocketshell/core';
+import { useSettingsStore } from './stores/settings';
 
 // ---------------------------------------------------------------------------
 // Aplexer's pager, read off its status bar
@@ -319,11 +320,16 @@ export class TerminalPane {
         ...(aplexer && aplexerId ? { aplexerId } : {}),
       });
     }
+    // The bare terminal on a LOCAL host opens in the machine's chosen shell
+    // (`localShell`); on a remote host the id is absent and sshd's login shell
+    // answers. A session join never carries it — the join script is POSIX.
+    const localShell = useSettingsStore().localShell || undefined;
     const id = await api.shell.open({
       connectionId: this.deps.getConnectionId(),
       command: this.deps.getCommand(),
       cols,
       rows,
+      ...(localShell ? { shell: localShell } : {}),
     });
     return { shellId: id, switched: false };
   }

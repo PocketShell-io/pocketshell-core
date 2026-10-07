@@ -77,5 +77,6 @@ export * from './attachments/mimeTypes';
 export * from './preview/previewPaths';
 export * from './preview/previewStyle';
 export * from './releaseCheck';
+export * from './localShell';
 export * from './appSettingsPolicy';
 export * from './diagnosticReports';

@@ -214,6 +214,13 @@ export interface PocketShellApi {
         command?: string;
         cols?: number;
         rows?: number;
+        /**
+         * The interactive shell a LOCAL terminal opens — a core
+         * `LocalShellChoice` id. Absent (or empty) on every other platform and
+         * every remote host: sshd's login shell is the host's business, and a
+         * session join keeps its POSIX join script regardless.
+         */
+        shell?: string;
       }) => Promise<ShellId>;
     "attachSession": (payload: {
         connectionId: string;

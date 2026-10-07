@@ -13,6 +13,7 @@ import {
   type FolderSortKey,
 } from '../folderSort';
 import { normaliseRootList, normaliseRootPath, SESSION_ROOTS_MAX } from '../sessionRoots';
+import { LOCAL_SHELL_DEFAULT, parseLocalShell } from '@pocketshell/core';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 import { parseZoomPercent, stepZoomPercent, ZOOM_PERCENT_DEFAULT } from '../zoom';
 import {
@@ -297,6 +298,16 @@ export interface AppSettings {
    * pasted input unsubmitted. Read per send.
    */
   submitEnterDelayMs: number;
+  /**
+   * The interactive shell a LOCAL (self) terminal opens: one of core's
+   * `LocalShellChoice` ids, empty for the default (Git Bash — the POSIX shell
+   * the app also drives the machine with). Session joins and every exec stay
+   * on that POSIX shell regardless; this is only what a plain terminal tab
+   * runs. Persisted per machine by construction — this store never syncs —
+   * and consumed by the terminal pane over the `shell.open` payload, so a
+   * platform without local hosts never sends it.
+   */
+  localShell: string;
 }
 
 /** @see AppSettings.agentLaunchDefaults */
@@ -512,6 +523,9 @@ const SETTING_SPECS: SettingSpecs = {
   reconnectOnReturn: { default: DEFAULT_RECONNECT_ON_RETURN, parse: asBoolean },
   usageWarnPercent: { default: null, parse: parseUsageWarnPercentSetting },
   submitEnterDelayMs: { default: DEFAULT_SUBMIT_ENTER_DELAY_MS, parse: parseSubmitEnterDelayMs },
+  // Empty is the default (Git Bash) the same way every other default here is
+  // what shipped: the local terminal was bash-only until this key existed.
+  localShell: { default: LOCAL_SHELL_DEFAULT, parse: parseLocalShell },
 };
 
 const STORAGE_KEY = 'pocketshell.settings.v1';
