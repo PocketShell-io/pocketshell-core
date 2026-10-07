@@ -31,7 +31,7 @@ import { connectSsh, describeDocker, execTransport, type SshHandle } from './hel
  * contract every platform's PTY transport must keep (the Android plugin's
  * guard, #3039).
  *
- * Three more specs pin the fixture lifecycle this file owns: a container
+ * Five more specs pin the fixture lifecycle this file owns: a container
  * start that resolves only after its teardown bound still gets stopped by
  * the retained late-start finalizer; an exec that outlives its bound is
  * terminated for real — the fixture owning the process stopped, the
@@ -41,7 +41,16 @@ import { connectSsh, describeDocker, execTransport, type SshHandle } from './hel
  * for the repeated cleanup, concurrent callers wait out the pending attempt
  * instead of being handed a fabricated ok, and a request that arrives
  * before the start resolved waits for the real container instead of
- * inventing an answer and stranding it.
+ * inventing an answer and stranding it. The controlled-stop regressions
+ * never let a controlled outcome hold the real cleanup hostage: each has a
+ * PHYSICAL owner over the same real startup — registered with afterAll
+ * before the start is even awaited, stopping with the real stop RPC — and
+ * an exit guard that runs on EVERY path, so a controlled failure, a held
+ * stop, an assertion abort, or a start that outlives its spec still ends
+ * with the real container stopped. Two specs drive that guard with a
+ * simulated assertion abort — one before a held stop is released, one
+ * while the startup is still pending — and prove the real outcome: the
+ * owned fixture gone, refusing execs.
  */
 
 /** The test-only debug sshd's -E log and pidfile inside its own container. */
@@ -96,6 +105,9 @@ const EXEC_TIMEOUT_GUARD_BUDGET =
   EXEC_TIMEOUT_REGRESSION_DEADLINE + CLEANUP_STAGE_BUDGET + EXEC_STRAGGLER_SETTLE_BUDGET + EXEC_TIMEOUT_GUARD_SLACK;
 const STOP_MEMOIZATION_HOLD_MS = 500; // how long the controlled stop RPC is held pending before its real outcome is released
 const STOP_MEMOIZATION_PROBE_BUDGET = 2_000; // the bounded proof that concurrent stop callers are still waiting while the RPC is held
+/** The regression exit guard's worst path: a start still pending when the
+ * body aborted (its full start budget), then the bounded physical stop. */
+const REGRESSION_EXIT_GUARD_BUDGET = CONTAINER_START_BUDGET + CLEANUP_STAGE_BUDGET;
 const APLEXER_SETTLE_MS = 1_500; // the pre-existing settle sleep after the primary ssh is up
 
 /** The hazard spec's total: the exact sum of the stage budgets its body can
@@ -131,6 +143,37 @@ const LATE_START_REGRESSION_TOTAL =
 const EXEC_TIMEOUT_REGRESSION_TOTAL =
   CONTAINER_START_BUDGET + // the regression's own container
   EXEC_TIMEOUT_GUARD_BUDGET + // outer guard around the self-bounding poller: its deadline, permitted stop+settle, and slack
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
+
+/** The failed-stop regression's total: the exact sum of the stages its body can spend. The
+ * memoized repeats (repeated/after-the-fact callers, the teardown's view) are the same settled
+ * promise — no stage of their own to budget. */
+const FAILED_STOP_REGRESSION_TOTAL =
+  CONTAINER_START_BUDGET + // the start stage
+  CLEANUP_STAGE_BUDGET + // the controlled stop attempt's bounded stage (its injected RPC rejects there)
+  REGRESSION_EXIT_GUARD_BUDGET + // the exit guard: the physical stop, or a pending start + stop on an abort path
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
+
+/** The held-stop regression's total: the exact sum of the stages its body can spend. */
+const HELD_STOP_REGRESSION_TOTAL =
+  CONTAINER_START_BUDGET + // the start stage
+  STOP_MEMOIZATION_PROBE_BUDGET + // the bounded while-held probe
+  CLEANUP_STAGE_BUDGET + // the released attempt's settle stage (the physical owner's real stop)
+  REGRESSION_EXIT_GUARD_BUDGET + // the exit guard: release (idempotent) + the physical stop
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
+
+/** The abort-before-release regression's total: the exact sum of the stages its body can spend. */
+const ABORT_BEFORE_RELEASE_REGRESSION_TOTAL =
+  CONTAINER_START_BUDGET + // the start stage
+  STOP_MEMOIZATION_PROBE_BUDGET + // the bounded while-held probe (the abort fires inside it)
+  REGRESSION_EXIT_GUARD_BUDGET + // the exit guard: release + the physical stop, under an aborting body
+  CLEANUP_STAGE_BUDGET + // both held callers settling at the released outcome, observed after the abort propagated
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
+
+/** The startup-after-abort regression's total: the exact sum of the stages its body can spend.
+ * The exit guard IS the spec's wait — it rides out the pending start, then stops. */
+const STARTUP_AFTER_ABORT_REGRESSION_TOTAL =
+  REGRESSION_EXIT_GUARD_BUDGET + // the abort, then the guard's pending-start ride-out + bounded stop
   DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
 
 interface AttachedClient {
@@ -362,6 +405,90 @@ async function settleAndStopWithin(fixture: OwnedFixture, boundMs: number): Prom
   return stop.ok ? '' : `${fixture.what} cleanup: ${stop.note}`;
 }
 
+/**
+ * The controlled-stop regressions' held stop: a seam whose stop RPC is a
+ * controlled operation that stays PENDING until released — and whose
+ * release hands the waiting callers the physical owner's REAL stop outcome
+ * (rejecting if it failed), so the one real stop RPC belongs to the
+ * physical owner and the controlled callers share its actual outcome
+ * instead of starting a second stop RPC of their own. `releaseOnce` is
+ * idempotent: a body that already released and an exit guard releasing on
+ * the way out compose into exactly one release.
+ */
+interface HeldStopSeam {
+  stopRpc(up: StartedTestContainer): Promise<unknown>;
+  releaseOnce(): void;
+}
+
+function heldStopSeam(physical: OwnedFixture, onInvoke: () => void): HeldStopSeam {
+  let releaseHeld: (outcome: Promise<unknown>) => void = () => undefined;
+  const held = new Promise<unknown>((resolve) => {
+    releaseHeld = resolve;
+  });
+  let released = false;
+  return {
+    stopRpc: () => {
+      onInvoke();
+      return held;
+    },
+    releaseOnce: () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      releaseHeld(
+        physical.requestStop('the real stop the held controlled callers share').then((outcome) => {
+          if (!outcome.ok) {
+            throw new Error(outcome.note);
+          }
+          return outcome;
+        }),
+      );
+    },
+  };
+}
+
+/**
+ * The regression exit guard, ALWAYS on the way out of a controlled-stop
+ * regression — body failure or not. It requests the physical owner's stop
+ * (memoized: the guard, a release, and afterAll all await the SAME
+ * attempt, so no path can race into a second stop RPC), releases any held
+ * controlled operation, and awaits the attempt under a bound covering its
+ * worst path — a start still pending when the body aborted, then the
+ * bounded stop.
+ *
+ * Failure honesty: when the body FAILED, the guard never throws — the
+ * body's error (the injected failure under test) must stay the spec's
+ * failure, and a physical stop that failed or outlived its bound is
+ * recorded loudly here AND re-reported by afterAll, which owns the same
+ * memoized attempt. When the body SUCCEEDED, a failed guard throws: a
+ * real leak may never read as green.
+ */
+async function regressionExitGuard(physical: OwnedFixture, bodyFailure: unknown, releaseHeld?: () => void): Promise<void> {
+  const stopAttempt = physical.requestStop('the regression exit guard');
+  releaseHeld?.();
+  let outcome: OwnedStop;
+  try {
+    outcome = await waitFor(`the exit guard's physical stop of ${physical.what}`, stopAttempt, REGRESSION_EXIT_GUARD_BUDGET);
+  } catch (boundError) {
+    const admission = `${physical.what}: the exit guard's bounded stop did not settle within ` +
+      `${REGRESSION_EXIT_GUARD_BUDGET}ms (${(boundError as Error).message}); afterAll owns the same memoized attempt`;
+    if (bodyFailure === undefined) {
+      throw new Error(admission);
+    }
+    console.error(`[#3039 owned fixture | exit guard] ${admission}`);
+    return;
+  }
+  if (outcome.ok) {
+    return;
+  }
+  const admission = `${physical.what}: the exit guard's physical stop FAILED — the container leaked: ${outcome.note}`;
+  if (bodyFailure === undefined) {
+    throw new Error(admission);
+  }
+  console.error(`[#3039 owned fixture | exit guard] ${admission} (afterAll owns the same memoized attempt)`);
+}
+
 function hostCliTransport(handle: SshHandle): HostCliTransport {
   const exec = execTransport(handle);
   return { exec: (command: string) => exec.exec(command) };
@@ -445,11 +572,16 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
       throw new Error(`owned fixture cleanup failed, ${failures.length} step(s):\n  ${failures.join('\n  ')}`);
     }
     // Settle+stop for every fixture this file can own — the primary, the
-    // debug sshd, and the four registered lifecycle/stop-contract regression
-    // fixtures — two bounded steps each (the failed-stop memoization fixture
-    // is deliberately NOT registered: its poisoned memoized failure would
-    // honestly fail this hook, so its spec stops the container itself).
-  }, 12 * CLEANUP_STAGE_BUDGET);
+    // debug sshd, and the seven registered regression fixtures (late-start,
+    // exec-timeout, the failed-stop and concurrent-stop regressions'
+    // PHYSICAL owners, both abort regressions' physical owners, and the
+    // pre-startup fixture) — two bounded steps each. The controlled-operation
+    // seams are deliberately NOT registered: their memoized outcomes — a
+    // controlled failure, a held-then-released stop — are the specs'
+    // observations, never this hook's bookkeeping. The physical owners carry
+    // the real cleanup, so a fake controlled failure cannot taint this hook,
+    // and a real physical failure cannot hide behind a controlled success.
+  }, 18 * CLEANUP_STAGE_BUDGET);
 
   it('a killed session reads as ENDED at its client exit — every time, so nothing re-attaches', async () => {
     for (let round = 0; round < 3; round += 1) {
@@ -604,94 +736,138 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     // included — reported a successful stop that never happened. The
     // memoized contract: the one attempt's actual outcome is what every
     // caller awaits, so the failure stays the failure it is.
+    //
+    // The container's PHYSICAL cleanup is a separate owner over the same
+    // real startup, registered with afterAll BEFORE the start is even
+    // awaited: the poisoned seam's memoized failure is this spec's
+    // observation, never the hook's bookkeeping — and no assertion failure
+    // or start timeout can bypass the one real stop, because the exit guard
+    // below runs on every path.
     let stopAttempts = 0;
     const startup = new GenericContainer('pocketshell-core-test:helper')
       .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
       .withLabels({ 'ps3039.owned-fixture': 'failed-stop-memoization' })
       .start();
-    const fixture = ownFixture('the failed-stop memoization container', startup, {
+    const physical = ownFixture('the failed-stop regression container (physical owner)', startup);
+    regressionFixtures.push(physical);
+    const controlled = ownFixture('the failed-stop memoization container', startup, {
       stopRpc: () => {
         stopAttempts += 1;
         return Promise.reject(new Error('controlled stop failure: the injected stop RPC rejected'));
       },
     });
-    // Deliberately NOT registered in regressionFixtures: this fixture's seam
-    // is poisoned with a memoized FAILURE — afterAll ownership would
-    // honestly report it as a cleanup failure — so this spec performs the
-    // real stop itself, below, and proves the container gone.
-    const up = await waitFor('the failed-stop memoization container to start', startup, CONTAINER_START_BUDGET);
-    fixture.up = up;
-    const first = await waitFor('the injected stop attempt to fail', fixture.requestStop('the first cleanup'), CLEANUP_STAGE_BUDGET);
-    expect(first.ok, first.note).toBe(false);
-    expect(first.note, first.note).toMatch(/stop FAILED \(the first cleanup\): .*controlled stop failure/);
-    const repeated = await fixture.requestStop('the repeated cleanup');
-    expect(repeated, 'the repeated cleanup must see the memoized failure, not a fabricated ok').toEqual(first);
-    const afterTheFact = await fixture.requestStop('a cleanup arriving after the failure had settled');
-    expect(afterTheFact, 'even a later cleanup sees the same actual outcome').toEqual(first);
-    expect(stopAttempts, 'the single stop attempt must have run exactly once').toBe(1);
-    // The real outcome, and the real cleanup the failure note demands: the
-    // failed attempt left the container up, so the spec stops it directly —
-    // outside the poisoned seam — and proves it gone.
-    await waitFor('the failed-stop container to stop for real', up.stop(), CLEANUP_STAGE_BUDGET);
-    await expect(up.exec(['echo', 'still up?']), 'a directly stopped container must refuse execs').rejects.toThrow();
-  }, CONTAINER_START_BUDGET + 2 * CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
+    let bodyFailure: unknown;
+    try {
+      const up = await waitFor('the failed-stop memoization container to start', startup, CONTAINER_START_BUDGET);
+      physical.up = up;
+      controlled.up = up;
+      const first = await waitFor('the injected stop attempt to fail', controlled.requestStop('the first cleanup'), CLEANUP_STAGE_BUDGET);
+      expect(first.ok, first.note).toBe(false);
+      expect(first.note, first.note).toMatch(/stop FAILED \(the first cleanup\): .*controlled stop failure/);
+      const repeated = await controlled.requestStop('the repeated cleanup');
+      expect(repeated, 'the repeated cleanup must see the memoized failure, not a fabricated ok').toEqual(first);
+      const afterTheFact = await controlled.requestStop('a cleanup arriving after the failure had settled');
+      expect(afterTheFact, 'even a later cleanup sees the same actual outcome').toEqual(first);
+      expect(stopAttempts, 'the single controlled attempt must have run exactly once').toBe(1);
+    } catch (error) {
+      bodyFailure = error;
+      throw error;
+    } finally {
+      // EVERY path: the one real stop — the physical owner's memoized
+      // attempt, which the guard, a repeat caller, and afterAll all share.
+      await regressionExitGuard(physical, bodyFailure);
+    }
+    // Reached only when the body AND the guard succeeded: the real outcome,
+    // independent of any bookkeeping — the stopped (and removed) container
+    // can no longer exec.
+    await expect(
+      physical.up!.exec(['echo', 'still up?']),
+      'a container the exit guard physically stopped must refuse execs',
+    ).rejects.toThrow();
+    // The teardown's view is the SAME memoized success: the controlled
+    // failure never taints it, and the physical stop is not repeated.
+    const teardownView = await physical.requestStop("a later cleanup (the teardown's view)");
+    expect(teardownView.ok, teardownView.note).toBe(true);
+  }, FAILED_STOP_REGRESSION_TOTAL);
 
   it('concurrent stop requests share the one attempt: while it is pending they wait, and all get its actual outcome', async () => {
-    // The controlled-operation seam again: the stop RPC is the REAL stop,
-    // released only after concurrent callers have been observed waiting — so
-    // the actual outcome they eventually share is the real stop's outcome,
-    // merely late. The old requestStop answered a caller arriving during a
-    // pending attempt on the spot with a fabricated {ok: true}, whatever the
-    // attempt then concluded.
-    let releaseStop: (outcome: Promise<unknown>) => void = () => undefined;
+    // The controlled-operation seam again: the stop RPC is a controlled
+    // operation held pending until released — and the release hands the
+    // waiting callers the PHYSICAL owner's real stop outcome, so the actual
+    // outcome they eventually share is the real stop's, with exactly one
+    // real stop RPC. The old requestStop answered a caller arriving during
+    // a pending attempt on the spot with a fabricated {ok: true}, whatever
+    // the attempt then concluded.
+    //
+    // The physical owner is registered with afterAll BEFORE the start is
+    // awaited, and the exit guard below runs on EVERY path — so a failure
+    // before the release can no longer leave the held operation pending
+    // forever with the real container unstopped: the guard releases it and
+    // stops the container for real.
     let stopInvocations = 0;
-    const heldStop = new Promise<unknown>((resolve) => {
-      releaseStop = resolve;
-    });
     const startup = new GenericContainer('pocketshell-core-test:helper')
       .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
       .withLabels({ 'ps3039.owned-fixture': 'concurrent-stop-memoization' })
       .start();
-    const fixture = ownFixture('the concurrent-stop memoization container', startup, {
-      stopRpc: () => {
-        stopInvocations += 1;
-        return heldStop;
-      },
+    const physical = ownFixture('the concurrent-stop regression container (physical owner)', startup);
+    regressionFixtures.push(physical);
+    const seam = heldStopSeam(physical, () => {
+      stopInvocations += 1;
     });
-    regressionFixtures.push(fixture);
-    const up = await waitFor('the concurrent-stop memoization container to start', startup, CONTAINER_START_BUDGET);
-    fixture.up = up;
-    const first = fixture.requestStop('the first cleanup (held pending by the controlled seam)');
-    const concurrent = fixture.requestStop('a concurrent cleanup arriving while the attempt was pending');
-    // While the RPC is held, NEITHER caller may be answered: a fabricated
-    // immediate ok would surface right here.
-    const whileHeld = await waitFor(
-      'the concurrent callers to still be waiting while the stop RPC is held',
-      Promise.race([
-        Promise.all([first, concurrent]).then(() => 'answered early'),
-        new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), STOP_MEMOIZATION_HOLD_MS)),
-      ]),
-      STOP_MEMOIZATION_PROBE_BUDGET,
-    );
-    expect(whileHeld, 'no caller may be answered while the single attempt is still pending').toBe('still waiting');
-    // Release the attempt: the REAL stop runs, and its actual outcome is
-    // what both callers — and any later one — share.
-    releaseStop(up.stop());
-    const [firstOutcome, concurrentOutcome] = await waitFor(
-      'both concurrent stop callers to settle at the actual stop outcome',
-      Promise.all([first, concurrent]),
-      CLEANUP_STAGE_BUDGET,
-    );
-    expect(firstOutcome, firstOutcome.note).toEqual(concurrentOutcome);
-    expect(firstOutcome.ok, firstOutcome.note).toBe(true);
-    expect(firstOutcome.note, firstOutcome.note).toMatch(/stopped \(the first cleanup/);
-    expect(stopInvocations, 'the single stop attempt must have run exactly once').toBe(1);
-    const later = await fixture.requestStop('a cleanup arriving after the outcome had settled');
-    expect(later, 'a later cleanup sees the same memoized outcome').toEqual(firstOutcome);
-    expect(stopInvocations).toBe(1);
-    // The real outcome: the released stop really removed the container.
-    await expect(up.exec(['echo', 'still up?']), 'a container whose single stop both callers awaited must refuse execs').rejects.toThrow();
-  }, CONTAINER_START_BUDGET + STOP_MEMOIZATION_PROBE_BUDGET + CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
+    const controlled = ownFixture('the concurrent-stop memoization container', startup, { stopRpc: seam.stopRpc });
+    let bodyFailure: unknown;
+    let up: StartedTestContainer | undefined;
+    try {
+      up = await waitFor('the concurrent-stop memoization container to start', startup, CONTAINER_START_BUDGET);
+      physical.up = up;
+      controlled.up = up;
+      const first = controlled.requestStop('the first cleanup (held pending by the controlled seam)');
+      const concurrent = controlled.requestStop('a concurrent cleanup arriving while the attempt was pending');
+      // While the operation is held, NEITHER caller may be answered: a
+      // fabricated immediate ok would surface right here.
+      const whileHeld = await waitFor(
+        'the concurrent callers to still be waiting while the stop operation is held',
+        Promise.race([
+          Promise.all([first, concurrent]).then(() => 'answered early'),
+          new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), STOP_MEMOIZATION_HOLD_MS)),
+        ]),
+        STOP_MEMOIZATION_PROBE_BUDGET,
+      );
+      expect(whileHeld, 'no caller may be answered while the single attempt is still pending').toBe('still waiting');
+      // Release: both callers — and any later one — are handed the physical
+      // owner's single real stop and share its actual outcome.
+      seam.releaseOnce();
+      const [firstOutcome, concurrentOutcome] = await waitFor(
+        'both concurrent stop callers to settle at the actual stop outcome',
+        Promise.all([first, concurrent]),
+        CLEANUP_STAGE_BUDGET,
+      );
+      expect(firstOutcome, firstOutcome.note).toEqual(concurrentOutcome);
+      expect(firstOutcome.ok, firstOutcome.note).toBe(true);
+      expect(firstOutcome.note, firstOutcome.note).toMatch(/stopped \(the first cleanup/);
+      expect(stopInvocations, 'the single controlled attempt must have run exactly once').toBe(1);
+      const later = await controlled.requestStop('a cleanup arriving after the outcome had settled');
+      expect(later, 'a later cleanup sees the same memoized outcome').toEqual(firstOutcome);
+      expect(stopInvocations).toBe(1);
+    } catch (error) {
+      bodyFailure = error;
+      throw error;
+    } finally {
+      // EVERY path: the held operation is released (idempotent — a body
+      // that already released is a no-op) and the physical owner's one real
+      // stop is awaited under a bound.
+      await regressionExitGuard(physical, bodyFailure, seam.releaseOnce);
+    }
+    // Reached only when the body AND the guard succeeded: the real outcome.
+    await expect(
+      up!.exec(['echo', 'still up?']),
+      'a container whose single real stop every caller shared must refuse execs',
+    ).rejects.toThrow();
+    // The teardown's view: the physical owner's memoized success — the held
+    // controlled operation never touched this hook's bookkeeping.
+    const teardownView = await physical.requestStop("a later cleanup (the teardown's view)");
+    expect(teardownView.ok, teardownView.note).toBe(true);
+  }, HELD_STOP_REGRESSION_TOTAL);
 
   it('a stop requested before the start resolved invents nothing: it waits for the real container and stops it once up', async () => {
     // The old shape answered a pre-startup request on the spot with
@@ -730,6 +906,147 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     expect(fixture.up).toBeDefined();
     await expect(fixture.up!.exec(['echo', 'still up?']), 'a container the pre-startup request stopped must refuse execs').rejects.toThrow();
   }, CONTAINER_START_BUDGET + CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
+
+  it('a simulated assertion abort BEFORE the held stop is released: the exit guard still releases it and stops the real container', async () => {
+    // The held-stop regression's abort path, driven for real: the body
+    // fails — a simulated assertion error — while the single attempt is
+    // still pending on the held operation and BEFORE any release. That is
+    // the exact state the pre-fix spec left behind: the held RPC never
+    // released, afterAll waiting out its timeout while the real container
+    // stayed up. The exit guard here is the SAME code every controlled-stop
+    // regression runs on its way out — the production cleanup path under an
+    // abort, not a mirror of it — and the proof is the real outcome: the
+    // abort propagated (never masked by the cleanup's success), the held
+    // callers settled at the real stop's outcome, and the container refuses
+    // execs.
+    let stopInvocations = 0;
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'abort-before-release' })
+      .start();
+    const physical = ownFixture('the abort-before-release regression container (physical owner)', startup);
+    regressionFixtures.push(physical);
+    const seam = heldStopSeam(physical, () => {
+      stopInvocations += 1;
+    });
+    const controlled = ownFixture('the abort-before-release memoization container', startup, { stopRpc: seam.stopRpc });
+    let first: Promise<OwnedStop> | undefined;
+    let concurrent: Promise<OwnedStop> | undefined;
+    let bodyFailure: unknown;
+    const abortingBody = async (): Promise<void> => {
+      try {
+        const up = await waitFor('the abort-before-release container to start', startup, CONTAINER_START_BUDGET);
+        physical.up = up;
+        controlled.up = up;
+        first = controlled.requestStop("the abort regression's first cleanup (held pending)");
+        concurrent = controlled.requestStop('a concurrent cleanup (held pending)');
+        const whileHeld = await waitFor(
+          'the held callers to still be waiting when the abort fires',
+          Promise.race([
+            Promise.all([first, concurrent]).then(() => 'answered early'),
+            new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), STOP_MEMOIZATION_HOLD_MS)),
+          ]),
+          STOP_MEMOIZATION_PROBE_BUDGET,
+        );
+        expect(whileHeld, 'the abort must fire while the single attempt is genuinely held').toBe('still waiting');
+        // THE ABORT, before any release — the failure an assertion raises:
+        throw new Error('simulated assertion abort before the held stop was released');
+      } catch (error) {
+        bodyFailure = error;
+        throw error;
+      } finally {
+        await regressionExitGuard(physical, bodyFailure, seam.releaseOnce);
+      }
+    };
+    const failure: Error = await waitFor(
+      'the simulated abort to propagate through the exit guard',
+      abortingBody().then(
+        () => {
+          throw new Error('the aborting body resolved instead of propagating its abort');
+        },
+        (error: Error) => error,
+      ),
+      CONTAINER_START_BUDGET + STOP_MEMOIZATION_PROBE_BUDGET + REGRESSION_EXIT_GUARD_BUDGET,
+    );
+    expect(failure.message, failure.message).toMatch(/simulated assertion abort/);
+    // The guard released the held operation: both callers settled at the
+    // real stop's outcome — one controlled invocation, one real stop RPC.
+    const [firstOutcome, concurrentOutcome] = await waitFor(
+      'both held callers to settle at the released real outcome',
+      Promise.all([first!, concurrent!]),
+      CLEANUP_STAGE_BUDGET,
+    );
+    expect(firstOutcome.ok, firstOutcome.note).toBe(true);
+    expect(firstOutcome.note, firstOutcome.note).toMatch(/stopped \(the abort regression's first cleanup/);
+    expect(concurrentOutcome, concurrentOutcome.note).toEqual(firstOutcome);
+    expect(stopInvocations, 'the controlled seam must have been invoked exactly once').toBe(1);
+    // The REAL outcome, independent of any bookkeeping: the physically
+    // stopped container can no longer exec — the owned fixture is gone.
+    await expect(
+      physical.up!.exec(['echo', 'still up?']),
+      'a container the exit guard stopped after the abort must refuse execs',
+    ).rejects.toThrow();
+    // The hook's bookkeeping stays clean: the physical owner's memoized
+    // outcome is the success afterAll will inherit.
+    const teardownView = await physical.requestStop("a later cleanup (the teardown's view)");
+    expect(teardownView.ok, teardownView.note).toBe(true);
+  }, ABORT_BEFORE_RELEASE_REGRESSION_TOTAL);
+
+  it('a simulated assertion abort while the startup is still pending: the exit guard owns the eventual container', async () => {
+    // The abort lands BEFORE the startup resolved — no await of it, no
+    // container yet. The physical owner was registered with afterAll before
+    // anything was awaited, and the exit guard rides out the real start and
+    // stops what came up: a container that comes up after its spec aborted
+    // is still owned, still stopped — gone for real.
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'startup-after-abort' })
+      .start();
+    const physical = ownFixture('the startup-after-abort regression container', startup);
+    regressionFixtures.push(physical);
+    let bodyFailure: unknown;
+    let abortAt = 0;
+    let upAt = -1;
+    startup.then(
+      (up) => {
+        upAt = Date.now();
+        physical.up = up;
+      },
+      () => undefined,
+    );
+    const abortingBody = async (): Promise<void> => {
+      try {
+        // No await of the startup: the abort fires while it is still pending.
+        abortAt = Date.now();
+        throw new Error('simulated assertion abort while the startup was still pending');
+      } catch (error) {
+        bodyFailure = error;
+        throw error;
+      } finally {
+        await regressionExitGuard(physical, bodyFailure);
+      }
+    };
+    const failure: Error = await waitFor(
+      'the simulated abort to propagate through the exit guard (which rides out the pending startup)',
+      abortingBody().then(
+        () => {
+          throw new Error('the aborting body resolved instead of propagating its abort');
+        },
+        (error: Error) => error,
+      ),
+      REGRESSION_EXIT_GUARD_BUDGET,
+    );
+    expect(failure.message, failure.message).toMatch(/simulated assertion abort/);
+    expect(upAt, 'the container came up only after the abort had fired').toBeGreaterThanOrEqual(abortAt);
+    // The REAL outcome: the eventual container was stopped — gone.
+    expect(physical.up, 'the startup must have produced the container the guard stopped').toBeDefined();
+    await expect(
+      physical.up!.exec(['echo', 'still up?']),
+      'a container that came up after its spec aborted must have been stopped by the exit guard',
+    ).rejects.toThrow();
+    const teardownView = await physical.requestStop("a later cleanup (the teardown's view)");
+    expect(teardownView.ok, teardownView.note).toBe(true);
+  }, STARTUP_AFTER_ABORT_REGRESSION_TOTAL);
 
   it('pins the platform hazard: a channel request after the channel is gone drops the whole connection', async () => {
     // The late half runs against a disposable TEST-ONLY debug sshd — the same
