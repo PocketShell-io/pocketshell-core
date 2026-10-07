@@ -397,6 +397,13 @@ export const useConnectionStore = defineStore('connection', () => {
         port: host.port,
         user: host.user || '',
         privateKeyPath: privateKeyPath ?? host.identityFile ?? undefined,
+        // Transport intent rides to the platform boundary verbatim (issue
+        // #3059): the store decides nothing about support, it only refuses to
+        // drop the marker. A malformed value stays malformed — normalizing it
+        // here is how a gateway host would quietly become an ordinary SSH
+        // dial. A platform without gateway support refuses a present marker
+        // at its boundary, before credentials or sockets.
+        ...transportMarkers(host),
         // A platform that asks (`ssh.onTrustDecision`) gets NO standing
         // decision: an unknown key must reach the user, never pin silently.
         ...(asksTrust ? {} : { tofuDecision: 'accept-always' as const }),
@@ -435,6 +442,21 @@ export const useConnectionStore = defineStore('connection', () => {
     state.value = 'idle';
     error.value = result.error ?? 'Connection failed';
     return false;
+  }
+
+  /**
+   * The host entry's transport markers for the connect payload: `link` and
+   * `gateway`, copied with their RAW values when (and only when) the entry
+   * carries them. Hosts reach this store as parsed JSON, so a marker's value
+   * may be anything at all; presence, not shape, is what the platform guard
+   * needs, and an ordinary host's payload must carry neither key.
+   */
+  function transportMarkers(host: HostEntry): { link?: unknown; gateway?: unknown } {
+    const raw = host as unknown as Record<string, unknown>;
+    const markers: { link?: unknown; gateway?: unknown } = {};
+    if (Object.prototype.hasOwnProperty.call(host, 'link')) markers['link'] = raw['link'];
+    if (Object.prototype.hasOwnProperty.call(host, 'gateway')) markers['gateway'] = raw['gateway'];
+    return markers;
   }
 
   async function disconnect(): Promise<void> {

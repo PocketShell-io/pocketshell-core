@@ -42,6 +42,30 @@ non-empty string `name` and `hostname`. It preserves all other fields without
 coercion, including nested arrays and objects, so a client that does not
 understand a field can still carry it forward.
 
+## The gateway transport marker
+
+A host entry may carry a `gateway` property: the metadata for dialling through
+the PocketShell gateway, a transport that initially ships in the browser only.
+Sync's job is to carry that property, not to understand it:
+
+- `gateway` is an unknown field for every merge and wire rule above, so a valid
+  marker survives merge, strict parsing, and a read/merge/write cycle
+  unchanged — and so does a null, malformed, or future-shaped one. Presence is
+  preserved verbatim; nothing normalizes it.
+- A client that cannot dial the gateway refuses any PRESENT marker
+  (`src/sync.ts` `hasGatewayMarker`: an own `gateway` property, value of any
+  shape) instead of treating the entry as ordinary SSH. A marker that is null
+  or malformed is still gateway intent; coercing it to a plain host would dial
+  the wrong transport. An entry that carries both `link` and `gateway` refuses
+  too, rather than falling back to the link transport.
+- The desktop config write-back is the one place a synced entry becomes a file
+  on disk, and an OpenSSH block cannot represent the gateway — so
+  `coerceHostEntries` reports `gateway-unsupported` for such an entry and the
+  desktop refuses the whole apply before touching `~/.ssh/config` (no HostName
+  downgrade, no partial write). The shared connect payload carries the marker
+  to the platform boundary for the same reason: the store preserves, the
+  platform decides.
+
 ## Selection, merge, and conflicts
 
 `checked` contains SSH aliases: the value is a host's `name`, not its

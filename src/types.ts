@@ -7,6 +7,7 @@
  */
 
 import type { LinkTransportTarget } from './sshCapability';
+import type { GatewayTransportTarget } from './gatewayTransport';
 
 /** Opaque handle for a live SSH connection in the main process. */
 export type ConnectionId = string;
@@ -23,6 +24,15 @@ export interface HostEntry {
    * client keeps that host's secret.
    */
   link?: LinkTransportTarget;
+  /**
+   * Set when the host is reached through the PocketShell gateway: the client
+   * dials `wss://…/api/v1/hosts/{deviceId}/ssh` and runs real SSH end-to-end
+   * to the host's own sshd — the gateway relays opaque bytes only. The host
+   * key fingerprint pin is NOT here: it is provisioned out of band and lives
+   * in the client's local trust store, because a value the gateway delivers
+   * can never vouch for the host.
+   */
+  gateway?: GatewayTransportTarget;
   /**
    * Stable host identity, for a host whose platform owns its host list (a
    * saved host, see `savedHosts.ts`): the key for the default host, trust
