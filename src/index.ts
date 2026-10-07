@@ -19,6 +19,7 @@ export * from './syncMerge';
 export * from './syncRound';
 export * from './sshConfigCore';
 export * from './knownHostsCore';
+export * from './gatewayTransport';
 export * from './osc52';
 export * from './sftpCore';
 export * from './hostProbeParsers';
