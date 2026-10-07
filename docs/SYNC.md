@@ -45,8 +45,11 @@ understand a field can still carry it forward.
 ## The gateway transport marker
 
 A host entry may carry a `gateway` property: the metadata for dialling through
-the PocketShell gateway, a transport that initially ships in the browser only.
-Sync's job is to carry that property, not to understand it:
+the PocketShell gateway (docs/gateway-dial-contract.md has the portable dial
+contract). The core contract layer carries the marker and now also ships the
+validated target type and the strict dial classification for clients that
+adopt it; the transports themselves are platform-owned and roll out per
+client. Sync's job is unchanged — to carry the property, not to interpret it:
 
 - `gateway` is an unknown field for every merge and wire rule above, so a valid
   marker survives merge, strict parsing, and a read/merge/write cycle

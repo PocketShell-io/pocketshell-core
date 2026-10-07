@@ -13,9 +13,15 @@
  * Duplex; desktop/Android: their own sockets) and stays in the clients.
  *
  * Trust rules this module encodes:
- *  - The Google ID token only ADMITS the route; the SSH private key
- *    authenticates against the host's sshd. The token travels in the auth
- *    frame only — never in a URL.
+ *  - A short-lived scoped broker JWT — the ROUTING token — only ADMITS the
+ *    route. Each platform mints it per dial from its own account-service
+ *    origin (`POST /gateway/token` at the trusted sync base), exchanging the
+ *    account credential natively; the account's Google ID/bearer token never
+ *    rides the gateway, and the broker origin never comes from a saved
+ *    gateway target. The routing token travels in the auth frame only —
+ *    never in a URL, never persisted, never logged.
+ *  - The SSH private key authenticates against the host's sshd: the routing
+ *    token admits a tunnel, it never authorizes SSH on the user's machine.
  *  - `ready.ssh_host_key` is the gateway's enrollment record. The gateway
  *    controls it, so it is ADVISORY: it can reassure, never establish or
  *    replace trust.
@@ -46,7 +52,10 @@ export const GATEWAY_MAX_WS_MESSAGE_BYTES = (1 << 20) + (64 << 10);
 /**
  * A host reached through the gateway. Stored on the synced host entry
  * (`HostEntry.gateway`); neither field is a secret — the route is admitted
- * by the account's own token, the fingerprint pin stays client-local.
+ * by the account's platform-minted routing token, the fingerprint pin stays
+ * client-local. This is ONLY the tunnel endpoint: the broker/account-service
+ * origin a dial exchanges its routing token at is configured by the platform
+ * independently and must NEVER be read from this saved target.
  */
 export interface GatewayTransportTarget {
   /** Canonical gateway base URL, `wss://…` (or `ws://…` in explicit dev). */
@@ -67,7 +76,10 @@ export function isValidGatewayDeviceId(deviceId: string): boolean {
  * when it is not a usable gateway origin. Accepts `wss://`, `ws://`, and the
  * `https://`/`http://` spellings users paste from a browser address bar
  * (mapped to wss/ws). The origin only — path, query and fragment are
- * rejected, so nothing can smuggle a token into a URL.
+ * rejected, so nothing can smuggle a token into a URL. Misplaced user
+ * credentials (`wss://me:pass@host`) are rejected too, never stripped:
+ * silently dropping them would accept a sanitized target while the secret
+ * sat in paste history, logs and the saved record as "the URL".
  */
 export function normalizeGatewayServerUrl(input: string): string | null {
   const trimmed = input.trim();
@@ -77,6 +89,10 @@ export function normalizeGatewayServerUrl(input: string): string | null {
   if (httpLike !== null) {
     candidate = `${httpLike[1]!.toLowerCase() === 'https' ? 'wss' : 'ws'}://${trimmed.slice(httpLike[0].length)}`;
   }
+  // A userinfo `@` cannot appear in a legitimate pure origin (neither the
+  // host nor the fixed path carries one), so its presence is exactly the
+  // misplaced-credential shape.
+  if (candidate.includes('@')) return null;
   let url: URL;
   try {
     url = new URL(candidate);
@@ -136,13 +152,31 @@ export function gatewaySshUrl(
   return `${url.protocol}//${url.host}${GATEWAY_SSH_PATH_PREFIX}${encodeURIComponent(target.deviceId)}/ssh`;
 }
 
+/**
+ * A short-lived gateway ROUTING token: the scoped broker JWT each platform
+ * mints per dial at its OWN account-service origin (`POST /gateway/token` at
+ * the trusted sync base, no redirects, bounded body), exchanging the account
+ * credential natively. It admits the tunnel route — it never authorizes SSH
+ * on the host (public-key userauth stays mandatory), never replaces the
+ * account's Google ID/bearer credential on the wire, and is never persisted
+ * or logged: only token+expiry cross into transport code, and the broker
+ * origin is platform configuration, never a saved gateway target's URL.
+ */
+export interface GatewayRoutingToken {
+  token: string;
+  /** Epoch ms after which the broker stops honoring the token, when stated. */
+  expiresEpochMs: number | null;
+}
+
 // --- JSON handshake frames ---------------------------------------------------
 //
 // All handshake messages are WebSocket TEXT frames; everything after the
 // handshake is BINARY. Mirrors the Go structs (protocol.go): ClientAuth,
 // ReadyMsg, ErrMsg.
 
-/** The client's first message — the only place the ID token ever travels. */
+/** The client's first message — the only place the routing token ever
+ * travels (see the module header: a platform-minted scoped broker JWT, never
+ * the account credential itself). */
 export interface GatewayClientAuth {
   type: 'auth';
   v: number;
@@ -178,7 +212,9 @@ export type GatewayHandshakeFrame =
 
 /** Strict parse of one handshake TEXT frame. Anything that is not exactly a
  * v1 `ready` or `error` object is malformed — a handshake must never be
- * guessed into shape. */
+ * guessed into shape. Malformed `reason`s name the structural fault only:
+ * they never quote the peer's field values (type, version, or payload), so a
+ * hostile frame cannot push its content into a user-facing error. */
 export function parseGatewayHandshakeFrame(text: string): GatewayHandshakeFrame {
   let parsed: unknown;
   try {
@@ -191,7 +227,7 @@ export function parseGatewayHandshakeFrame(text: string): GatewayHandshakeFrame 
   }
   const f = parsed as Record<string, unknown>;
   if (f['v'] !== GATEWAY_PROTOCOL_VERSION) {
-    return { kind: 'malformed', reason: `handshake version ${JSON.stringify(f['v'])}` };
+    return { kind: 'malformed', reason: 'handshake frame carries an unsupported protocol version' };
   }
   if (f['type'] === 'ready') {
     if (typeof f['device_id'] !== 'string' || typeof f['ssh_host_key'] !== 'string') {
@@ -211,7 +247,7 @@ export function parseGatewayHandshakeFrame(text: string): GatewayHandshakeFrame 
       frame: { type: 'error', v: GATEWAY_PROTOCOL_VERSION, code: f['code'], message: f['message'] },
     };
   }
-  return { kind: 'malformed', reason: `unexpected handshake type ${JSON.stringify(f['type'])}` };
+  return { kind: 'malformed', reason: 'handshake frame type is not part of the v1 handshake' };
 }
 
 // --- close codes ---------------------------------------------------------------
@@ -331,4 +367,25 @@ export function hostKeyLineBlobB64(line: string): string | null {
  */
 export function sameHostKeyBlobB64(a: string, b: string): boolean {
   return a.replace(/=+$/, '') === b.replace(/=+$/, '');
+}
+
+/**
+ * The stable namespace every gateway trust record must live under — the
+ * independently paired host-key fingerprint pin, and any per-host gateway
+ * key association a client keeps. The pairing identity is the triple
+ * (account, canonical gateway origin, device id): two accounts, two
+ * gateways, or two devices behind one hostname must never borrow each
+ * other's pin, and a direct-SSH known_hosts entry must never be confused
+ * with one, so gateway records live in their OWN store keyed by this value,
+ * never in the direct known_hosts namespace. The fields are JSON-encoded as
+ * a triple so a value containing the separator character cannot alias
+ * another triple. `target` must be the NORMALIZED gateway target (the
+ * shape `classifySshDial`'s gateway arm returns); `accountId` is the
+ * platform's stable account identifier — throws on an empty one.
+ */
+export function gatewayHostKeyTrustNamespace(accountId: string, target: GatewayTransportTarget): string {
+  if (typeof accountId !== 'string' || accountId.trim().length === 0) {
+    throw new Error('gateway trust namespace needs a non-empty account id');
+  }
+  return `gateway:${JSON.stringify([accountId, target.serverUrl, target.deviceId])}`;
 }

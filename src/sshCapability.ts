@@ -1,4 +1,5 @@
 import type { HostKeyTrustPin, PresentedHostKey } from './hostKeyTrustCore';
+import { normalizeGatewayTarget, normalizeSha256Fingerprint, type GatewayTransportTarget } from './gatewayTransport';
 
 /** Stable opaque identifier owned by the platform's SSH key storage. */
 export interface SshKeyHandleCredential {
@@ -66,6 +67,21 @@ export interface SshHostTarget {
    * then be `link-token`; `hostname`/`port` are display-only for such hosts.
    */
   link?: LinkTransportTarget;
+  /**
+   * Set when the dial rides the PocketShell gateway (see
+   * `gatewayTransport.ts`): the platform opens the gateway's per-host
+   * WebSocket, sends its own short-lived routing token in the auth frame,
+   * and runs real SSH end-to-end through the tunnel. `credential` must then
+   * be the host's REAL SSH key credential (`private-key` or `key-handle`) —
+   * a password never rides the gateway, and a link-token is never a routing
+   * token. The independently paired host-key fingerprint rides
+   * `expectedHostKey` at connect time, never this marker (a value the
+   * gateway delivers cannot vouch for the host); `hostname`/`port` are
+   * display-only labels for such dials. Presence is intent: a marker that
+   * is null, undefined, malformed, or combined with `link` must REFUSE the
+   * dial (`classifySshDial`), never fall back to direct SSH.
+   */
+  gateway?: GatewayTransportTarget;
 }
 
 export interface SshConnectionRef {
@@ -98,9 +114,226 @@ export function isLinkDial(target: SshHostTarget): boolean {
   return isLinkTransportTarget(target.link) && target.credential.kind === 'link-token';
 }
 
+// --- the dial classification boundary ------------------------------------------
+//
+// One pure, effect-free answer to "how may this dial travel, if at all?",
+// evaluated BEFORE any effect: before a controller creates a connection
+// record, before a native plugin opens a socket, before a broker token is
+// minted. Platform shells (Android's host store/app guard, desktop's
+// SshService, the browser) call it at their entry points and refuse
+// `refused` plans verbatim; the capability implementations call
+// {@link classifySshConnect} first thing in `connect` and never open a
+// transport for anything but a direct/link/gateway plan.
+//
+// The rules it enforces (docs/gateway-dial-contract.md has the long form):
+//  - Presence is intent. An OWN `gateway` or `link` property — a valid
+//    target, null, undefined, or a malformed shape — commits the dial to
+//    that transport. An unusable marker is a refusal, never a guess that
+//    the host is ordinary SSH.
+//  - Transports are exclusive. Both markers refuse even when each is
+//    individually well-formed.
+//  - A gateway dial needs a NORMALIZED target (canonical `wss://` origin +
+//    registry-valid device id), a real SSH key credential, and — at connect
+//    time, via {@link classifySshConnect} — an independently provisioned
+//    host-key fingerprint pin on `expectedHostKey`. Passwords, link tokens
+//    and absent pins never ride the gateway; there is no TOFU prompt.
+//  - Healthy direct and link dials classify exactly as before: direct with
+//    a private-key/password/key-handle credential, link with the link
+//    target + link-token credential. This boundary adds refusals for
+//    misconfigurations that previously fell through (a link-token with no
+//    link target, a link target with an SSH credential) — the
+//    `isLinkDial`/`isLinkTransportTarget` predicates keep their shapes.
+//
+// Refusal messages name the fault, never echo the offending value: target
+// URLs, device ids, credential material and marker shapes must not be
+// reflected into user-visible errors.
+
+/** Stable refusal codes on {@link SshDialPlan}; platforms branch on these
+ * for their own copy/telemetry but must not weaken them into fallbacks. */
+export type SshDialRefusalCode =
+  | 'dial-target-invalid'
+  | 'dial-transport-conflict'
+  | 'gateway-marker-invalid'
+  | 'gateway-credential-unsupported'
+  | 'gateway-host-key-unpinned'
+  | 'link-marker-invalid'
+  | 'link-credential-mismatch'
+  | 'link-token-without-link'
+  | 'credential-invalid';
+
+/**
+ * How a dial may travel: plain SSH (`direct`), the link relay (`link`), the
+ * PocketShell gateway with its NORMALIZED target (`gateway`), or a
+ * `refused` verdict that must end the dial. The gateway arm's target is
+ * always the normalized form, so consumers never re-normalize a saved
+ * record and never dial a URL the contract has not seen.
+ */
+export type SshDialPlan =
+  | { kind: 'direct' }
+  | { kind: 'link' }
+  | { kind: 'gateway'; gateway: GatewayTransportTarget }
+  | { kind: 'refused'; code: SshDialRefusalCode; message: string };
+
+function refusedDial(code: SshDialRefusalCode, message: string): SshDialPlan {
+  return { kind: 'refused', code, message };
+}
+
+/** Marker presence is OWN-property presence (`hasGatewayMarker` semantics):
+ * `gateway: undefined` set on the object is still gateway intent. */
+function hasOwnMarker(target: object, key: 'link' | 'gateway'): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key);
+}
+
+/** A gateway dial authenticates with the host's real SSH key — nothing else. */
+function gatewayCredentialRefusal(credential: SshCredential): SshDialPlan | null {
+  if (credential.kind === 'password' || credential.kind === 'link-token') {
+    return refusedDial(
+      'gateway-credential-unsupported',
+      'A gateway dial authenticates with the host\u2019s SSH private key or key handle; a password or link token never rides the gateway.',
+    );
+  }
+  if (credential.kind === 'private-key') {
+    if (typeof credential.privateKeyPem !== 'string' || credential.privateKeyPem.trim().length === 0) {
+      return refusedDial('credential-invalid', 'The private-key credential carries no key material.');
+    }
+    return null;
+  }
+  if (!isValidSshKeyHandleCredential(credential)) {
+    return refusedDial('credential-invalid', 'The credential is not a usable SSH key credential.');
+  }
+  return null;
+}
+
+/** Structural checks shared by every transport arm; direct keeps accepting
+ * the three SSH credential kinds it always has. */
+function directCredentialRefusal(credential: SshCredential): SshDialPlan | null {
+  if (credential.kind === 'private-key') {
+    if (typeof credential.privateKeyPem !== 'string' || credential.privateKeyPem.trim().length === 0) {
+      return refusedDial('credential-invalid', 'The private-key credential carries no key material.');
+    }
+    return null;
+  }
+  if (credential.kind === 'password') {
+    if (typeof credential.password !== 'string' || credential.password.length === 0) {
+      return refusedDial('credential-invalid', 'The password credential is empty.');
+    }
+    return null;
+  }
+  if (!isValidSshKeyHandleCredential(credential)) {
+    return refusedDial('credential-invalid', 'The credential is not one this dial can use.');
+  }
+  return null;
+}
+
+/**
+ * Classify a dial target before ANY effect (the exact order, documented for
+ * every platform adopting the boundary):
+ *
+ * 1. the target must be an object and carry a credential at all;
+ * 2. OWN `link` and `gateway` markers are read; both present is a
+ *    `dial-transport-conflict` refusal even when each is well-formed;
+ * 3. a present `gateway` marker must normalize (`normalizeGatewayTarget`) —
+ *    null/malformed refuses as `gateway-marker-invalid` — and its
+ *    credential must be a real private-key/key-handle credential;
+ * 4. else a present `link` marker must be a usable link target and pair
+ *    with the `link-token` credential;
+ * 5. else the dial is direct with a private-key/password/key-handle
+ *    credential (a link-token without a link marker refuses: that
+ *    credential is only ever meaningful to the link capability).
+ *
+ * Pure: no I/O, no network, no crypto, no platform calls. For the
+ * connect-time pin requirement see {@link classifySshConnect}.
+ */
+export function classifySshDial(target: SshHostTarget): SshDialPlan {
+  if (typeof target !== 'object' || target === null) {
+    return refusedDial('dial-target-invalid', 'The dial target is missing.');
+  }
+  const credential = (target as { credential?: unknown }).credential;
+  if (typeof credential !== 'object' || credential === null) {
+    return refusedDial('credential-invalid', 'The dial carries no SSH credential.');
+  }
+  const hasLink = hasOwnMarker(target, 'link');
+  const hasGateway = hasOwnMarker(target, 'gateway');
+  if (hasLink && hasGateway) {
+    return refusedDial(
+      'dial-transport-conflict',
+      'This host carries both a link and a gateway transport; the dial refuses instead of picking one.',
+    );
+  }
+  if (hasGateway) {
+    const gateway = normalizeGatewayTarget((target as { gateway?: unknown }).gateway);
+    if (gateway === null) {
+      return refusedDial(
+        'gateway-marker-invalid',
+        'This host carries a gateway transport whose target is not a usable gateway address; fix the saved record before dialling.',
+      );
+    }
+    const credentialRefusal = gatewayCredentialRefusal(credential as SshCredential);
+    if (credentialRefusal !== null) return credentialRefusal;
+    return { kind: 'gateway', gateway };
+  }
+  if (hasLink) {
+    if (!isLinkTransportTarget((target as { link?: unknown }).link)) {
+      return refusedDial(
+        'link-marker-invalid',
+        'This host carries a link transport whose target is not a usable relay address.',
+      );
+    }
+    const linkCredential = credential as SshCredential;
+    if (linkCredential.kind !== 'link-token' || typeof linkCredential.token !== 'string' || linkCredential.token.length === 0) {
+      return refusedDial(
+        'link-credential-mismatch',
+        'This host dials the link transport only with its link-token credential.',
+      );
+    }
+    return { kind: 'link' };
+  }
+  if ((credential as SshCredential).kind === 'link-token') {
+    return refusedDial(
+      'link-token-without-link',
+      'A link-token credential dials the link transport, but this host carries no link target.',
+    );
+  }
+  const directRefusal = directCredentialRefusal(credential as SshCredential);
+  if (directRefusal !== null) return directRefusal;
+  return { kind: 'direct' };
+}
+
+/**
+ * The connect-time boundary every {@link SshCapability.connect}
+ * implementation runs FIRST, before opening any transport or minting any
+ * token: {@link classifySshDial}'s verdict, plus the gateway rule that the
+ * dial arrive with an independently provisioned host-key fingerprint pin on
+ * `expectedHostKey`. A gateway dial without a usable pin is a refusal —
+ * there is no first-contact prompt on this transport, because a value the
+ * gateway delivers can never vouch for the host. Direct and link plans
+ * keep their existing trust flows unchanged.
+ */
+export function classifySshConnect(options: SshConnectOptions): SshDialPlan {
+  const plan = classifySshDial(options);
+  if (plan.kind !== 'gateway') return plan;
+  const fingerprint = options.expectedHostKey === null || options.expectedHostKey === undefined
+    ? null
+    : options.expectedHostKey.fingerprintSha256;
+  if (typeof fingerprint !== 'string' || normalizeSha256Fingerprint(fingerprint) === null) {
+    return refusedDial(
+      'gateway-host-key-unpinned',
+      'This gateway host has no independently paired host-key fingerprint; pair the host out of band before dialling.',
+    );
+  }
+  return plan;
+}
+
 export interface SshConnectOptions extends SshHostTarget {
   requestId: string;
   generationId: string;
+  /**
+   * The independently provisioned host-key pin. Direct dials may arrive
+   * without one (first contact prompts); a GATEWAY dial must arrive WITH a
+   * usable SHA-256 fingerprint pin — `classifySshConnect` refuses the
+   * unpinned dial before any effect, because a first-contact prompt on the
+   * gateway would let the gateway introduce the host it impersonates.
+   */
   expectedHostKey: HostKeyTrustPin | null;
   connectTimeoutMs?: number;
 }
@@ -243,6 +476,15 @@ export interface SshCapability {
     eventName: 'sftpWriteProgress',
     listenerFunc: (event: SshSftpWriteProgressEvent) => void,
   ): Promise<SshListenerHandle>;
+  /**
+   * Open a connection. Implementations run {@link classifySshConnect} on
+   * the options FIRST and end every `refused` plan before any effect — no
+   * socket, no broker token, no connection record; `expectedHostKey` is
+   * retained for every transport, and the platform verifies the actually
+   * presented host key against it before SSH userauth. Gateway dials then
+   * ride the platform's own broker exchange and WebSocket (never a core
+   * network path; the routing token never persists here).
+   */
   connect(options: SshConnectOptions): Promise<SshConnectResult>;
   getConnectionState(ref: SshConnectionRef & { requestId: string }): Promise<SshAck & { state: 'connected' | 'lost' | 'closed' }>;
   closeConnection(ref: SshConnectionRef & { requestId: string }): Promise<SshAck>;
