@@ -120,9 +120,11 @@ export class PathHighlighter {
     // answer covers the link's whole LOGICAL line, so it can carry fragments
     // parked on other rows of that line; the range test keeps only this row's
     // own. Links are one fragment per row (terminalLinks.ts linksPerRow), so
-    // a range that passes the test is exactly this row's stretch of the path
-    // — first cell to last, the row's leftover columns and leading indent
-    // never inside it.
+    // a range that passes the test is this row's stretch of the path — first
+    // cell to last, plus any trailing fill the remote CLI itself underlined
+    // (the thirteenth report: what is presented underlined is what opens, and
+    // the tint marks the same stretch); a plain leftover column and the
+    // leading indent are never inside it.
     const segments: RowSegment[] = [];
     // One flattening, both detectors: paths of every span, and the web links
     // that cross rows (a single-row URL gets no tint — it was never

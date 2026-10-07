@@ -149,6 +149,15 @@
  *     the first opening a directory, the second linkifying alone as a
  *     relative path resolving nowhere. The elbow joins the gutter family
  *     ({@link GUTTER}), and the command echo comes whole.
+ *   - the Codex transcript's attachment list underlines its file paths and
+ *     then paints each row's remaining fill with the attribute still active —
+ *     `- ~/.pocketshell/attachments/…/…-01-` / `video1884788668.mp4`, BOTH
+ *     rows underlined through empty space to the pane's edge — so the view at
+ *     rest presented a link far wider than the fragments claimed, and most of
+ *     what read as the link answered no click. A fragment now claims the
+ *     trailing cells the CLI itself underlined ({@link linksPerRow}): what is
+ *     presented underlined is what opens, and the padding of every CLI that
+ *     underlines only its text stays bare as before.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -192,10 +201,13 @@
  * terminal keeps saying what the program said.
  *
  * Both detectors hand xterm ONE LINK PER ROW a match touches, never one link
- * spanning rows ({@link linksPerRow} for why). The practical difference is
- * the underline: on hover, every row of a wrapped path underlines exactly its
- * own fragment of it — the row's leftover columns after the cut, and the
- * continuation row's leading indent, stay bare.
+ * spanning rows ({@link linksPerRow} for why). The practical difference is the
+ * underline: on hover, every row of a wrapped path underlines exactly its own
+ * fragment of it — the row's plain leftover columns after the cut, and the
+ * continuation row's leading indent, stay bare — except where the remote CLI
+ * itself underlined the fill past the cut ({@link linksPerRow}): there the
+ * fragment claims the underlined stretch, because the user is already reading
+ * it as part of the link and a click on it must not fall dead.
  *
  * Hover is not the layer the user judges by, though. The remote CLI colours
  * and underlines its file references itself, and when ITS wrapper breaks a
@@ -383,8 +395,26 @@ const SLUG_FRAGMENT = /^(?=[a-z0-9-]*[a-z])[a-z0-9]+(?:-[a-z0-9]+){2,}$/i;
 /** One flattened logical line, plus the cell each character came from. */
 export interface ScannedLine {
   text: string;
-  /** `cells[i]` is the 0-based buffer cell that produced `text[i]`. */
-  cells: { x: number; y: number }[];
+  /**
+   * `cells[i]` is the 0-based buffer cell that produced `text[i]`; `u` is
+   * whether that cell carries the underline attribute — the trace of a remote
+   * CLI that underlined not just its path but the fill cells after it (the
+   * thirteenth report's Codex transcript underlines attachment paths and then
+   * paints the row's remaining columns with the attribute still active, so the
+   * at-rest underline runs through empty space to the pane's edge). {@link
+   * linksPerRow} lets a link claim exactly that much of the row: what the CLI
+   * itself presents underlined is what the user reads as the link, and a dead
+   * zone inside an underlined run reads as a broken click.
+   */
+  cells: { x: number; y: number; u: boolean }[];
+  /**
+   * For a row whose trailing fill was DROPPED by a join ({@link scanBufferLine}
+   * pops the spaces so the glued token stays one token), the last column of
+   * that dropped fill carrying the underline attribute — the same evidence
+   * `cells[i].u` carries for rows whose fill was kept. Absent when the row's
+   * fill had no underline, or was never dropped.
+   */
+  underlineTails: Map<number, number>;
 }
 
 /** A row read for the join rules: its text and where its content actually ends. */
@@ -793,13 +823,23 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
 }
 
 /**
+ * Whether [cell] carries the underline attribute. Guarded duck-check because
+ * the test fakes build cells by hand; a real `IBufferCell` always answers.
+ */
+function cellUnderline(cell: IBufferCell | undefined): boolean {
+  if (!cell || typeof cell.isUnderline !== 'function') return false;
+  return cell.isUnderline() !== 0;
+}
+
+/**
  * Flatten the logical line that [bufferLineNumber] (1-based, as xterm passes
  * it to a link provider) belongs to.
  */
 export function scanBufferLine(term: Terminal, bufferLineNumber: number): ScannedLine {
   const buf = term.buffer.active;
   const chars: string[] = [];
-  const cells: { x: number; y: number }[] = [];
+  const cells: { x: number; y: number; u: boolean }[] = [];
+  const underlineTails = new Map<number, number>();
   const scratch = buf.getNullCell();
   // One inference per flattening, before any join decision: every
   // reconstruction below measures its fit arithmetic against this width.
@@ -841,19 +881,20 @@ export function scanBufferLine(term: Terminal, bufferLineNumber: number): Scanne
       // Width 0 is the right-hand half of a double-width character: it holds no
       // string content of its own and must not advance the string index.
       if (cell.getWidth() === 0) continue;
+      const underlined = cellUnderline(cell);
       const content = cell.getChars();
       if (content === '') {
         // An untouched cell. It reads as a space, which is what makes it a
         // token boundary for the detector.
         chars.push(' ');
-        cells.push({ x, y });
+        cells.push({ x, y, u: underlined });
         continue;
       }
       // Pushed per UTF-16 code unit, not per code point, so that string offsets
       // from the detector index this array directly.
       for (let k = 0; k < content.length; k++) {
         chars.push(content.charAt(k));
-        cells.push({ x, y });
+        cells.push({ x, y, u: underlined });
       }
     }
     if (chars.length >= MAX_SCAN_CHARS) break;
@@ -877,20 +918,31 @@ export function scanBufferLine(term: Terminal, bufferLineNumber: number): Scanne
     // with them: an `isWrapped` row is full by definition and never gets here,
     // rule 1 fires only on a row whose last column is occupied, and rule 1b
     // leaves behind nothing but the wrap's own blank columns.
+    //
+    // What CAN be lost is the fill's underline attribute — the thirteenth
+    // report's CLI underlines the fill after its cut, and a fragment ending at
+    // the cut must still be able to claim that underlined stretch ({@link
+    // linksPerRow}). The last underlined column of the dropped run is
+    // remembered, not the cells.
+    let tailUnderline = -1;
     while (chars.length > 0 && chars[chars.length - 1] === ' ') {
+      const dropped = cells.pop();
       chars.pop();
-      cells.pop();
+      if (dropped !== undefined && dropped.u && dropped.x > tailUnderline) {
+        tailUnderline = dropped.x;
+      }
     }
+    if (tailUnderline >= 0) underlineTails.set(y, tailUnderline);
     skip = continues;
     joined++;
     y++;
   }
 
-  return { text: chars.join(''), cells };
+  return { text: chars.join(''), cells, underlineTails };
 }
 
 /**
- * The ILinks for one detector match: one per ROW its cells sit on, every one
+ * The ILinks for one detector match: one per ROW a match sits on, every one
  * opening the whole match.
  *
  * A match that spans rows cannot be reported as ONE link spanning them.
@@ -908,6 +960,24 @@ export function scanBufferLine(term: Terminal, bufferLineNumber: number): Scanne
  *
  * Each fragment still opens the WHOLE match: `build` receives the fragment's
  * text and range and closes over the match itself.
+ *
+ * ## Where a fragment may end past its own text
+ *
+ * Not every stretch of bare cells after a cut may stay bare. The thirteenth
+ * report's CLI underlines its attachment paths and paints the row's remaining
+ * fill with the attribute still active, so at rest the underline runs from the
+ * path through empty space to the pane's edge — and a fragment ending at the
+ * text leaves most of what the user sees underlined a DEAD ZONE: the click
+ * lands on nothing, and the feature reads broken precisely where it worked.
+ * The claim therefore extends through trailing cells that are spaces AND carry
+ * the underline attribute — the exact stretch the CLI itself presents as part
+ * of its link — and stops at the first plain cell, so the padding of a CLI
+ * that underlines only its text (every report before this one) is left bare
+ * exactly as before. Hover cannot repaint what is already underlined, so the
+ * hover view does not change either; only the hit-testing follows the
+ * underline. For a row whose fill was dropped by a join ({@link
+ * scanBufferLine}) the dropped run's last underlined column is consulted
+ * instead ({@link ScannedLine.underlineTails}).
  */
 function linksPerRow(
   scanned: ScannedLine,
@@ -925,12 +995,33 @@ function linksPerRow(
     if (i < end && scanned.cells[i]?.y === scanned.cells[i - 1]?.y) continue;
     const first = scanned.cells[from];
     const last = scanned.cells[i - 1];
-    if (first === undefined || last === undefined) continue;
+    if (first === undefined || last === undefined) {
+      from = i;
+      continue;
+    }
+    // The underlined-fill extension ([linksPerRow]): past the fragment's last
+    // content cell, through spaces wearing the underline attribute, never
+    // through a plain cell — a second path later on the same row keeps its own
+    // cells, underlined separator or not.
+    let endX = last.x;
+    for (let j = i; j < scanned.cells.length; j++) {
+      const cell = scanned.cells[j];
+      if (cell === undefined || cell.y !== last.y || !cell.u || scanned.text.charAt(j) !== ' ') {
+        break;
+      }
+      endX = cell.x;
+    }
+    // A joined row's fill is not in the array at all — the drop that kept the
+    // glued token whole took it — so its underlined stretch is read from the
+    // tail the flattening remembered. The two sources are disjoint: a row
+    // whose fill stayed in the array has no tail entry.
+    const tail = scanned.underlineTails.get(last.y);
+    if (tail !== undefined && tail > endX) endX = tail;
     links.push(
       build(scanned.text.slice(from, i), {
         // xterm's range is 1-based and inclusive at both ends.
         start: { x: first.x + 1, y: first.y + 1 },
-        end: { x: last.x + 1, y: last.y + 1 },
+        end: { x: endX + 1, y: last.y + 1 },
       }),
     );
     from = i;
