@@ -987,4 +987,8 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput });
 .terminal :deep(.xterm-screen > style) {
   display: none !important;
 }
+/* Inverse-video DEFAULT cells: xterm's contrast checker measures the swapped ink against itself and rewrites it inline to a ~3:1 gray — the aplexer status bar's washout. This restates the xterm-fg-257 rule it short-circuits, with var(--term-bg) the theme ink by the parity gate. Mechanism and the audit pinning the 257 constant: tests/terminalInverseContrast.test.ts */
+.terminal :deep(.xterm-bg-257:not(.xterm-dim)) {
+  color: var(--term-bg) !important;
+}
 </style>

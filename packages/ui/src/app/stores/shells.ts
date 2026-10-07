@@ -1,6 +1,16 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { ShellId } from '@pocketshell/core';
+import type { PaneScrollProbe, ShellId } from '@pocketshell/core';
+
+/**
+ * What a pane publishes beside its PTY id: a way to ask the PANE a question a
+ * sender needs answered at write time. The first one exists because aplexer's
+ * pager holds the keyboard invisibly — the pane reads its own status bar; the
+ * composer asks before it writes.
+ */
+export interface ShellPaneProbe {
+  scrollProbe: () => PaneScrollProbe;
+}
 
 /**
  * Shell registry: which live PTY belongs to which session.
@@ -71,10 +81,21 @@ import type { ShellId } from '@pocketshell/core';
 export const useShellsStore = defineStore('shells', () => {
   /** sessionKey -> the ShellId currently attached to it. */
   const byKey = ref<Record<string, ShellId>>({});
+  /**
+   * sessionKey -> the pane's probe, published at register time.
+   *
+   * A plain map on purpose: a probe is a closure into its pane's terminal, and
+   * nothing renders from it — it is read once per send, at the send moment.
+   * Dropping it travels with the key's lifecycle (unregister, clear), so a
+   * re-pointed or gone pane can never be asked.
+   */
+  const probes = new Map<string, ShellPaneProbe>();
 
-  function register(key: string, shellId: ShellId): void {
+  function register(key: string, shellId: ShellId, probe?: ShellPaneProbe): void {
     if (!key) return;
     byKey.value = { ...byKey.value, [key]: shellId };
+    if (probe) probes.set(key, probe);
+    else probes.delete(key);
   }
 
   /** Drop a key's shell. A no-op when `shellId` is no longer the current one. */
@@ -86,15 +107,22 @@ export const useShellsStore = defineStore('shells', () => {
     const next = { ...byKey.value };
     delete next[key];
     byKey.value = next;
+    probes.delete(key);
   }
 
   function shellIdFor(key: string): ShellId | null {
     return byKey.value[key] ?? null;
   }
 
-  function clear(): void {
-    byKey.value = {};
+  /** The pane's probe, when one is published and the key still lives. */
+  function pagerProbeFor(key: string): (() => PaneScrollProbe) | null {
+    return probes.get(key)?.scrollProbe ?? null;
   }
 
-  return { byKey, register, unregister, shellIdFor, clear };
+  function clear(): void {
+    byKey.value = {};
+    probes.clear();
+  }
+
+  return { byKey, register, unregister, shellIdFor, pagerProbeFor, clear };
 });

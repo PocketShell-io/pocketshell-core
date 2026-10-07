@@ -9,7 +9,71 @@ import {
   repairIncompleteViewport,
   resumeWriteBufferAfterError,
 } from './xtermWriteBuffer';
-import { sessionOutlivedClient, type ConnectionId, type GeometryProbe, type ShellId } from '@pocketshell/core';
+import { sessionOutlivedClient, type ConnectionId, type GeometryProbe, type PaneScrollProbe, type ShellId } from '@pocketshell/core';
+
+// ---------------------------------------------------------------------------
+// Aplexer's pager, read off its status bar
+// ---------------------------------------------------------------------------
+
+/**
+ * What the pane can say about the pager's keyboard, parsed from one bar row.
+ */
+export interface PanePagerRead {
+  /**
+   * The pager is up and has the keyboard: every byte the pane writes would be
+   * swallowed by it (aplexer scroll_input.rs — "Pager keys never reach the
+   * workload").
+   */
+  paged: boolean;
+  /**
+   * Type-through (`i`): the bar is the pager's but the keyboard is back at the
+   * session, so a payload needs no exit — and must not get one, which would
+   * spray arrows at the agent's prompt.
+   */
+  typing: boolean;
+  /**
+   * Lines the pager sits above the live screen, when the bar carried the
+   * position (`SCROLL n/total`). Null on the narrowed fallbacks (`SCROLL · q`),
+   * where the delivery takes the bounded blind sweep instead.
+   */
+  offsetLines: number | null;
+}
+
+/**
+ * Read aplexer's attach status bar and say what it is doing with the keyboard.
+ *
+ * The pager repaints the reserved bottom row with the mode word and position —
+ * `SCROLL 9/214 · PgUp/PgDn ↑↓ Home/End · q live …` — and this is the ONLY
+ * signal the far side offers: pager state is host state no protocol exposes,
+ * and the bar is drawn to be read. The markers are chosen against
+ * aplexer/status_bar.rs (`scroll_bar_text`) so they cannot collide with the
+ * live bar, which leads with `workspace:tag` and a state word and writes its
+ * key hints lower-case (`[ scroll`): the pager word is upper-case with a
+ * position or the `· q` fallback, and nothing in a live bar matches either.
+ * A pathological workspace path could still fake it, and the cost of a false
+ * yes is bounded by design: the exit walk lands at a live prompt as
+ * PageDown/Down no-ops, ahead of a payload that arrives exactly as before.
+ */
+export function readPagerBar(barText: string): PanePagerRead {
+  // `SCROLL 9/214` — the position readout every pager bar leads with. The
+  // leading separator keeps a workspace literally named ".../SCROLL/..." from
+  // reading as the mode: the bar's own word is followed by the numbers.
+  const position = /(?:^| )SCROLL (\d+)\/\d+/.exec(barText);
+  if (position) {
+    return {
+      paged: true,
+      // ` · TYPE` is the type-through suffix's first words (" · TYPE — keys go
+      // to the session · Esc back to paging"), trimmed but never dropped —
+      // and spelled with the separator no live-bar segment uses.
+      typing: barText.includes(' · TYPE'),
+      offsetLines: Number(position[1]),
+    };
+  }
+  // The narrowed fallback keeps the mode word and the way out and drops the
+  // numbers (`fit_bar_text`'s contract); position unknown, sweep at exit.
+  if (/(?:^| )SCROLL ·/.test(barText)) return { paged: true, typing: false, offsetLines: null };
+  return { paged: false, typing: false, offsetLines: null };
+}
 
 /** What the pane needs from its mounting component, read at call time. */
 export interface TerminalPaneDeps {
@@ -367,7 +431,12 @@ export class TerminalPane {
     // workspace-qualified registry key, so same-named aplexer tags in different
     // folders never share a registration.
     this.registeredKey = this.deps.getRegistryKey();
-    this.deps.shells.register(this.registeredKey, result.shellId);
+    this.deps.shells.register(this.registeredKey, result.shellId, {
+      // Publish the pager probe beside the PTY id: the composer already
+      // addresses the pane through this registry, and a send is the one
+      // moment the pager's hold on the keyboard matters.
+      scrollProbe: () => this.scrollProbe(),
+    });
     // The client-exit re-join's stability clock restarts on every adopted
     // shell, re-point or fresh join alike.
     this.shellAttachedAt = Date.now();
@@ -454,6 +523,27 @@ export class TerminalPane {
     this.endJoinPending();
     this.repairTerminalBufferIfNeeded();
     this.stallMonitor?.write(term, data);
+  }
+
+  /**
+   * What aplexer's attach client is doing with the keyboard, read fresh off
+   * the pane's own screen. The pager publishes itself by repainting the
+   * reserved bottom row (`readPagerBar`), so one line read answers what no
+   * protocol exposes — and the answer is CURRENT, which matters because the
+   * state flips under the user's wheel without this side hearing about it.
+   * A pane with no terminal cannot be paged.
+   */
+  private scrollProbe(): PaneScrollProbe {
+    const term = this.term;
+    if (!term) return { paged: false, offsetLines: null, rows: 0 };
+    const rows = term.rows;
+    const bar = term.buffer.active.getLine(rows - 1)?.translateToString(true) ?? '';
+    const pager = readPagerBar(bar);
+    return {
+      paged: pager.paged && !pager.typing,
+      offsetLines: pager.offsetLines,
+      rows,
+    };
   }
 
   /** Live facts a stall report needs, read at stall time, not at bind time. */

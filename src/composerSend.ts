@@ -103,6 +103,104 @@ export function composerPayloadSegments(payload: string): string[] {
   return needsBracketedPaste(payload) ? [BP_START, payload, BP_END] : [payload];
 }
 
+// ---------------------------------------------------------------------------
+// Leaving the remote scroll mode before a send
+// ---------------------------------------------------------------------------
+
+/**
+ * Aplexer's attach client has a scrollback pager (`Ctrl-b [`, or a wheel roll
+ * over ordinary output), and while it is up "every byte is consumed,
+ * navigation or not" (aplexer scroll_input.rs) — a prompt delivered into the
+ * pager is simply gone, which is the report this section exists for. The pager
+ * hands the keyboard back when a downward command lands at the bottom
+ * (`apply_scroll_command`: `downward && view.offset == 0` exits the mode, the
+ * way every pager the user has ever used behaves), so the exit is a walk DOWN:
+ * PageDowns for the bulk, Downs for the remainder, one Down past the bottom to
+ * leave. `q` would also exit, but at a live prompt it types a literal `q`
+ * ahead of the prompt — arrows are no-ops there, so the walk is the one
+ * spelling that is safe to send on a stale suspicion.
+ */
+
+/** CSI Down — one line toward the bottom, in the pager and at any prompt. */
+export const ARROW_DOWN_KEY = '\x1b[B';
+/** CSI PageDown — one screen toward the bottom in the pager. */
+export const PAGE_DOWN_KEY = '\x1b[6~';
+
+/**
+ * The gap after an exit write, before the payload may follow. Aplexer
+ * discards the REST of the read chunk that closed the pager ("the rest of the
+ * keystroke you were reading with lands in your agent's prompt is the exact
+ * failure this mode exists to prevent"), so the exit keys and the payload must
+ * not share a chunk — and chunks coalesce below ~50 ms of separation, which is
+ * the measured lesson {@link PASTE_GAP_MS} encodes. Same floor, own name,
+ * because the failure it prevents is a different one.
+ */
+export const SCROLL_EXIT_GAP_MS = PASTE_GAP_MS;
+
+/** Exit attempts before giving the pager up as stuck and sending anyway. */
+export const SCROLL_EXIT_ATTEMPTS = 3;
+
+/**
+ * The blind sweep for a pager whose bar showed no position (a narrowed
+ * fallback like `SCROLL · q`): sixty screens of PageDown covers a full default
+ * history (`APLEXER_HISTORY_LIMIT` 2000 lines) at any normal pane height, and
+ * whatever the sweep reaches past exits the pager mid-write — the rest of the
+ * chunk is discarded, so the overshoot never reaches the session.
+ */
+export const SCROLL_EXIT_SWEEP_PAGES = 64;
+export const SCROLL_EXIT_SWEEP_LINES = 64;
+
+/**
+ * What a pane can answer about the scroll mode that may be holding its
+ * keyboard. Read fresh at send time — the pager is host state this side
+ * cannot otherwise see.
+ */
+export interface PaneScrollProbe {
+  /**
+   * True only while the pager has the keyboard: not live, and not
+   * type-through (`i`), where the keys already reach the session and the
+   * payload needs no exit.
+   */
+  paged: boolean;
+  /**
+   * The pager's distance above the live screen in lines, when its status bar
+   * showed the position (`SCROLL n/total`). Null — take the blind sweep —
+   * when the bar was too narrow to carry it.
+   */
+  offsetLines: number | null;
+  /** The pane's viewport rows, which size the PageDown jumps. */
+  rows: number;
+}
+
+/**
+ * The exact exit write for one probe answer: PageDowns to burn the bulk of the
+ * offset one screen at a time, Downs for the last few lines, and one Down past
+ * the bottom, which is the press that leaves the mode. The pager repaints once
+ * per key, so the count is the probe's position rather than a fixed barrage —
+ * and it is exact, because the last Down is the exit, not another page.
+ */
+export function scrollExitKeys(offsetLines: number | null, rows: number): string {
+  if (
+    offsetLines === null ||
+    !Number.isFinite(offsetLines) ||
+    offsetLines < 0 ||
+    rows < 2
+  ) {
+    return (
+      PAGE_DOWN_KEY.repeat(SCROLL_EXIT_SWEEP_PAGES) +
+      ARROW_DOWN_KEY.repeat(SCROLL_EXIT_SWEEP_LINES)
+    );
+  }
+  const offset = Math.floor(offsetLines);
+  // The pager pages over the rows above its reserved status bar, so one page
+  // is one row short of the pane — never zero, or the division below repeats
+  // forever.
+  const page = Math.max(1, rows - 1);
+  const pages = Math.floor(offset / page);
+  const lines = offset - pages * page;
+  return PAGE_DOWN_KEY.repeat(pages) + ARROW_DOWN_KEY.repeat(lines + 1);
+}
+
 /** Encode JavaScript text as UTF-8 without depending on DOM or Node globals. */
 export function encodeComposerText(text: string): Uint8Array {
   const bytes: number[] = [];
@@ -359,6 +457,17 @@ export interface DeliverOptions {
   submitDelayMs?: number;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Asked — and re-asked — before the payload goes out. While it answers
+   * `paged`, one exit write per attempt walks the pager to its bottom, a
+   * {@link SCROLL_EXIT_GAP_MS} gap follows (the chunk that closed the pager
+   * swallows whatever trails it), and the answer is read again: a pager that
+   * sat deeper than the first walk gets a second. Bounded by
+   * {@link SCROLL_EXIT_ATTEMPTS}; a pager that outlives them all gets the
+   * payload anyway, which is the same outcome as not asking — just after a
+   * genuine effort.
+   */
+  probeScroll?: () => PaneScrollProbe;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -367,18 +476,28 @@ const defaultSleep = (ms: number): Promise<void> =>
   });
 
 /**
- * Write one composed prompt to a PTY: framed body, pause, submit key.
+ * Write one composed prompt to a PTY: exit the pager if it is up, then the
+ * framed body, pause, submit key.
  *
  * The bracketed frame crosses the wire as three writes — START, body, END —
  * with `PASTE_GAP_MS` between them, because a single-write paste loses its
  * head to the shell's escape parser (module header). Returns false without
- * pressing Enter when a write fails. A failed write can still be partial; new
- * clients should use `ComposerDeliveryController` to distinguish uncertainty
- * and retain the draft explicitly.
+ * pressing Enter when a write fails — including the scroll-exit walk, which
+ * fails before any payload byte exists to be half-delivered. A failed write
+ * can still be partial; new clients should use `ComposerDeliveryController`
+ * to distinguish uncertainty and retain the draft explicitly.
  */
 export async function deliverPayload(payload: string, opts: DeliverOptions): Promise<boolean> {
   const delay = opts.submitDelayMs ?? composerTiming.submitDelayMs;
   const sleep = opts.sleep ?? defaultSleep;
+  if (opts.probeScroll) {
+    for (let attempt = 0; attempt < SCROLL_EXIT_ATTEMPTS; attempt += 1) {
+      const probe = opts.probeScroll();
+      if (!probe.paged) break;
+      if (!(await opts.write(scrollExitKeys(probe.offsetLines, probe.rows)))) return false;
+      await sleep(SCROLL_EXIT_GAP_MS);
+    }
+  }
   const parts = composerPayloadSegments(payload);
   for (const [i, part] of parts.entries()) {
     if (!(await opts.write(part))) return false;

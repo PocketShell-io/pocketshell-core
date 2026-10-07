@@ -54,6 +54,11 @@ export function useComposerSend(deps: ComposerSendDeps): {
     // the gap Codex's TUI needs before Enter (TmuxSessionViewModel.kt:12135),
     // so every route keeps its shipped timing until the user moves it.
     const submitDelayMs = settings.submitEnterDelayMs;
+    // The pane's pager probe, read at gesture time. Aplexer's scrollback pager
+    // swallows every byte while it is up, so a prompt typed into it is simply
+    // lost — the send below asks the pane and leaves the pager first when the
+    // answer says so. Null from a bare or probe-less pane: deliver as always.
+    const probeScroll = deps.shells.pagerProbeFor(sessionKey.value) ?? undefined;
 
     const delivered = await composer.send(
       k,
@@ -67,6 +72,7 @@ export function useComposerSend(deps: ComposerSendDeps): {
           // so a stale id can refuse instead of writing into a stranger's pane.
           write: (data) => api.shell.input(shellId, data, deps.props.sessionName, deps.props.workspace ?? undefined),
           submitDelayMs,
+          probeScroll,
         });
       },
       { closeOnDelivery: settings.closeComposerOnSend },
