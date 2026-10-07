@@ -37,17 +37,60 @@ export interface SyncApplyResult {
 }
 
 /**
+ * Whether a host object carries a PRESENT gateway transport marker — an own
+ * `gateway` property, whatever its value: a valid target, null, or a shape
+ * this build does not understand.
+ *
+ * Presence is the whole contract for the unsupported-platform guard (issue
+ * #3059): a client without gateway support refuses on presence alone and
+ * never inspects, normalizes, or guesses the marker's shape, so a malformed
+ * or future-shaped marker can never degrade into an ordinary SSH dial. An
+ * entry carrying BOTH `link` and `gateway` refuses too — the conflict is
+ * resolved by refusing, never by falling back to the link transport.
+ */
+export function hasGatewayMarker(host: object): boolean {
+  return Object.prototype.hasOwnProperty.call(host, 'gateway');
+}
+
+/** The outcome of {@link coerceHostEntries}. */
+export type CoercedHostEntries =
+  | { kind: 'ok'; hosts: HostEntry[] }
+  | { kind: 'invalid' }
+  | {
+      kind: 'gateway-unsupported';
+      /** Position of the refusing entry in the input array. */
+      index: number;
+      /** The entry's `name` when it has a usable one, for the error copy. */
+      name: string | null;
+    };
+
+/**
  * Host entries arriving over IPC for the config write-back, degraded per
  * entry: an entry that is not a usable Host directive is dropped, the rest
  * are kept. The renderer is our code, but `sync:applyHosts` is the one
  * channel whose payload reaches a user file on disk, so its input is treated
  * as data, not as trusted shape (same posture as the update URL allow-list).
+ *
+ * A gateway entry is never coerced: any entry with a present gateway marker
+ * (see {@link hasGatewayMarker}) refuses the call with `gateway-unsupported`
+ * instead of being written back as an ordinary `Host` block — the marker says
+ * the host dials through the gateway, and an ordinary block would turn that
+ * intent into a plain SSH address (a HostName downgrade). Callers refuse the
+ * whole batch: nothing is written when any entry refuses.
  */
-export function coerceHostEntries(raw: unknown): HostEntry[] | null {
-  if (!Array.isArray(raw)) return null;
+export function coerceHostEntries(raw: unknown): CoercedHostEntries {
+  if (!Array.isArray(raw)) return { kind: 'invalid' };
   const out: HostEntry[] = [];
-  for (const entry of raw) {
+  for (const [index, entry] of raw.entries()) {
     if (typeof entry !== 'object' || entry === null) continue;
+    if (hasGatewayMarker(entry)) {
+      const marker = entry as Record<string, unknown>;
+      return {
+        kind: 'gateway-unsupported',
+        index,
+        name: typeof marker['name'] === 'string' && marker['name'] !== '' ? marker['name'] : null,
+      };
+    }
     const e = entry as Record<string, unknown>;
     const name = typeof e['name'] === 'string' ? e['name'].trim() : '';
     const hostname = typeof e['hostname'] === 'string' ? e['hostname'].trim() : '';
@@ -67,7 +110,7 @@ export function coerceHostEntries(raw: unknown): HostEntry[] | null {
       fromConfig: true,
     });
   }
-  return out;
+  return { kind: 'ok', hosts: out };
 }
 
 function coerceForwards(raw: unknown, kind: 'local' | 'remote'): HostEntry['localForwards'] {

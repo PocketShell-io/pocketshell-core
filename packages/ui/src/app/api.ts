@@ -157,6 +157,19 @@ export interface PocketShellApi {
         privateKey?: string;
         passphrase?: string;
         tofuDecision?: 'accept-always' | 'accept-once' | 'reject';
+        /**
+         * The host entry's transport markers, preserved VERBATIM from the
+         * entry the dial came from — never normalized or repaired, so a
+         * malformed value stays malformed on the way to the platform.
+         * Absent keys mean an ordinary host: the shared store adds these
+         * members only when the entry actually carries the marker (issue
+         * #3059). The platform boundary decides support: a gateway marker
+         * (`gateway`, any value — null and malformed included) on a platform
+         * without gateway support must refuse the dial there, before any
+         * credential is loaded or socket opened.
+         */
+        link?: unknown;
+        gateway?: unknown;
       }) => Promise<ConnectResult>;
     "exec": (connectionId: string, command: string) => Promise<ExecResult>;
     "close": (connectionId: string) => Promise<boolean>;
