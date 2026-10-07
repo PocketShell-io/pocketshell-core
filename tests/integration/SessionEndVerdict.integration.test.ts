@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { GenericContainer, type StartedTestContainer } from 'testcontainers';
-import type { ClientChannel } from 'ssh2';
+import type { Client, ClientChannel } from 'ssh2';
 import {
   HostCliCore,
   sessionOutlivedClient,
@@ -31,6 +31,10 @@ import { connectSsh, describeDocker, execTransport, type SshHandle } from './hel
  * contract every platform's PTY transport must keep (the Android plugin's
  * guard, #3039).
  */
+
+/** The test-only debug sshd's -E log and pidfile inside its own container. */
+const DEBUG_SSHD_LOG = '/tmp/sshd-3039-debug.log';
+const DEBUG_SSHD_PIDFILE = '/tmp/sshd-3039.pid';
 
 interface AttachedClient {
   channel: ClientChannel;
@@ -78,66 +82,33 @@ async function waitFor<T>(what: string, pending: Promise<T>, ms: number): Promis
   }
 }
 
-/** A bare exec channel, used to observe the server's channel-id allocation. */
-function probeChannel(on: SshHandle): Promise<{
-  remoteId: number;
-  exited: Promise<{ exitCode: number | null }>;
-}> {
-  return new Promise((resolve, reject) => {
-    on.conn.exec('true', (error, channel) => {
-      if (error) return reject(error);
-      let exitCode: number | null = null;
-      channel.on('exit', (code: number | null) => {
-        exitCode = code;
-      });
-      channel.resume();
-      channel.stderr.resume();
-      const exited = new Promise<{ exitCode: number | null }>((done) => {
-        channel.on('close', () => done({ exitCode }));
-      });
-      resolve({ remoteId: (channel as unknown as { outgoing: { id: number } }).outgoing.id, exited });
-    });
-  });
+/** The ssh2 wire-protocol writer this hazard spec injects channel requests with. */
+function protocolOf(conn: Client): {
+  windowChange(id: number, rows: number, cols: number, width: number, height: number): void;
+  channelClose(id: number): void;
+} {
+  return (conn as unknown as {
+    _protocol: {
+      windowChange(id: number, rows: number, cols: number, width: number, height: number): void;
+      channelClose(id: number): void;
+    };
+  })._protocol;
 }
 
 /**
- * Observe — with no sshd debug logging — that the server has REAPED the slot
- * of a closed channel, before the pinned late request may target it.
- *
- * sshd hands a new channel the LOWEST free slot, and it frees a closed
- * channel only on a later event-loop pass, not when it processes the client's
- * CHANNEL_CLOSE. So after the late channel (server id `freedId`) has closed
- * on both sides, run exec probes and watch which server id each is handed:
- * a probe that comes back with a DIFFERENT id proves the slot was reaped by
- * the time that probe exited — its dispatch and exec round trips are what
- * let a reaping pass run after the late channel's close — and, crucially,
- * the probe is not HOLDING freedId, and no channel opens after it, so the
- * slot stays free. A probe handed freedId ITSELF proves the slot was already
- * reaped but re-occupies it, so it must exit and another probe observes.
- * Injecting on the client's local close alone raced the reaping pass and was
- * absorbed — an sshd -ddd capture of this exact sequence shows `rcvd close`
- * → a later `channel N: free` → only then `server_input_channel_req:
- * unknown channel` — which is why this spec used to hang.
+ * End a victim connection without leaking it: a graceful `end()` gets a
+ * bounded chance; if the timeout fires, the underlying socket is destroyed
+ * for real — and if even that leaves the connection open, the error
+ * propagates instead of being swallowed.
  */
-async function observeServerChannelFree(
-  on: SshHandle,
-  freedId: number,
-  attempts = 4,
-): Promise<{ reaped: boolean; observed: string }> {
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const probe = await probeChannel(on);
-    const done = await waitFor(`probe ${attempt} (server channel ${probe.remoteId}) to exit`, probe.exited, 10_000);
-    if (probe.remoteId !== freedId) {
-      return {
-        reaped: true,
-        observed: `probe was handed server channel ${probe.remoteId}, not the late channel's ${freedId}, and exited (code ${done.exitCode}) after the late channel closed: the slot was reaped and stays free`,
-      };
-    }
+async function endVictimConnection(conn: Client, closed: Promise<void>): Promise<void> {
+  conn.end();
+  try {
+    await waitFor('the victim connection to close', closed, 5_000);
+  } catch {
+    conn.destroy();
+    await waitFor('the victim connection to close after socket destroy', closed, 5_000);
   }
-  return {
-    reaped: false,
-    observed: `every one of ${attempts} probes was handed the late channel's slot ${freedId} itself; no probe observed it reaped and free`,
-  };
 }
 
 function hostCliTransport(handle: SshHandle): HostCliTransport {
@@ -150,6 +121,7 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
   let handle: SshHandle;
   let cli: HostCliCore;
   let home: string;
+  let debugSshd: StartedTestContainer | undefined;
 
   const run = async (command: string) => execTransport(handle).exec(command);
 
@@ -160,7 +132,7 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     const id = JSON.parse(started.stdout).id as string;
     expect(id).toBeTruthy();
     const name = `${home.split('/').pop()}:${tag}`;
-    const client = await attachPty(handle, cli.buildAttachCommand(name));
+    const client = await waitFor(`the attach channel for ${name} to open`, attachPty(handle, cli.buildAttachCommand(name)), 15_000);
     await waitFor(`the attached client ${name} to paint (attach readiness)`, client.ready, 15_000);
     return { id, name, client };
   }
@@ -187,6 +159,7 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
 
   afterAll(async () => {
     handle?.close();
+    if (debugSshd) await debugSshd.stop();
     if (container) await container.stop();
   });
 
@@ -212,7 +185,7 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     const { id, name, client } = await startAndAttach(tag);
     await waitFor(`a kill ${id} to complete`, run(`a kill ${id}`), 15_000);
     await waitFor('the attach client to exit at the kill', client.exited, 20_000);
-    const ghost = await attachPty(handle, cli.buildAttachCommand(name));
+    const ghost = await waitFor('the ghost attach channel to open', attachPty(handle, cli.buildAttachCommand(name)), 15_000);
     expect(ghost.remoteId).toBeGreaterThanOrEqual(0);
     const ghostExit = await waitFor('the ghost attach to exit', ghost.exited, 20_000);
     expect(ghostExit.exitCode).not.toBe(0);
@@ -229,7 +202,7 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     expect(await verdictAfterExit(id, tag)).toBe(true);
 
     // The re-join the verdict allows really reaches the live workload.
-    const again = await attachPty(handle, cli.buildAttachCommand(name));
+    const again = await waitFor('the re-joined attach channel to open', attachPty(handle, cli.buildAttachCommand(name)), 15_000);
     const marker = `PS3039_${Date.now().toString(36)}`;
     let screen = '';
     again.channel.on('data', (chunk: Buffer) => {
@@ -247,70 +220,188 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
   }, 60_000);
 
   it('pins the platform hazard: a channel request after the channel is gone drops the whole connection', async () => {
-    // A second connection of its own: this spec ends it on purpose.
-    const victim = await connectSsh(container!.getHost(), container!.getMappedPort(22));
-    const errors: string[] = [];
-    victim.conn.on('error', (error: Error) => errors.push(error.message));
-    const closed = new Promise<void>((resolve) => victim.conn.on('close', () => resolve()));
-    const protocol = (victim.conn as unknown as {
-      _protocol: { windowChange(id: number, rows: number, cols: number, h: number, w: number): void; channelClose(id: number): void };
-    })._protocol;
-    const realClose = protocol.channelClose.bind(protocol);
+    // The late half runs against a disposable TEST-ONLY debug sshd — the same
+    // helper image, its sshd started with LogLevel=DEBUG3 and an -E log — so
+    // the pinned injection is gated on the SERVER'S OWN `channel N: free`
+    // line, not on a channel-id probe. (A probe handed a different id proved
+    // only that ANOTHER channel was allocated — the late channel's slot may
+    // still exist — and a probe handed the id itself re-occupies it; probe
+    // ids seen alternating 1,0,1,0 made exactly that ambiguity visible.)
+    // The early half stays on the primary container: it pins the absorbed
+    // ordering (request dispatched before our CLOSE) and needs no log.
+    debugSshd = await waitFor(
+      'the dedicated debug sshd container to start',
+      new GenericContainer('pocketshell-core-test:helper')
+        .withExposedPorts(22)
+        .withCommand(['/bin/sh', '-c',
+          `exec /usr/sbin/sshd -D -E ${DEBUG_SSHD_LOG} -o LogLevel=DEBUG3 -o PidFile=${DEBUG_SSHD_PIDFILE}`])
+        .start(),
+      60_000,
+    );
+    const debugHost = debugSshd.getHost();
+    const debugPort = debugSshd.getMappedPort(22);
+    const fixture = await waitFor(
+      'the debug sshd fixture version capture',
+      debugSshd.exec(['sh', '-c',
+        'apk list --installed 2>/dev/null | grep -m1 ^openssh-server-; cat /etc/alpine-release; a --version 2>&1 | head -1; cat ' + DEBUG_SSHD_PIDFILE]),
+      15_000,
+    );
+    console.log('[#3039] debug sshd fixture (openssh-server / alpine / a / listener pid):\n' + fixture.stdout.trim());
+
+    // 1. Between the host's CLOSE and ours the channel still exists on the
+    //    host: a window-change sent there is harmless.
+    const earlyVictim = await waitFor(
+      'the early-phase victim connection to open',
+      connectSsh(container!.getHost(), container!.getMappedPort(22)),
+      15_000,
+    );
+    const earlyErrors: string[] = [];
+    earlyVictim.conn.on('error', (error: Error) => earlyErrors.push(error.message));
+    const earlyVictimClosed = new Promise<void>((resolve) => earlyVictim.conn.on('close', () => resolve()));
+    const earlyProtocol = protocolOf(earlyVictim.conn);
+    const earlyRealClose = earlyProtocol.channelClose.bind(earlyProtocol);
     try {
-      // 1. Between the host's CLOSE and ours the channel still exists on the
-      //    host: a window-change sent there is harmless.
       const tagEarly = `early-${Date.now().toString(36)}`;
-      const early = await startAndAttachOn(victim, tagEarly);
+      const early = await startAndAttachOn(earlyVictim, tagEarly);
       let sentBeforeOurClose = false;
-      protocol.channelClose = (id: number) => {
-        protocol.windowChange(early.remoteId, 30, 100, 0, 0);
+      earlyProtocol.channelClose = (id: number) => {
+        earlyProtocol.windowChange(early.remoteId, 30, 100, 0, 0);
         sentBeforeOurClose = true;
-        realClose(id);
+        earlyRealClose(id);
       };
       try {
         await waitFor(`a kill ${early.id} to complete`, run(`a kill ${early.id}`), 15_000);
         await waitFor('the early channel to close client-side', early.client.exited, 20_000);
       } finally {
         // The override exists only for the early channel's teardown — never
-        // leak it into the second half, on a failure path either.
-        protocol.channelClose = realClose;
+        // leak it into the late half, on a failure path either.
+        earlyProtocol.channelClose = earlyRealClose;
       }
       expect(sentBeforeOurClose).toBe(true);
-      const stillUp = await waitFor('the healthy probe after the early window-change', execTransport(victim).exec('echo alive'), 10_000);
+      const stillUp = await waitFor('the healthy probe after the early window-change', execTransport(earlyVictim).exec('echo alive'), 10_000);
       expect(stillUp.stdout.trim()).toBe('alive');
-      expect(errors).toEqual([]);
+      expect(earlyErrors).toEqual([]);
+    } finally {
+      await endVictimConnection(earlyVictim.conn, earlyVictimClosed);
+    }
 
-      // 2. After both CLOSEs the host has freed the channel: the same request
-      //    now ends the connection — #3039's exact reconnect reason. "Freed"
-      //    is observed on the SERVER, never assumed from our local close:
-      //    sshd reaps the closed channel only on a later event-loop pass, so
-      //    a request dispatched before that pass is absorbed — the benign
-      //    race this spec used to lose, hanging on a drop that never came.
-      const tagLate = `late-${Date.now().toString(36)}`;
-      const late = await startAndAttachOn(victim, tagLate);
-      await waitFor(`a kill ${late.id} to complete`, run(`a kill ${late.id}`), 15_000);
-      const lateChannelExits = await waitFor('the late channel to close client-side', late.client.exited, 20_000);
+    // 2. After the host reclaims the channel, the same request ends the
+    //    connection — #3039's exact reconnect reason. Connections to the
+    //    debug sshd are strictly SERIAL so its log regions never interleave:
+    //    a controller connection starts the session and hangs up, then the
+    //    victim connection carries the attach (its only PTY) and the
+    //    `a kill` exec, so the late channel is ONE lifecycle of ONE id inside
+    //    the victim's own log region.
+    const tagLate = `late-${Date.now().toString(36)}`;
+    const controller = await waitFor('the debug controller connection to open', connectSsh(debugHost, debugPort), 15_000);
+    const controllerClosed = new Promise<void>((resolve) => controller.conn.on('close', () => resolve()));
+    let debugHome = '';
+    let lateId = '';
+    try {
+      debugHome = (await waitFor('the debug home capture', execTransport(controller).exec('echo $HOME'), 15_000)).stdout.trim();
+      const started = await waitFor(
+        `a start --tag ${tagLate} to complete (debug sshd)`,
+        execTransport(controller).exec(`a start --workspace ${debugHome} --tag ${tagLate} --json`),
+        15_000,
+      );
+      expect(started.exitCode, started.stderr).toBe(0);
+      lateId = JSON.parse(started.stdout).id as string;
+      expect(lateId).toBeTruthy();
+
+      // PID correlation: a session shell's sshd ancestor chain must reach the
+      // debug sshd itself — the listener whose -E log this spec is about to
+      // read is the same process tree serving these connections.
+      const shellPpid = (await waitFor('the session shell ppid capture', execTransport(controller).exec('echo $PPID'), 15_000)).stdout.trim();
+      const chain = await waitFor(
+        'the sshd ancestor chain capture',
+        debugSshd.exec(['sh', '-c',
+          `p=${shellPpid}; for i in 1 2 3 4; do [ -r /proc/$p/status ] || break; ` +
+          'echo "$p comm=$(cat /proc/$p/comm 2>/dev/null) ppid=$(awk \'/^PPid:/{print $2}\' /proc/$p/status)"; ' +
+          'p=$(awk \'/^PPid:/{print $2}\' /proc/$p/status); [ "$p" -le 1 ] 2>/dev/null && break; done']),
+        15_000,
+      );
+      const listenerPid = (await waitFor('the debug sshd pidfile capture', debugSshd.exec(['cat', DEBUG_SSHD_PIDFILE]), 15_000)).stdout.trim();
+      const chainLines = chain.stdout.trim().split('\n');
+      expect(chainLines.length).toBeGreaterThanOrEqual(1);
+      expect(chainLines[chainLines.length - 1]).toMatch(new RegExp(`comm=sshd ppid=${listenerPid}$`));
+      expect(chainLines.filter((line) => !line.includes('comm=sshd'))).toEqual([]);
+    } finally {
+      await endVictimConnection(controller.conn, controllerClosed);
+    }
+
+    const lateVictim = await waitFor('the late-phase victim connection to open', connectSsh(debugHost, debugPort), 15_000);
+    const lateErrors: string[] = [];
+    lateVictim.conn.on('error', (error: Error) => lateErrors.push(error.message));
+    const lateVictimClosed = new Promise<void>((resolve) => lateVictim.conn.on('close', () => resolve()));
+    try {
+      const lateName = `${debugHome.split('/').pop()}:${tagLate}`;
+      const late = await waitFor(
+        'the late attach channel to open',
+        attachPty(lateVictim, cli.buildAttachCommand(lateName)),
+        15_000,
+      );
+      await waitFor(`the late attached client ${tagLate} to paint (attach readiness)`, late.ready, 15_000);
+      // The late channel's SERVER-side id: ssh2's outgoing.id is the id the
+      // server allocated (CHANNEL_OPEN_CONFIRMATION's sender channel) — the
+      // number every sshd debug line for this channel carries.
+      const lateRemoteId = late.remoteId;
+      const killed = await waitFor(
+        `a kill ${lateId} to complete (on the victim connection)`,
+        execTransport(lateVictim).exec(`a kill ${lateId}`),
+        15_000,
+      );
+      expect(killed.exitCode, killed.stderr).toBe(0);
+      const lateChannelExits = await waitFor('the late channel to close client-side', late.exited, 20_000);
       // The exit is clean (that is the #3039 premise: it cannot tell).
       expect(lateChannelExits.exitCode).toBe(0);
 
-      const lateRequestOccursAfterObservedServerChannelFree = (
-        await waitFor(
-          'the server to reap the late channel, observed over plain probes',
-          observeServerChannelFree(victim, late.remoteId),
-          30_000,
-        )
+      // THE FREE EVIDENCE, from the server itself. The debug sshd's -E log is
+      // polled over docker exec — which opens no SSH channel on the victim,
+      // so nothing can re-occupy the id between the observed free and the
+      // injection below — until the victim's OWN log region (the LAST
+      // "Accepted publickey" region, whose client port sshd itself lists
+      // ESTABLISHED) records, for exactly one lifecycle of the late id:
+      //     channel <id>: rcvd close    (the host saw the client's CLOSE)
+      //     channel <id>: free: ...     (the host reclaimed the slot)
+      const observed = await waitFor(
+        'the debug sshd to log the late channel freed (rcvd close, then free)',
+        observeServerChannelFreeInLog(debugSshd, lateRemoteId),
+        30_000,
       );
-      expect(lateRequestOccursAfterObservedServerChannelFree.reaped, lateRequestOccursAfterObservedServerChannelFree.observed).toBe(true);
+      console.log('[#3039] observed server-side reclamation:\n' + observed);
 
-      protocol.windowChange(late.remoteId, 30, 100, 0, 0);
-      await waitFor('the expected disconnect (unknown-channel drop)', closed, 15_000);
-      expect(errors.join('\n')).toMatch(/server_input_channel_req: unknown channel \d+/);
+      // Between that log snapshot and this line the spec opens no channel on
+      // the victim connection (every read went over docker exec), so no
+      // channel can have re-occupied the id: the request must now find the
+      // slot gone and drop the connection — the "freed" half of the pin.
+      protocolOf(lateVictim.conn).windowChange(lateRemoteId, 30, 100, 0, 0);
+      await waitFor('the expected disconnect (unknown-channel drop)', lateVictimClosed, 15_000);
+      expect(lateErrors.join('\n')).toMatch(/server_input_channel_req: unknown channel \d+/);
+
+      // The receipt, from the final log: in the victim's region the free sits
+      // strictly between the rcvd close and the unknown-channel disconnect,
+      // and NOTHING touched the id in between.
+      const finalLog = await waitFor('the final debug log capture', debugSshd.exec(['cat', DEBUG_SSHD_LOG]), 15_000);
+      const finalRegion = regionOfLastAcceptedConnection(finalLog.stdout);
+      const rcvdAt = finalRegion.lines.findIndex((line) => line.includes(`channel ${lateRemoteId}: rcvd close`));
+      const freeAt = finalRegion.lines.findIndex((line) => line.includes(`channel ${lateRemoteId}: free: `));
+      const unknownAt = finalRegion.lines.findIndex((line) => line.includes('unknown channel'));
+      expect(rcvdAt, 'the region records the late channel rcvd close').toBeGreaterThanOrEqual(0);
+      expect(freeAt, 'the region records the late channel freed').toBeGreaterThan(rcvdAt);
+      expect(unknownAt, 'the region records the unknown-channel disconnect').toBeGreaterThan(freeAt);
+      const reoccupiedBetweenFreeAndDisconnect = finalRegion.lines
+        .slice(freeAt + 1, unknownAt)
+        .filter((line) => new RegExp(`channel ${lateRemoteId}: new\\b`).test(line));
+      expect(
+        reoccupiedBetweenFreeAndDisconnect,
+        'no channel was allocated the id between the free and the pinned request',
+      ).toEqual([]);
+      console.log(
+        `[#3039] final ordering in the victim's log region (offsets rcvd@${rcvdAt} < free@${freeAt} < unknown@${unknownAt}):\n` +
+        `  ${finalRegion.lines[freeAt].trim()}\n  ${finalRegion.lines[unknownAt].trim()}`,
+      );
     } finally {
-      protocol.channelClose = realClose;
-      // No leaked connection on a failure path either: on the pass path the
-      // server already ended this connection; on any other path end it here.
-      victim.conn.end();
-      await waitFor('the victim connection to close', closed, 5_000).catch(() => undefined);
+      await endVictimConnection(lateVictim.conn, lateVictimClosed);
     }
   }, 60_000);
 
@@ -321,8 +412,111 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     const started = await waitFor(`a start --tag ${tag} to complete`, run(`a start --workspace ${home} --tag ${tag} --json`), 15_000);
     expect(started.exitCode, started.stderr).toBe(0);
     const id = JSON.parse(started.stdout).id as string;
-    const client = await attachPty(on, cli.buildAttachCommand(`${home.split('/').pop()}:${tag}`));
+    const client = await waitFor(
+      `the attach channel for ${tag} to open`,
+      attachPty(on, cli.buildAttachCommand(`${home.split('/').pop()}:${tag}`)),
+      15_000,
+    );
     await waitFor(`the attached client ${tag} to paint (attach readiness)`, client.ready, 15_000);
     return { id, client, remoteId: client.remoteId };
   }
 });
+
+/** The victim connection's log region: the LAST accepted connection to EOF. */
+function regionOfLastAcceptedConnection(log: string): { lines: string[]; port: string } {
+  const lines = log.split('\n');
+  let lastIndex = -1;
+  let port = '';
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = /Accepted publickey for testuser from \S+ port (\d+)/.exec(lines[i]);
+    if (match) {
+      lastIndex = i;
+      port = match[1];
+    }
+  }
+  if (lastIndex === -1) throw new Error('the debug sshd log records no accepted connection');
+  return { lines: lines.slice(lastIndex), port };
+}
+
+/**
+ * Poll the debug sshd's own -E log (always over docker exec, never over the
+ * victim's SSH connection) until it holds the exact per-channel reclamation
+ * evidence for the late channel in the victim connection's own region:
+ *
+ *   channel <id>: rcvd close        the host processed the client's CLOSE
+ *   channel <id>: free: ...         the host reclaimed the channel's slot
+ *
+ * with exactly ONE lifecycle of that id in the region, the free AFTER the
+ * close, and no fresh allocation of the id after the free (the debug3 status
+ * dump the free itself prints names the id too, but allocates nothing). A
+ * region whose client port sshd does not list as ESTABLISHED is not the
+ * victim's yet — poll on. Anything else — a second lifecycle, a re-allocated
+ * id — throws: the proof must be unambiguous, never assumed. The returned
+ * string quotes the exact observed lines.
+ */
+async function observeServerChannelFreeInLog(debugSshd: StartedTestContainer, remoteId: number): Promise<string> {
+  for (;;) {
+    const [logRead, established] = await Promise.all([
+      debugSshd.exec(['cat', DEBUG_SSHD_LOG]),
+      debugSshd.exec(['sh', '-c', "netstat -tn 2>/dev/null | grep ':22 ' | grep ESTABLISHED"]),
+    ]);
+    // sshd logs each connection's CLIENT port in its Accepted line; netstat
+    // (read server-side, over docker exec) lists that same port for every
+    // live connection — the region must be one of the live ones.
+    const livePorts = established.stdout
+      .split('\n')
+      .filter((line) => line.includes('ESTABLISHED'))
+      .map((line) => (line.trim().split(/\s+/)[4] ?? '').split(':').pop() ?? '');
+    const region = regionOfLastAcceptedConnection(logRead.stdout);
+    if (!livePorts.includes(region.port)) {
+      await new Promise((r) => setTimeout(r, 150));
+      continue;
+    }
+    const acceptedCount = region.lines.filter((line) => line.includes('Accepted publickey')).length;
+    if (acceptedCount !== 1) {
+      throw new Error(`the victim's log region holds ${acceptedCount} accepted connections, expected exactly 1`);
+    }
+    const rcvd = region.lines
+      .map((line, offset) => ({ line, offset }))
+      .filter((entry) => entry.line.includes(`channel ${remoteId}: rcvd close`));
+    if (rcvd.length > 1) {
+      throw new Error(
+        `the victim's log region records ${rcvd.length} 'channel ${remoteId}: rcvd close' lines — ` +
+        'the id was reused within the region, so the evidence would be ambiguous',
+      );
+    }
+    if (rcvd.length === 0) {
+      await new Promise((r) => setTimeout(r, 150));
+      continue;
+    }
+    const freeOffset = region.lines.findIndex((line) => line.includes(`channel ${remoteId}: free: `));
+    if (freeOffset === -1) {
+      await new Promise((r) => setTimeout(r, 150));
+      continue;
+    }
+    if (freeOffset < rcvd[0].offset) {
+      throw new Error(
+        `the free line (offset ${freeOffset}) precedes the rcvd close (offset ${rcvd[0].offset}) — ` +
+        'a stale lifecycle, not the late channel\'s reclamation',
+      );
+    }
+    // A re-occupation of the slot shows up as a fresh allocation of the id
+    // ("channel <id>: new session ..."). The debug3 status dump that the free
+    // itself prints ("channel <id>: status: The following connections are
+    // open:") names the id but is part of the free event, not a new channel.
+    const reoccupied = region.lines
+      .slice(freeOffset + 1)
+      .filter((line) => new RegExp(`channel ${remoteId}: new\\b`).test(line));
+    if (reoccupied.length > 0) {
+      throw new Error(
+        `the id ${remoteId} was allocated again after its free line: ${JSON.stringify(reoccupied)} — ` +
+        'a channel re-occupied the slot before the pinned request',
+      );
+    }
+    return (
+      `victim region (client port ${region.port}, ${region.lines.length} lines): ` +
+      `rcvd close @${rcvd[0].offset} < free @${freeOffset}; no allocation of id ${remoteId} after the free\n` +
+      `  ${rcvd[0].line.trim()}\n  ${region.lines[freeOffset].trim()}`
+    );
+  }
+}
