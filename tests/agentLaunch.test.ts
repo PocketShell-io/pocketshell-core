@@ -11,6 +11,7 @@ import {
   kindNeedsNewerHelper,
   kindUnavailableReason,
   launchBlocker,
+  parseAgentBinaries,
   parseProfileRows,
   profileFlagName,
   profilesFor,
@@ -251,6 +252,40 @@ describe('kindUnavailableReason', () => {
   const PINNED = [...HELPER_BASELINE_KINDS];
   const UPGRADED = [...HELPER_BASELINE_KINDS, 'grok'];
 
+  describe('the binary probe', () => {
+    it('refuses every kind when the helper itself is not on PATH', () => {
+      const support = { subcommands: PINNED, binaries: ['claude', 'codex'] };
+      const reason = kindUnavailableReason('codex', support);
+      expect(reason).toMatch(/no `pocketshell` on its PATH/);
+      expect(reason).toMatch(/install the pocketshell helper first/);
+      expect(kindUnavailableReason('claude', support)).toBe(reason);
+    });
+
+    it('refuses an engine whose CLI the host does not have, by name', () => {
+      const support = { subcommands: PINNED, binaries: ['pocketshell', 'claude'] };
+      const reason = kindUnavailableReason('codex', support);
+      expect(reason).toContain('no `codex` on its PATH');
+      expect(reason).toContain('install the Codex CLI');
+      // One the host does have still goes ahead.
+      expect(kindUnavailableReason('claude', support)).toBeNull();
+    });
+
+    it('an answered probe outranks the subcommand list', () => {
+      // `pocketshell agent --help` lists codex; the codex binary is absent.
+      // The subcommand list alone would allow the launch; the binary answer
+      // is the one that matches what typing the line would actually do.
+      const support = { subcommands: PINNED, binaries: ['pocketshell', 'claude'] };
+      expect(kindUnavailableReason('codex', support)).not.toBeNull();
+    });
+
+    it('null (never asked / probe failed) refuses nothing', () => {
+      for (const kind of HELPER_BASELINE_KINDS) {
+        expect(kindUnavailableReason(kind, { subcommands: PINNED, binaries: null })).toBeNull();
+        expect(kindUnavailableReason(kind, { subcommands: PINNED })).toBeNull();
+      }
+    });
+  });
+
   it('allows every baseline kind on the pinned helper', () => {
     for (const kind of HELPER_BASELINE_KINDS) {
       expect(kindUnavailableReason(kind, { subcommands: PINNED })).toBeNull();
@@ -312,6 +347,29 @@ describe('kindUnavailableReason', () => {
   it('blocks a folder with no host directory, BEFORE anything is created', () => {
     expect(launchBlocker({ kind: 'claude', dir: '' })).toMatch(/no known directory/);
     expect(launchBlocker({ kind: 'claude', dir: '   ' })).toMatch(/no known directory/);
+  });
+});
+
+describe('parseAgentBinaries', () => {
+  it('reads the names the command -v loop echoed, one per line', () => {
+    expect(parseAgentBinaries(['pocketshell', 'claude', ''].join('\n'))).toEqual([
+      'pocketshell',
+      'claude',
+    ]);
+    // Windows-hosted CRLF output survives.
+    expect(parseAgentBinaries(['pocketshell', 'codex', ''].join('\r\n'))).toEqual([
+      'pocketshell',
+      'codex',
+    ]);
+  });
+
+  it('drops lines that are not launch binaries', () => {
+    // The loop echoes NAMES, but membership checks consume this list, so a
+    // stray line is dropped rather than trusted.
+    expect(parseAgentBinaries(['pocketshell', '/usr/bin/claude', ''].join('\n'))).toEqual([
+      'pocketshell',
+    ]);
+    expect(parseAgentBinaries('')).toEqual([]);
   });
 });
 

@@ -142,6 +142,7 @@ const choice = computed<LaunchChoice | null>(() => {
  */
 const hostSupport = computed<HostAgentSupport>(() => ({
   subcommands: agents.agentKinds,
+  binaries: agents.agentBinaries,
   helperVersion: connection.bootstrap?.pocketshell.version ?? null,
   probing: agents.agentKindsProbing,
 }));

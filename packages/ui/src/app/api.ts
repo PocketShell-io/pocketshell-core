@@ -353,6 +353,12 @@ export interface PocketShellApi {
 
     "agent": {
     "kinds": (connectionId: string) => Promise<string[] | null>;
+    /**
+     * The launch binaries on the host's PATH (`pocketshell` + the engine
+     * CLIs, from one `command -v` batch), or null when the probe failed —
+     * null reads as "unknown" and refuses nothing, exactly like `kinds`' null.
+     */
+    "binaries": (connectionId: string) => Promise<string[] | null>;
     "profiles": (connectionId: string) => Promise<unknown[]>;
     "envList": (connectionId: string, dir: string) => Promise<EnvVarRow[]>;
     "envGet": (connectionId: string, dir: string, keys?: string[]) => Promise<Record<string, string>>;

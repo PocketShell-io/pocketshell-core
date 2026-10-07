@@ -214,6 +214,17 @@ export function supportsProfiles(kind: LaunchableKind): boolean {
 export interface HostAgentSupport {
   subcommands: readonly string[] | null;
   /**
+   * The names found on the host's PATH — `pocketshell` itself and the engine
+   * CLIs — answered by one `command -v` batch, or null when the probe has not
+   * run or failed. Absent/null reads as "we do not know", which refuses
+   * nothing: a host whose probe failed must not lose the baseline engines.
+   * When the probe HAS answered, it outranks the subcommand list — a helper
+   * that lists `codex` cannot launch it if the `codex` CLI is not installed,
+   * and this is exactly the check that keeps the doomed launch from being
+   * typed into a session shell.
+   */
+  binaries?: readonly string[] | null;
+  /**
    * `pocketshell --version`'s first line, if bootstrap got one. Used only to
    * make the refusal concrete ("this host has …"); never to decide anything,
    * because the decision comes from the probe.
@@ -243,6 +254,27 @@ export function kindUnavailableReason(
   support: HostAgentSupport,
 ): string | null {
   const label = KIND_LABELS[kind];
+  // The binary probe outranks the subcommand list: `pocketshell agent` can
+  // list `codex` all it likes, but the engine CLIs are programs on the host's
+  // PATH, and a launch typed without one dies in the session shell with the
+  // helper's own "not installed" sentence — exactly the failure this gate
+  // exists to keep in the UI. Array.isArray for the same reason as below: a
+  // null (never asked / probe failed) refuses nothing.
+  const found = Array.isArray(support.binaries) ? support.binaries : null;
+  if (found !== null) {
+    if (!found.includes('pocketshell')) {
+      return (
+        'This host has no `pocketshell` on its PATH — install the pocketshell ' +
+        'helper first, then reconnect and try again.'
+      );
+    }
+    if (!found.includes(kind)) {
+      return (
+        `This host has no \`${kind}\` on its PATH — install the ${label} CLI ` +
+        'first, then try again.'
+      );
+    }
+  }
   // Array.isArray rather than `!== null`: the list arrives over IPC from a
   // parser that returns `string[] | null`, and anything else that reaches here
   // — an undefined from a half-built stub, a shape a future helper changes —
@@ -280,6 +312,24 @@ export function kindUnavailableReason(
     `needs a helper newer than ${HELPER_VERSION_WITHOUT_GROK} — so it is not offered here. ` +
     `Pick another agent, or reconnect and try again.`
   );
+}
+
+/**
+ * The names on the host's PATH, from the one `command -v` batch the desktop
+ * runs (`for n in pocketshell <kinds>; do command -v ...; done`).
+ *
+ * The output is the found names, one per line — the loop echoes the NAME, not
+ * the resolved path, so no basename guessing. A line that is not a name this
+ * module knows is dropped rather than trusted: the list feeds
+ * {@link kindUnavailableReason}'s membership checks, and a stray line can only
+ * ever make the probe say "present" about something it is not.
+ */
+export function parseAgentBinaries(stdout: string): string[] {
+  const known = new Set<string>(['pocketshell', ...LAUNCHABLE_KINDS]);
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => known.has(line));
 }
 
 /** One row of `pocketshell profiles list --json`'s `{"profiles": [...]}`. */

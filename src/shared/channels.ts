@@ -206,6 +206,10 @@ export const ipc = {
   },
   agent: {
     kinds: 'agent:kinds', // agent --help -> the engines this host can launch
+    // command -v over pocketshell + the engine CLIs -> the launch binaries on
+    // the host's PATH. The gate that keeps a launch whose engine is not
+    // installed in the UI instead of typed into a session shell.
+    binaries: 'agent:binaries',
     profiles: 'agent:profiles', // profiles list --json
     envList: 'agent:envList', // env list --dir --json
     envGet: 'agent:envGet',

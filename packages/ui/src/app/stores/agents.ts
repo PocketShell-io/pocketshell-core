@@ -123,6 +123,13 @@ export const useAgentsStore = defineStore('agents', () => {
    * or the reverse, and the launch dialog needs both answers separately.
    */
   const agentKinds = ref<readonly string[] | null>(null);
+  /**
+   * The launch binaries the host's PATH actually has (`pocketshell` + engine
+   * names), or null when never asked / the probe failed — the same unknown as
+   * {@link agentKinds}' null, refusing nothing. This is the check that greys
+   * out an engine the helper can spell but the host cannot run.
+   */
+  const agentBinaries = ref<readonly string[] | null>(null);
   /** True while `loadAgentKinds` is in flight — lets "no" be said as "not yet". */
   const agentKindsProbing = ref(false);
   /** @see profilesFor — same stale-response guard, same reason. */
@@ -146,8 +153,15 @@ export const useAgentsStore = defineStore('agents', () => {
   async function loadAgentKinds(connectionId: ConnectionId): Promise<void> {
     agentKindsProbing.value = true;
     agentKindsFor = connectionId;
+    // The two probes ride together: what the helper can SPELL (`kinds`) and
+    // what the host can RUN (`binaries`) are both one cheap exec, both re-asked
+    // on every dialog open for the same freshness reason, and both null on a
+    // failure that must refuse nothing.
     try {
-      const kinds = await api.agent.kinds(connectionId);
+      const [kinds, binaries] = await Promise.all([
+        api.agent.kinds(connectionId).catch(() => null),
+        api.agent.binaries(connectionId).catch(() => null),
+      ]);
       if (agentKindsFor !== connectionId) return;
       // Anything that is not a list is "unknown", which is what null means
       // here. The main process already answers `string[] | null`, so this is
@@ -155,9 +169,7 @@ export const useAgentsStore = defineStore('agents', () => {
       // shape that slipped through would otherwise become an empty list, i.e.
       // a host that claims it can launch nothing.
       agentKinds.value = Array.isArray(kinds) ? kinds : null;
-    } catch {
-      if (agentKindsFor !== connectionId) return;
-      agentKinds.value = null;
+      agentBinaries.value = Array.isArray(binaries) ? binaries : null;
     } finally {
       if (agentKindsFor === connectionId) agentKindsProbing.value = false;
     }
@@ -173,6 +185,7 @@ export const useAgentsStore = defineStore('agents', () => {
     profilesError,
     loadProfiles,
     agentKinds,
+    agentBinaries,
     agentKindsProbing,
     loadAgentKinds,
   };
