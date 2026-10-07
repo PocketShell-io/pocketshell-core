@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+import { GenericContainer, type ExecResult, type StartedTestContainer } from 'testcontainers';
 import type { Client, ClientChannel } from 'ssh2';
 import {
   HostCliCore,
@@ -30,6 +30,13 @@ import { connectSsh, describeDocker, execTransport, type SshHandle } from './hel
  * that one sent before the client's own CLOSE is harmless — which is the
  * contract every platform's PTY transport must keep (the Android plugin's
  * guard, #3039).
+ *
+ * Two more specs pin the fixture lifecycle this file owns: a container start
+ * that resolves only after its teardown bound still gets stopped by the
+ * retained late-start finalizer, and an exec that outlives its bound is
+ * terminated for real — the fixture owning the process stopped, the
+ * outstanding RPC tracked to settlement — because a raced bound cancels
+ * nothing.
  */
 
 /** The test-only debug sshd's -E log and pidfile inside its own container. */
@@ -63,6 +70,11 @@ const DISCONNECT_BUDGET = 15_000; // the pinned unknown-channel drop
 const NEGATIVE_DEADLINE_BUDGET = 2_000; // the deadline the negative regression must see honored
 const NEGATIVE_GUARD_BUDGET = 10_000; // outer guard: a reverted unbounded poller fails here in seconds
 const CLEANUP_STAGE_BUDGET = 20_000; // each bounded afterAll step (settle a start, stop a container)
+const EXEC_STRAGGLER_SETTLE_BUDGET = 10_000; // bounded settle of execs still outstanding once their fixture was stopped
+const TEARDOWN_PROOF_BOUND_MS = 50; // the late-start regression's deliberately-early teardown settle bound
+const FINALIZER_RECORD_BUDGET = 15_000; // the retained late-start finalizer's bounded stop, observed via its note
+const EXEC_TIMEOUT_REGRESSION_DEADLINE = 5_000; // the exec-timeout regression's poller deadline (the wedged sleep outlives it)
+const EXEC_TIMEOUT_GUARD_BUDGET = 20_000; // outer guard: the regression's poller must reject well inside this
 const APLEXER_SETTLE_MS = 1_500; // the pre-existing settle sleep after the primary ssh is up
 
 /** The hazard spec's total: the exact sum of the stage budgets its body can
@@ -81,7 +93,23 @@ const HAZARD_STAGE_BUDGET_TOTAL =
   6 * VICTIM_CLOSE_BUDGET + // three victim connections, each graceful + forced worst case
   OBSERVE_FREE_BUDGET + // the poller's internal deadline
   DISCONNECT_BUDGET + // the pinned unknown-channel drop
-  NEGATIVE_DEADLINE_BUDGET + NEGATIVE_GUARD_BUDGET; // the negative timeout regression
+  NEGATIVE_DEADLINE_BUDGET + NEGATIVE_GUARD_BUDGET + // the negative timeout regression
+  2 * (CLEANUP_STAGE_BUDGET + EXEC_STRAGGLER_SETTLE_BUDGET); // each free-observation's worst abnormal path — an exec whose stage bound fired stops the owned fixture and settles its stragglers (the main observation and the negative regression can each pay this)
+
+/** The late-start regression's total: the exact sum of the stages its body can spend. */
+const LATE_START_REGRESSION_TOTAL =
+  TEARDOWN_PROOF_BOUND_MS + // the teardown settle bound that fires before the real start can resolve
+  CONTAINER_START_BUDGET + // the real start, awaited only after the bound fired
+  FINALIZER_RECORD_BUDGET + // the retained finalizer's bounded stop, observed via its note
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
+
+/** The exec-timeout regression's total: the exact sum of the stages its body can spend. */
+const EXEC_TIMEOUT_REGRESSION_TOTAL =
+  CONTAINER_START_BUDGET + // the regression's own container
+  EXEC_TIMEOUT_GUARD_BUDGET + // outer guard around the self-bounding poller
+  CLEANUP_STAGE_BUDGET + // the owned-fixture stop on the exec-bound path
+  EXEC_STRAGGLER_SETTLE_BUDGET + // the bounded settle of the outstanding exec
+  DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
 
 interface AttachedClient {
   channel: ClientChannel;
@@ -116,16 +144,22 @@ function attachPty(handle: SshHandle, command: string): Promise<AttachedClient> 
  * Wait for `pending`, but never silently: a hang names its stage and fails
  * inside the spec's own timeout instead of burning the whole budget on a
  * bare "Test timed out" with no hint which await never resolved.
+ *
+ * The race CANCELS NOTHING. When the bound fires, `pending` keeps running to
+ * whatever its natural end is — for a docker exec that is an RPC nobody can
+ * revoke — and the `.catch` below is suppression of a late REJECTION, not
+ * termination: it exists so a race loser can never surface as an unhandled
+ * rejection, nothing more. Actual termination of an owned process happens by
+ * real means elsewhere: an in-container `timeout` around the poller's
+ * commands, and the owning fixture stopped when an exec's stage bound fires.
  */
 async function waitFor<T>(what: string, pending: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for: ${what}`)), ms);
   });
-  // A loser of the race must never surface later as an unhandled rejection (a
-  // container start that rejects after its stage budget fired, an exec that
-  // outlived its bound): mark it handled — the race still sees a rejection
-  // that arrives first.
+  // Marks a possible race loser handled — a late rejection must never become
+  // an unhandled one. This does NOT stop the loser; see above.
   pending.catch(() => undefined);
   try {
     return await Promise.race([pending, timeout]);
@@ -163,6 +197,111 @@ async function endVictimConnection(conn: Client, closed: Promise<void>): Promise
   }
 }
 
+/** What a stop request concluded, always spelled out — never swallowed. */
+interface OwnedStop {
+  ok: boolean;
+  note: string;
+}
+
+/**
+ * One container this file started, owned from the moment its (real) start
+ * promise exists — not from the moment it came up. `requestStop` is the
+ * single idempotent stop: whoever asks first (teardown cleanup, the poller
+ * terminating a wedged exec, the retained finalizer) names the reason, the
+ * stop is bounded, and the outcome is spelled out either way — including a
+ * stop that failed, which stays visible as the leak admission it is.
+ */
+interface OwnedFixture {
+  what: string;
+  /** The container's REAL start promise, kept even when every await on it
+   * has already timed out: the retained finalizer still owns it. */
+  startup: Promise<StartedTestContainer>;
+  /** The container, once its start resolved (set by whoever awaited it). */
+  up: StartedTestContainer | undefined;
+  stopRequested: boolean;
+  /** The retained finalizer's outcome once it ran (undefined until then). */
+  finalizerNote: string | undefined;
+  requestStop(reason: string): Promise<OwnedStop>;
+}
+
+function ownFixture(what: string, startup: Promise<StartedTestContainer>): OwnedFixture {
+  const fixture: OwnedFixture = {
+    what,
+    startup,
+    up: undefined,
+    stopRequested: false,
+    finalizerNote: undefined,
+    requestStop,
+  };
+  async function requestStop(reason: string): Promise<OwnedStop> {
+    if (fixture.stopRequested) {
+      return { ok: true, note: `${fixture.what}: stop had already been requested; not requested twice` };
+    }
+    fixture.stopRequested = true;
+    const up = fixture.up;
+    if (!up) {
+      return { ok: false, note: `${fixture.what}: stop requested (${reason}) but its start never produced a container` };
+    }
+    try {
+      await waitFor(`${fixture.what} to stop (${reason})`, up.stop(), CLEANUP_STAGE_BUDGET);
+      return { ok: true, note: `${fixture.what}: stopped (${reason})` };
+    } catch (error) {
+      return { ok: false, note: `${fixture.what}: stop FAILED (${reason}): ${(error as Error).message}` };
+    }
+  }
+  return fixture;
+}
+
+/**
+ * The retained late-start finalizer. Attached only when teardown's settle
+ * bound fired while the start was still pending (or had rejected): whenever
+ * the start EVENTUALLY settles — long after the hook returned — the container
+ * still gets its stop requested, and the outcome is recorded under the
+ * fixture's ownership label instead of leaking silently. Best effort by
+ * nature, stated plainly: it runs while this runner is alive to observe the
+ * settle; the stop itself is bounded (CLEANUP_STAGE_BUDGET) and one that
+ * never completes is recorded as the leak it is — under a permanently
+ * unresponsive docker daemon no in-test mechanism can force a stop RPC
+ * through, and none is claimed.
+ */
+function retainLateStartFinalizer(fixture: OwnedFixture): void {
+  fixture.startup.then(
+    async (up) => {
+      fixture.up = up;
+      const stop = await fixture.requestStop(
+        'the retained late-start finalizer: the start resolved after its cleanup bound had fired',
+      );
+      fixture.finalizerNote = stop.note;
+      (stop.ok ? console.log : console.error)(`[#3039 owned fixture | late-start finalizer] ${stop.note}`);
+    },
+    (error) => {
+      fixture.finalizerNote = `${fixture.what}: the retained start rejected, so nothing came up to stop: ${(error as Error).message}`;
+      console.error(`[#3039 owned fixture | late-start finalizer] ${fixture.finalizerNote}`);
+    },
+  );
+}
+
+/**
+ * afterAll's per-fixture step: settle the start within `boundMs`, then stop
+ * what came up — both bounded, both spelled out. If the settle bound fires
+ * first, the retained late-start finalizer takes ownership of the eventual
+ * settle and the returned note says so: the hook still fails, and the
+ * container that comes up later cannot become a silent leak.
+ */
+async function settleAndStopWithin(fixture: OwnedFixture, boundMs: number): Promise<string> {
+  let up: StartedTestContainer;
+  try {
+    up = await waitFor(`${fixture.what} to come up for its cleanup`, fixture.startup, boundMs);
+  } catch (error) {
+    retainLateStartFinalizer(fixture);
+    return `${fixture.what} cleanup: did not come up in time for its cleanup (${(error as Error).message}); ` +
+      'the retained late-start finalizer now owns its eventual settle';
+  }
+  fixture.up = up;
+  const stop = await fixture.requestStop('the teardown cleanup');
+  return stop.ok ? '' : `${fixture.what} cleanup: ${stop.note}`;
+}
+
 function hostCliTransport(handle: SshHandle): HostCliTransport {
   const exec = execTransport(handle);
   return { exec: (command: string) => exec.exec(command) };
@@ -170,15 +309,20 @@ function hostCliTransport(handle: SshHandle): HostCliTransport {
 
 describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
   let container: StartedTestContainer | undefined;
-  /** The primary container's REAL start promise, kept even if the hook's
-   * budget fires mid-start: afterAll settles it and stops what came up. */
-  let containerStartup: Promise<StartedTestContainer> | undefined;
+  /** The primary container's ownership record: its REAL start promise is
+   * kept even if a budget fires mid-start, afterAll settles it and stops
+   * what came up, and — if the settle bound fires first — a retained
+   * late-start finalizer owns the eventual settle. */
+  let primaryFixture: OwnedFixture | undefined;
   let handle: SshHandle;
   let cli: HostCliCore;
   let home: string;
   let debugSshd: StartedTestContainer | undefined;
   /** Same for the debug sshd: a cold start can no longer bypass its cleanup. */
-  let debugSshdStartup: Promise<StartedTestContainer> | undefined;
+  let debugSshdFixture: OwnedFixture | undefined;
+  /** Fixtures the lifecycle regressions stand up; afterAll owns their
+   * cleanup too, whatever happened to the spec that created them. */
+  const regressionFixtures: OwnedFixture[] = [];
 
   const run = async (command: string) => execTransport(handle).exec(command);
 
@@ -207,9 +351,11 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
   beforeAll(async () => {
     const starting = new GenericContainer('pocketshell-core-test:helper')
       .withExposedPorts(22)
+      .withLabels({ 'ps3039.owned-fixture': 'primary-helper' })
       .start();
-    containerStartup = starting;
+    primaryFixture = ownFixture('the primary helper container', starting);
     container = await waitFor('the primary helper container to start', starting, CONTAINER_START_BUDGET);
+    primaryFixture.up = container;
     handle = await connectSsh(container.getHost(), container.getMappedPort(22));
     cli = new HostCliCore(hostCliTransport(handle));
     home = (await waitFor('the primary home capture', run('echo $HOME'), DEBUG_CAPTURE_BUDGET)).stdout.trim();
@@ -220,30 +366,27 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     handle?.close();
     // Every step bounded, named, and failure-collecting: a start still in
     // flight when a spec died is settled first so whatever came up is
-    // stopped (a cold start can no longer bypass the owned-fixture
-    // cleanup), one failed step never skips the rest, and nothing is
-    // swallowed — collected failures fail the hook.
+    // stopped, one failed step never skips the rest, and nothing is
+    // swallowed — collected failures fail the hook. When a start does NOT
+    // settle inside its bound, cleanup does not give up on it: the settle
+    // leaves a retained late-start finalizer on the real start promise, so
+    // ANY eventual resolve — seconds or minutes after this hook returned —
+    // still gets its stop requested, and a late rejection is recorded under
+    // the fixture's ownership label instead of leaking silently.
     const failures: string[] = [];
-    const stopWhatCameUp = async (what: string, startup: Promise<StartedTestContainer>) => {
-      let started: StartedTestContainer;
-      try {
-        started = await waitFor(`${what} to come up for its cleanup`, startup, CLEANUP_STAGE_BUDGET);
-      } catch (error) {
-        failures.push(`${what} cleanup: ${(error as Error).message}`);
-        return;
-      }
-      try {
-        await waitFor(`${what} to stop`, started.stop(), CLEANUP_STAGE_BUDGET);
-      } catch (error) {
-        failures.push(`${what} cleanup: ${(error as Error).message}`);
-      }
+    const settleAndCollect = async (fixture: OwnedFixture) => {
+      const failure = await settleAndStopWithin(fixture, CLEANUP_STAGE_BUDGET);
+      if (failure) failures.push(failure);
     };
-    if (debugSshdStartup) await stopWhatCameUp('the debug sshd container', debugSshdStartup);
-    if (containerStartup) await stopWhatCameUp('the primary helper container', containerStartup);
+    if (debugSshdFixture) await settleAndCollect(debugSshdFixture);
+    if (primaryFixture) await settleAndCollect(primaryFixture);
+    for (const fixture of regressionFixtures) await settleAndCollect(fixture);
     if (failures.length > 0) {
       throw new Error(`owned fixture cleanup failed, ${failures.length} step(s):\n  ${failures.join('\n  ')}`);
     }
-  }, 4 * CLEANUP_STAGE_BUDGET);
+    // settle+stop for the debug sshd, the primary, and both regression
+    // fixtures, each stage bounded by CLEANUP_STAGE_BUDGET.
+  }, 8 * CLEANUP_STAGE_BUDGET);
 
   it('a killed session reads as ENDED at its client exit — every time, so nothing re-attaches', async () => {
     for (let round = 0; round < 3; round += 1) {
@@ -301,6 +444,94 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     await waitFor(`the cleanup a kill ${id} to complete`, run(`a kill ${id}`), 15_000);
   }, 60_000);
 
+  it('a fixture whose start resolves after its teardown bound is stopped by the retained late-start finalizer', async () => {
+    // The teardown cleanup's settle bound fires long before a real docker
+    // start can resolve — the exact state the old afterAll left behind: a
+    // pending start promise nobody owned, whose container would come up into
+    // a dead teardown and leak. The seam under test is the real one
+    // (settleAndStopWithin → retainLateStartFinalizer → requestStop) and the
+    // container is a real one: whatever the finalizer does happens to a live
+    // docker container, never to a mock.
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'late-start-regression' })
+      .start();
+    const fixture = ownFixture('the late-start regression container', startup);
+    regressionFixtures.push(fixture);
+    const note = await settleAndStopWithin(fixture, TEARDOWN_PROOF_BOUND_MS);
+    expect(note, note).toMatch(/late-start finalizer/);
+    expect(fixture.stopRequested, 'the bound fired before any container existed, so nothing could be stopped yet').toBe(false);
+    // The start resolves for real; the retained finalizer must stop it.
+    const up = await waitFor('the late-start regression container to come up after the teardown bound fired', startup, CONTAINER_START_BUDGET);
+    await waitFor(
+      'the retained late-start finalizer to record its outcome',
+      (async () => {
+        while (fixture.finalizerNote === undefined) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      })(),
+      FINALIZER_RECORD_BUDGET,
+    );
+    expect(fixture.finalizerNote, fixture.finalizerNote).toMatch(/stopped \(the retained late-start finalizer/);
+    // The real outcome, independent of the fixture's own bookkeeping: the
+    // finalizer's stop removed the container — it can no longer exec.
+    await expect(up.exec(['echo', 'still up?']), 'a container the finalizer stopped must refuse execs').rejects.toThrow();
+  }, LATE_START_REGRESSION_TOTAL);
+
+  it('an exec that outlives its bound terminates the owned process: the fixture stops and the exec settles', async () => {
+    // The real poller, driven through its ops seam against a real container:
+    // the "log read" is a genuinely wedged docker exec (a sleep far beyond
+    // any bound), so its stage bound fires the way it fires when a daemon
+    // stalls — and the only real termination available, stopping the fixture
+    // that owns the process, must actually happen and actually work: the
+    // wedged exec must settle (the container kill ended it) and a further
+    // exec on the fixture must refuse. A raced bound cancels nothing; this
+    // spec pins what does.
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'exec-timeout-regression' })
+      .start();
+    const fixture = ownFixture('the exec-timeout regression container', startup);
+    regressionFixtures.push(fixture);
+    const up = await waitFor('the exec-timeout regression container to start', startup, CONTAINER_START_BUDGET);
+    fixture.up = up;
+    let wedgedSettled = false;
+    const wedged = up.exec(['sh', '-c', 'sleep 120']);
+    wedged.then(
+      () => {
+        wedgedSettled = true;
+      },
+      () => {
+        wedgedSettled = true; // a container kill surfaces as a rejection; settled either way
+      },
+    );
+    const error: Error = await waitFor(
+      'the poller to reject its wedged exec stage at the bound',
+      observeServerChannelFreeInLog(7, {
+        label: 'the exec-timeout regression container to log channel 7 freed (the exec wedges before any evidence could arrive)',
+        deadlineMs: EXEC_TIMEOUT_REGRESSION_DEADLINE,
+      }, {
+        readLog: () => wedged,
+        readEstablished: () => up.exec(['sh', '-c', 'true']),
+        terminateOwnedFixture: (reason) => fixture.requestStop(reason),
+      }).then(
+        () => {
+          throw new Error('the poller resolved, but its exec was wedged far beyond its bound');
+        },
+        (rejection: Error) => rejection,
+      ),
+      EXEC_TIMEOUT_GUARD_BUDGET,
+    );
+    expect(error.message).toMatch(new RegExp(`exceeded its ${EXEC_TIMEOUT_REGRESSION_DEADLINE}ms bound`));
+    expect(error.message).toMatch(/the owned fixture was stopped to terminate the outstanding process/);
+    expect(error.message, error.message).toMatch(/stopped \(an exec of "/);
+    expect(error.message).toMatch(/All 1 outstanding exec\(s\) settled once the fixture stopped/);
+    expect(wedgedSettled, 'the wedged exec must settle once its container was killed').toBe(true);
+    // The real outcome again, independent of any bookkeeping: the stopped
+    // (and removed) fixture can no longer exec.
+    await expect(up.exec(['echo', 'still up?']), 'a fixture stopped over a wedged exec must refuse execs').rejects.toThrow();
+  }, EXEC_TIMEOUT_REGRESSION_TOTAL);
+
   it('pins the platform hazard: a channel request after the channel is gone drops the whole connection', async () => {
     // The late half runs against a disposable TEST-ONLY debug sshd — the same
     // helper image, its sshd started with LogLevel=DEBUG3 and an -E log — so
@@ -311,15 +542,19 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     // ids seen alternating 1,0,1,0 made exactly that ambiguity visible.)
     // The early half stays on the primary container: it pins the absorbed
     // ordering (request dispatched before our CLOSE) and needs no log.
-    debugSshdStartup = new GenericContainer('pocketshell-core-test:helper')
+    debugSshdFixture = ownFixture('the dedicated debug sshd container', new GenericContainer('pocketshell-core-test:helper')
       .withExposedPorts(22)
       .withCommand(['/bin/sh', '-c',
         `exec /usr/sbin/sshd -D -E ${DEBUG_SSHD_LOG} -o LogLevel=DEBUG3 -o PidFile=${DEBUG_SSHD_PIDFILE}`])
-      .start();
+      .withLabels({ 'ps3039.owned-fixture': 'debug-sshd' })
+      .start());
     // The start promise is retained on the suite even if this stage's budget
-    // fires mid-start: afterAll settles it and stops whatever came up, so a
-    // cold start can no longer eat the spec total and bypass the cleanup.
-    debugSshd = await waitFor('the dedicated debug sshd container to start', debugSshdStartup, CONTAINER_START_BUDGET);
+    // fires mid-start: afterAll settles it and stops whatever came up, and —
+    // if the settle bound fires first — leaves the retained late-start
+    // finalizer owning the eventual settle, so a cold start can no longer
+    // eat the spec total and bypass the cleanup.
+    debugSshd = await waitFor('the dedicated debug sshd container to start', debugSshdFixture.startup, CONTAINER_START_BUDGET);
+    debugSshdFixture.up = debugSshd;
     const debugHost = debugSshd.getHost();
     const debugPort = debugSshd.getMappedPort(22);
     const fixture = await waitFor(
@@ -445,15 +680,16 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
       // ESTABLISHED) records, for exactly one lifecycle of the late id:
       //     channel <id>: rcvd close    (the host saw the client's CLOSE)
       //     channel <id>: free: ...     (the host reclaimed the slot)
-      // The poller carries its own deadline and bounds every docker exec, so
+      // The poller carries its own deadline and bounds every exec stage, so
       // it is awaited directly: a closed victim connection or a free that
       // never arrives rejects HERE, at a named stage — no outer race can
-      // orphan the poller into background exec polling or an unhandled
-      // rejection.
-      const observed = await observeServerChannelFreeInLog(debugSshd, lateRemoteId, {
+      // orphan the poller into background exec polling. (Those bounds are
+      // observation bounds: a docker exec RPC cannot be cancelled — the
+      // poller's own contract below states what actually terminates one.)
+      const observed = await observeServerChannelFreeInLog(lateRemoteId, {
         label: 'the debug sshd to log the late channel freed (rcvd close, then free)',
         deadlineMs: OBSERVE_FREE_BUDGET,
-      });
+      }, fixtureOpsFor(debugSshd, (reason) => debugSshdFixture!.requestStop(reason)));
       console.log('[#3039] observed server-side reclamation:\n' + observed);
 
       // Between that log snapshot and this line the spec opens no channel on
@@ -498,10 +734,10 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
       await waitFor(
         'the free-observation deadline to reject the never-arriving evidence',
         expect(
-          observeServerChannelFreeInLog(debugSshd, neverId, {
+          observeServerChannelFreeInLog(neverId, {
             label: `the debug sshd to log channel ${neverId} freed (negative regression: this evidence must never arrive)`,
             deadlineMs: NEGATIVE_DEADLINE_BUDGET,
-          }),
+          }, fixtureOpsFor(debugSshd, (reason) => debugSshdFixture!.requestStop(reason))),
         ).rejects.toThrow(
           new RegExp(`timed out after ${NEGATIVE_DEADLINE_BUDGET}ms waiting for: .*negative regression`),
         ),
@@ -546,6 +782,42 @@ function regionOfLastAcceptedConnection(log: string): { lines: string[]; port: s
 }
 
 /**
+ * The poller's fixture operations, as a seam so the exec-timeout regression
+ * can drive the REAL poller against a REAL container whose exec genuinely
+ * wedges. The production seam (`fixtureOpsFor`) wraps every command in an
+ * in-container `timeout` — the actual command-timeout, so the owned process
+ * really dies at its bound even though the exec RPC itself cannot be
+ * cancelled; the regression's ops deliberately omit the wrapper (a `timeout`
+ * there would rescue the command the regression wedges on purpose).
+ */
+interface PollerFixtureOps {
+  /** One docker exec reading the sshd -E log; `execBoundMs` is the stage's bound. */
+  readLog(execBoundMs: number): Promise<ExecResult>;
+  /** One docker exec listing sshd's ESTABLISHED client ports. */
+  readEstablished(execBoundMs: number): Promise<ExecResult>;
+  /** Stop the fixture owning these execs' processes: the only real
+   * termination for an exec whose stage bound fired. Bounded, idempotent,
+   * reason-labeled, outcome spelled out. */
+  terminateOwnedFixture(reason: string): Promise<OwnedStop>;
+}
+
+function fixtureOpsFor(debugSshd: StartedTestContainer, terminate: (reason: string) => Promise<OwnedStop>): PollerFixtureOps {
+  // The in-container timeout leaves ~1s of headroom under the RPC bound so
+  // the process dies first; in a healthy run the reads finish in
+  // milliseconds and the timeout never fires at all.
+  const withCommandTimeout = (execBoundMs: number, command: string): string[] => {
+    const secs = Math.max(1, Math.floor(execBoundMs / 1000) - 1);
+    return ['sh', '-c', `timeout ${secs} ${command}`];
+  };
+  return {
+    readLog: (execBoundMs) => debugSshd.exec(withCommandTimeout(execBoundMs, `cat ${DEBUG_SSHD_LOG}`)),
+    readEstablished: (execBoundMs) => debugSshd.exec(withCommandTimeout(execBoundMs,
+      "netstat -tn 2>/dev/null | grep ':22 ' | grep ESTABLISHED")),
+    terminateOwnedFixture: terminate,
+  };
+}
+
+/**
  * Poll the debug sshd's own -E log (always over docker exec, never over the
  * victim's SSH connection) until it holds the exact per-channel reclamation
  * evidence for the late channel in the victim connection's own region:
@@ -561,20 +833,45 @@ function regionOfLastAcceptedConnection(log: string): { lines: string[]; port: s
  * id — throws: the proof must be unambiguous, never assumed. The returned
  * string quotes the exact observed lines.
  *
- * The poller owns its deadline: every docker exec is bounded (clamped to the
+ * The poller owns its deadline: every exec stage is bounded (clamped to the
  * deadline's remainder, never below DEBUG_EXEC_FLOOR) and the loop stops at
- * the deadline, so the caller awaits it directly with no outer race. A closed
- * victim connection or a never-arriving free rejects there — naming the stage
- * and the last observed state — instead of leaving background exec polling or
- * an unhandled rejection behind.
+ * the deadline, so the caller awaits it directly with no outer race. Stated
+ * plainly, such a bound is an OBSERVATION bound: a docker exec RPC cannot be
+ * cancelled by anyone. The actual termination paths are: every production
+ * command runs under an in-container `timeout` (the process really dies at
+ * its bound), and an exec whose STAGE bound fired stops the fixture that owns
+ * the process, tracks every exec still outstanding to settlement
+ * (EXEC_STRAGGLER_SETTLE_BUDGET), and composes the whole outcome — stop
+ * result and stragglers included — into the stage's rejection. Under a
+ * permanently unresponsive docker daemon no in-test mechanism can force a
+ * stop RPC to complete: the bound still fires, the failure still propagates
+ * (failing the spec and the cleanup hook), and anything that leaked is
+ * recorded as leaked — an honest limitation, never a claimed guarantee.
  */
 async function observeServerChannelFreeInLog(
-  debugSshd: StartedTestContainer,
   remoteId: number,
   budget: { label: string; deadlineMs: number },
+  ops: PollerFixtureOps,
 ): Promise<string> {
   const deadline = Date.now() + budget.deadlineMs;
   let lastState = 'no log read yet';
+  // Every exec this poller issues stays tracked here until it SETTLES —
+  // resolved or rejected. A stage bound firing does not remove an exec from
+  // this map: the bound cancels nothing, and this map is the honest
+  // inventory of what is still running against the owned fixture.
+  const outstanding = new Map<Promise<unknown>, string>();
+  const tracked = <T>(what: string, op: Promise<T>): Promise<T> => {
+    outstanding.set(op, what);
+    op.then(
+      () => {
+        outstanding.delete(op);
+      },
+      () => {
+        outstanding.delete(op);
+      },
+    );
+    return op;
+  };
   for (;;) {
     // Below the exec floor a clamped exec bound could fire before the exec
     // itself — failing at the bound, not at the deadline. Past this point the
@@ -586,14 +883,20 @@ async function observeServerChannelFreeInLog(
       );
     }
     const execBound = Math.min(DEBUG_EXEC_BUDGET, remaining);
-    const [logRead, established] = await Promise.all([
-      waitFor(`${budget.label} (debug log read)`, debugSshd.exec(['cat', DEBUG_SSHD_LOG]), execBound),
-      waitFor(
-        `${budget.label} (established-port read)`,
-        debugSshd.exec(['sh', '-c', "netstat -tn 2>/dev/null | grep ':22 ' | grep ESTABLISHED"]),
-        execBound,
-      ),
-    ]);
+    let logRead: ExecResult;
+    let established: ExecResult;
+    try {
+      [logRead, established] = await Promise.all([
+        waitFor(`${budget.label} (debug log read)`, tracked('debug log read', ops.readLog(execBound)), execBound),
+        waitFor(
+          `${budget.label} (established-port read)`,
+          tracked('established-port read', ops.readEstablished(execBound)),
+          execBound,
+        ),
+      ]);
+    } catch (stageError) {
+      throw await failExecStage(stageError, execBound);
+    }
     // sshd logs each connection's CLIENT port in its Accepted line; netstat
     // (read server-side, over docker exec) lists that same port for every
     // live connection — the region must be one of the live ones.
@@ -657,6 +960,45 @@ async function observeServerChannelFreeInLog(
       `victim region (client port ${region.port}, ${region.lines.length} lines): ` +
       `rcvd close @${rcvd[0].offset} < free @${freeOffset}; no allocation of id ${remoteId} after the free\n` +
       `  ${rcvd[0].line.trim()}\n  ${region.lines[freeOffset].trim()}`
+    );
+  }
+
+  /**
+   * An exec stage outlived its bound. The bound is an observation bound and
+   * cancels nothing, so: the fixture that owns the wedged process is stopped
+   * for real (a container stop kills its exec'd processes), every exec still
+   * outstanding gets a bounded chance to settle now that its container is
+   * gone, anything still unsettled is handed to a labeled record — never
+   * silently dropped — and the whole outcome is composed into the rejection
+   * that fails the spec.
+   */
+  async function failExecStage(stageError: unknown, execBound: number): Promise<Error> {
+    const outstandingAtFailure = [...outstanding.values()];
+    const stop = await ops.terminateOwnedFixture(
+      `an exec of "${budget.label}" outlived its ${execBound}ms bound; the bound cannot cancel the RPC, ` +
+      'so the fixture owning the process is stopped to terminate it',
+    );
+    const settleDeadline = Date.now() + EXEC_STRAGGLER_SETTLE_BUDGET;
+    while (outstanding.size > 0 && Date.now() < settleDeadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const unsettled = [...outstanding.entries()];
+    for (const [op, what] of unsettled) {
+      op.then(
+        () => console.log(`[#3039 owned exec] ${what}: settled only after ${budget.label}'s stage had already failed (${stop.note})`),
+        (error) => console.error(`[#3039 owned exec] ${what}: rejected after ${budget.label}'s stage had already failed: ${(error as Error).message}`),
+      );
+      outstanding.delete(op);
+    }
+    return new Error(
+      `${budget.label}: an exec stage exceeded its ${execBound}ms bound (${(stageError as Error).message}). ` +
+      `The bound cannot cancel a docker exec, so the owned fixture was stopped to terminate the outstanding ` +
+      `process — ${stop.note}. ` +
+      (unsettled.length === 0
+        ? `All ${outstandingAtFailure.length} outstanding exec(s) settled once the fixture stopped.`
+        : `${unsettled.length} of ${outstandingAtFailure.length} exec(s) remained unsettled after ` +
+          `${EXEC_STRAGGLER_SETTLE_BUDGET}ms and are handed to labeled records: ` +
+          `${unsettled.map(([, what]) => what).join('; ')}`),
     );
   }
 }
