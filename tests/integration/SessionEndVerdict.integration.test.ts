@@ -31,12 +31,17 @@ import { connectSsh, describeDocker, execTransport, type SshHandle } from './hel
  * contract every platform's PTY transport must keep (the Android plugin's
  * guard, #3039).
  *
- * Two more specs pin the fixture lifecycle this file owns: a container start
- * that resolves only after its teardown bound still gets stopped by the
- * retained late-start finalizer, and an exec that outlives its bound is
+ * Three more specs pin the fixture lifecycle this file owns: a container
+ * start that resolves only after its teardown bound still gets stopped by
+ * the retained late-start finalizer; an exec that outlives its bound is
  * terminated for real — the fixture owning the process stopped, the
  * outstanding RPC tracked to settlement — because a raced bound cancels
- * nothing.
+ * nothing; and a fixture's stop request is ONE memoized attempt whose
+ * ACTUAL outcome every caller shares — a stop that failed stays a failure
+ * for the repeated cleanup, concurrent callers wait out the pending attempt
+ * instead of being handed a fabricated ok, and a request that arrives
+ * before the start resolved waits for the real container instead of
+ * inventing an answer and stranding it.
  */
 
 /** The test-only debug sshd's -E log and pidfile inside its own container. */
@@ -74,7 +79,23 @@ const EXEC_STRAGGLER_SETTLE_BUDGET = 10_000; // bounded settle of execs still ou
 const TEARDOWN_PROOF_BOUND_MS = 50; // the late-start regression's deliberately-early teardown settle bound
 const FINALIZER_RECORD_BUDGET = 15_000; // the retained late-start finalizer's bounded stop, observed via its note
 const EXEC_TIMEOUT_REGRESSION_DEADLINE = 5_000; // the exec-timeout regression's poller deadline (the wedged sleep outlives it)
-const EXEC_TIMEOUT_GUARD_BUDGET = 20_000; // outer guard: the regression's poller must reject well inside this
+/** Explicit slack over the exec-timeout guard's composed worst path: the
+ * poll loop's own overhead (poll sleeps, RPC latencies inside their bounds)
+ * on top of the named budgets the guard is composed from. */
+const EXEC_TIMEOUT_GUARD_SLACK = 5_000;
+/** Outer guard around the exec-timeout regression's self-bounding poller,
+ * COMPOSED from the poller's full permitted path — its own deadline (the
+ * stage bound that fires) plus the abnormal-path cleanup it is then
+ * PERMITTED to run (the owning fixture's stop, the bounded settle of the
+ * outstanding execs) — plus explicit slack. A guard set below that sum is
+ * exactly the outer race it exists to prevent: it returns while a permitted
+ * cleanup observer is still running. (The old 20s literal sat below the
+ * permitted 5+20+10=35s — that inversion is why this is composed, never
+ * restated as a literal.) */
+const EXEC_TIMEOUT_GUARD_BUDGET =
+  EXEC_TIMEOUT_REGRESSION_DEADLINE + CLEANUP_STAGE_BUDGET + EXEC_STRAGGLER_SETTLE_BUDGET + EXEC_TIMEOUT_GUARD_SLACK;
+const STOP_MEMOIZATION_HOLD_MS = 500; // how long the controlled stop RPC is held pending before its real outcome is released
+const STOP_MEMOIZATION_PROBE_BUDGET = 2_000; // the bounded proof that concurrent stop callers are still waiting while the RPC is held
 const APLEXER_SETTLE_MS = 1_500; // the pre-existing settle sleep after the primary ssh is up
 
 /** The hazard spec's total: the exact sum of the stage budgets its body can
@@ -94,7 +115,7 @@ const HAZARD_STAGE_BUDGET_TOTAL =
   OBSERVE_FREE_BUDGET + // the poller's internal deadline
   DISCONNECT_BUDGET + // the pinned unknown-channel drop
   NEGATIVE_DEADLINE_BUDGET + NEGATIVE_GUARD_BUDGET + // the negative timeout regression
-  2 * (CLEANUP_STAGE_BUDGET + EXEC_STRAGGLER_SETTLE_BUDGET); // each free-observation's worst abnormal path — an exec whose stage bound fired stops the owned fixture and settles its stragglers (the main observation and the negative regression can each pay this)
+  2 * (DEBUG_EXEC_BUDGET + CLEANUP_STAGE_BUDGET + EXEC_STRAGGLER_SETTLE_BUDGET); // each free-observation's worst abnormal path, in full: an exec stage bound (≤ DEBUG_EXEC_BUDGET) fires, the owned fixture is stopped (CLEANUP_STAGE_BUDGET), and the outstanding execs settle (EXEC_STRAGGLER_SETTLE_BUDGET) — the main observation and the negative regression can each pay this
 
 /** The late-start regression's total: the exact sum of the stages its body can spend. */
 const LATE_START_REGRESSION_TOTAL =
@@ -103,12 +124,13 @@ const LATE_START_REGRESSION_TOTAL =
   FINALIZER_RECORD_BUDGET + // the retained finalizer's bounded stop, observed via its note
   DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
 
-/** The exec-timeout regression's total: the exact sum of the stages its body can spend. */
+/** The exec-timeout regression's total: the exact sum of the stages its body can spend. The
+ * poller's abnormal path is NOT restated here — the guard above is already composed from the
+ * full permitted path (deadline + stop + settle + slack), so restating its parts would
+ * double-count them. */
 const EXEC_TIMEOUT_REGRESSION_TOTAL =
   CONTAINER_START_BUDGET + // the regression's own container
-  EXEC_TIMEOUT_GUARD_BUDGET + // outer guard around the self-bounding poller
-  CLEANUP_STAGE_BUDGET + // the owned-fixture stop on the exec-bound path
-  EXEC_STRAGGLER_SETTLE_BUDGET + // the bounded settle of the outstanding exec
+  EXEC_TIMEOUT_GUARD_BUDGET + // outer guard around the self-bounding poller: its deadline, permitted stop+settle, and slack
   DEBUG_CAPTURE_BUDGET; // the exec-must-refuse outcome proof
 
 interface AttachedClient {
@@ -204,27 +226,47 @@ interface OwnedStop {
 }
 
 /**
+ * The stop RPC a fixture's `requestStop` invokes once: the real container
+ * stop by default; the controlled-stop regressions inject one with a
+ * controlled ACTUAL outcome — a genuine failure, or the real stop released
+ * late — so the memoization contract can be pinned without harming the
+ * daemon. The container itself is never a mock: only the stop RPC's outcome
+ * is the controlled variable.
+ */
+interface OwnedFixtureOps {
+  stopRpc(up: StartedTestContainer): Promise<unknown>;
+}
+
+/**
  * One container this file started, owned from the moment its (real) start
  * promise exists — not from the moment it came up. `requestStop` is the
- * single idempotent stop: whoever asks first (teardown cleanup, the poller
- * terminating a wedged exec, the retained finalizer) names the reason, the
- * stop is bounded, and the outcome is spelled out either way — including a
- * stop that failed, which stays visible as the leak admission it is.
+ * fixture's single stop attempt: whoever asks first (teardown cleanup, the
+ * poller terminating a wedged exec, the retained finalizer) names the
+ * reason, the attempt is bounded, and its ACTUAL outcome — the memoized
+ * `OwnedStop`, success or failure alike — is what EVERY caller awaits. So a
+ * stop that failed stays a failure for the repeated cleanup (afterAll
+ * reports the leak admission it is, never a fabricated ok), a caller
+ * arriving while the attempt is still pending waits for its real outcome,
+ * and a request that arrives before the start resolved invents nothing: the
+ * attempt waits for the real container and stops it once it is up.
  */
 interface OwnedFixture {
   what: string;
   /** The container's REAL start promise, kept even when every await on it
    * has already timed out: the retained finalizer still owns it. */
   startup: Promise<StartedTestContainer>;
-  /** The container, once its start resolved (set by whoever awaited it). */
+  /** The container, once its start resolved (set by whoever awaited it, and
+   * by the stop attempt once the start settled under it). */
   up: StartedTestContainer | undefined;
+  /** True from the moment the single stop attempt EXISTS — not proof that
+   * the stop succeeded, or even that it has finished. */
   stopRequested: boolean;
   /** The retained finalizer's outcome once it ran (undefined until then). */
   finalizerNote: string | undefined;
   requestStop(reason: string): Promise<OwnedStop>;
 }
 
-function ownFixture(what: string, startup: Promise<StartedTestContainer>): OwnedFixture {
+function ownFixture(what: string, startup: Promise<StartedTestContainer>, ops?: OwnedFixtureOps): OwnedFixture {
   const fixture: OwnedFixture = {
     what,
     startup,
@@ -233,21 +275,39 @@ function ownFixture(what: string, startup: Promise<StartedTestContainer>): Owned
     finalizerNote: undefined,
     requestStop,
   };
-  async function requestStop(reason: string): Promise<OwnedStop> {
-    if (fixture.stopRequested) {
-      return { ok: true, note: `${fixture.what}: stop had already been requested; not requested twice` };
+  // The ONE real stop attempt, created by the first requestStop and memoized:
+  // every later caller is handed this same promise, so all of them await the
+  // same actual outcome. The attempt carries the first requester's reason.
+  let stopAttempt: Promise<OwnedStop> | undefined;
+  function requestStop(reason: string): Promise<OwnedStop> {
+    if (stopAttempt) {
+      return stopAttempt;
     }
     fixture.stopRequested = true;
-    const up = fixture.up;
-    if (!up) {
-      return { ok: false, note: `${fixture.what}: stop requested (${reason}) but its start never produced a container` };
-    }
-    try {
-      await waitFor(`${fixture.what} to stop (${reason})`, up.stop(), CLEANUP_STAGE_BUDGET);
-      return { ok: true, note: `${fixture.what}: stopped (${reason})` };
-    } catch (error) {
-      return { ok: false, note: `${fixture.what}: stop FAILED (${reason}): ${(error as Error).message}` };
-    }
+    stopAttempt = (async (): Promise<OwnedStop> => {
+      // A request that arrives before the start resolved waits for the real
+      // container instead of answering on the spot: a pre-startup answer
+      // would either invent an outcome or mark the request served and strand
+      // the container that eventually comes up. A start that REJECTED is
+      // said plainly: nothing came up, nothing could be stopped.
+      let up: StartedTestContainer;
+      try {
+        up = fixture.up ?? (await fixture.startup);
+      } catch (error) {
+        return {
+          ok: false,
+          note: `${what}: stop requested (${reason}) but its start rejected, so nothing came up to stop: ${(error as Error).message}`,
+        };
+      }
+      fixture.up = up;
+      try {
+        await waitFor(`${what} to stop (${reason})`, (ops?.stopRpc ?? ((upContainer: StartedTestContainer) => upContainer.stop()))(up), CLEANUP_STAGE_BUDGET);
+        return { ok: true, note: `${what}: stopped (${reason})` };
+      } catch (error) {
+        return { ok: false, note: `${what}: stop FAILED (${reason}): ${(error as Error).message}` };
+      }
+    })();
+    return stopAttempt;
   }
   return fixture;
 }
@@ -384,9 +444,12 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     if (failures.length > 0) {
       throw new Error(`owned fixture cleanup failed, ${failures.length} step(s):\n  ${failures.join('\n  ')}`);
     }
-    // settle+stop for the debug sshd, the primary, and both regression
-    // fixtures, each stage bounded by CLEANUP_STAGE_BUDGET.
-  }, 8 * CLEANUP_STAGE_BUDGET);
+    // Settle+stop for every fixture this file can own — the primary, the
+    // debug sshd, and the four registered lifecycle/stop-contract regression
+    // fixtures — two bounded steps each (the failed-stop memoization fixture
+    // is deliberately NOT registered: its poisoned memoized failure would
+    // honestly fail this hook, so its spec stops the container itself).
+  }, 12 * CLEANUP_STAGE_BUDGET);
 
   it('a killed session reads as ENDED at its client exit — every time, so nothing re-attaches', async () => {
     for (let round = 0; round < 3; round += 1) {
@@ -531,6 +594,142 @@ describeDocker('session-end verdict on a real aplexer host (#3039)', () => {
     // (and removed) fixture can no longer exec.
     await expect(up.exec(['echo', 'still up?']), 'a fixture stopped over a wedged exec must refuse execs').rejects.toThrow();
   }, EXEC_TIMEOUT_REGRESSION_TOTAL);
+
+  it('a stop that FAILED stays a failure for every later caller: the memoized actual outcome, never a fabricated ok', async () => {
+    // The controlled-operation seam: a real container, but its stop RPC is a
+    // controlled operation that genuinely FAILS (the daemon is untouched —
+    // the failing attempt stops nothing). This is the exact state the old
+    // requestStop misreported: a caller arriving after a failed attempt got
+    // {ok: true, "already requested"}, so a repeated cleanup — afterAll's
+    // included — reported a successful stop that never happened. The
+    // memoized contract: the one attempt's actual outcome is what every
+    // caller awaits, so the failure stays the failure it is.
+    let stopAttempts = 0;
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'failed-stop-memoization' })
+      .start();
+    const fixture = ownFixture('the failed-stop memoization container', startup, {
+      stopRpc: () => {
+        stopAttempts += 1;
+        return Promise.reject(new Error('controlled stop failure: the injected stop RPC rejected'));
+      },
+    });
+    // Deliberately NOT registered in regressionFixtures: this fixture's seam
+    // is poisoned with a memoized FAILURE — afterAll ownership would
+    // honestly report it as a cleanup failure — so this spec performs the
+    // real stop itself, below, and proves the container gone.
+    const up = await waitFor('the failed-stop memoization container to start', startup, CONTAINER_START_BUDGET);
+    fixture.up = up;
+    const first = await waitFor('the injected stop attempt to fail', fixture.requestStop('the first cleanup'), CLEANUP_STAGE_BUDGET);
+    expect(first.ok, first.note).toBe(false);
+    expect(first.note, first.note).toMatch(/stop FAILED \(the first cleanup\): .*controlled stop failure/);
+    const repeated = await fixture.requestStop('the repeated cleanup');
+    expect(repeated, 'the repeated cleanup must see the memoized failure, not a fabricated ok').toEqual(first);
+    const afterTheFact = await fixture.requestStop('a cleanup arriving after the failure had settled');
+    expect(afterTheFact, 'even a later cleanup sees the same actual outcome').toEqual(first);
+    expect(stopAttempts, 'the single stop attempt must have run exactly once').toBe(1);
+    // The real outcome, and the real cleanup the failure note demands: the
+    // failed attempt left the container up, so the spec stops it directly —
+    // outside the poisoned seam — and proves it gone.
+    await waitFor('the failed-stop container to stop for real', up.stop(), CLEANUP_STAGE_BUDGET);
+    await expect(up.exec(['echo', 'still up?']), 'a directly stopped container must refuse execs').rejects.toThrow();
+  }, CONTAINER_START_BUDGET + 2 * CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
+
+  it('concurrent stop requests share the one attempt: while it is pending they wait, and all get its actual outcome', async () => {
+    // The controlled-operation seam again: the stop RPC is the REAL stop,
+    // released only after concurrent callers have been observed waiting — so
+    // the actual outcome they eventually share is the real stop's outcome,
+    // merely late. The old requestStop answered a caller arriving during a
+    // pending attempt on the spot with a fabricated {ok: true}, whatever the
+    // attempt then concluded.
+    let releaseStop: (outcome: Promise<unknown>) => void = () => undefined;
+    let stopInvocations = 0;
+    const heldStop = new Promise<unknown>((resolve) => {
+      releaseStop = resolve;
+    });
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'concurrent-stop-memoization' })
+      .start();
+    const fixture = ownFixture('the concurrent-stop memoization container', startup, {
+      stopRpc: () => {
+        stopInvocations += 1;
+        return heldStop;
+      },
+    });
+    regressionFixtures.push(fixture);
+    const up = await waitFor('the concurrent-stop memoization container to start', startup, CONTAINER_START_BUDGET);
+    fixture.up = up;
+    const first = fixture.requestStop('the first cleanup (held pending by the controlled seam)');
+    const concurrent = fixture.requestStop('a concurrent cleanup arriving while the attempt was pending');
+    // While the RPC is held, NEITHER caller may be answered: a fabricated
+    // immediate ok would surface right here.
+    const whileHeld = await waitFor(
+      'the concurrent callers to still be waiting while the stop RPC is held',
+      Promise.race([
+        Promise.all([first, concurrent]).then(() => 'answered early'),
+        new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), STOP_MEMOIZATION_HOLD_MS)),
+      ]),
+      STOP_MEMOIZATION_PROBE_BUDGET,
+    );
+    expect(whileHeld, 'no caller may be answered while the single attempt is still pending').toBe('still waiting');
+    // Release the attempt: the REAL stop runs, and its actual outcome is
+    // what both callers — and any later one — share.
+    releaseStop(up.stop());
+    const [firstOutcome, concurrentOutcome] = await waitFor(
+      'both concurrent stop callers to settle at the actual stop outcome',
+      Promise.all([first, concurrent]),
+      CLEANUP_STAGE_BUDGET,
+    );
+    expect(firstOutcome, firstOutcome.note).toEqual(concurrentOutcome);
+    expect(firstOutcome.ok, firstOutcome.note).toBe(true);
+    expect(firstOutcome.note, firstOutcome.note).toMatch(/stopped \(the first cleanup/);
+    expect(stopInvocations, 'the single stop attempt must have run exactly once').toBe(1);
+    const later = await fixture.requestStop('a cleanup arriving after the outcome had settled');
+    expect(later, 'a later cleanup sees the same memoized outcome').toEqual(firstOutcome);
+    expect(stopInvocations).toBe(1);
+    // The real outcome: the released stop really removed the container.
+    await expect(up.exec(['echo', 'still up?']), 'a container whose single stop both callers awaited must refuse execs').rejects.toThrow();
+  }, CONTAINER_START_BUDGET + STOP_MEMOIZATION_PROBE_BUDGET + CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
+
+  it('a stop requested before the start resolved invents nothing: it waits for the real container and stops it once up', async () => {
+    // The old shape answered a pre-startup request on the spot with
+    // {ok: false, "start never produced a container"} — and marked the
+    // request served, so the container that DID come up was never stopped: a
+    // later caller got the fabricated {ok: true, "already requested"}. The
+    // memoized attempt instead waits for the real start and stops the real
+    // container once it is up — one attempt, actual outcome. Production seam
+    // throughout: the real stop, counted.
+    let stopInvocations = 0;
+    const startup = new GenericContainer('pocketshell-core-test:helper')
+      .withCommand(['/bin/sh', '-c', 'exec sleep 300'])
+      .withLabels({ 'ps3039.owned-fixture': 'pre-startup-stop' })
+      .start();
+    const fixture = ownFixture('the pre-startup-stop container', startup, {
+      stopRpc: (upContainer) => {
+        stopInvocations += 1;
+        return upContainer.stop();
+      },
+    });
+    regressionFixtures.push(fixture);
+    const requested = fixture.requestStop('the pre-startup stop regression');
+    expect(fixture.stopRequested, 'the request is recorded the moment it arrives').toBe(true);
+    const outcome = await waitFor(
+      'the pre-startup stop to complete once the container came up',
+      requested,
+      CONTAINER_START_BUDGET + CLEANUP_STAGE_BUDGET,
+    );
+    expect(outcome.ok, outcome.note).toBe(true);
+    expect(outcome.note, outcome.note).toMatch(/stopped \(the pre-startup stop regression/);
+    expect(stopInvocations, 'the single stop attempt must have run exactly once, after the start resolved').toBe(1);
+    const later = await fixture.requestStop('a cleanup arriving after the outcome had settled');
+    expect(later, 'a later cleanup sees the same memoized outcome').toEqual(outcome);
+    expect(stopInvocations).toBe(1);
+    // The real outcome, independent of the fixture's bookkeeping.
+    expect(fixture.up).toBeDefined();
+    await expect(fixture.up!.exec(['echo', 'still up?']), 'a container the pre-startup request stopped must refuse execs').rejects.toThrow();
+  }, CONTAINER_START_BUDGET + CLEANUP_STAGE_BUDGET + DEBUG_CAPTURE_BUDGET);
 
   it('pins the platform hazard: a channel request after the channel is gone drops the whole connection', async () => {
     // The late half runs against a disposable TEST-ONLY debug sshd — the same
