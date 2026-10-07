@@ -58,6 +58,15 @@ export interface HostEntry {
   remoteForwards: ForwardSpec[];
   /** True if this entry came from ~/.ssh/config (vs manual entry). */
   fromConfig: boolean;
+  /**
+   * True for the platform's own machine — the desktop's "self" host. A dial
+   * to it opens processes directly on the client's computer (no SSH): exec
+   * and the PTY shells run locally, so aplexer sessions there are the same
+   * panel, the same join, no network. Only a platform that can act as its
+   * own host produces such an entry; every other platform leaves the field
+   * off and keeps dialling.
+   */
+  local?: boolean;
 }
 
 /** A single port-forward rule. */

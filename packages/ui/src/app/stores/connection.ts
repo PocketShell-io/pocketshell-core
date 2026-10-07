@@ -404,6 +404,8 @@ export const useConnectionStore = defineStore('connection', () => {
         // dial. A platform without gateway support refuses a present marker
         // at its boundary, before credentials or sockets.
         ...transportMarkers(host),
+        // A `local` host dials nothing: main opens its processes directly.
+        ...(host.local ? { local: true } : {}),
         // A platform that asks (`ssh.onTrustDecision`) gets NO standing
         // decision: an unknown key must reach the user, never pin silently.
         ...(asksTrust ? {} : { tofuDecision: 'accept-always' as const }),

@@ -170,6 +170,13 @@ export interface PocketShellApi {
          */
         link?: unknown;
         gateway?: unknown;
+        /**
+         * True when the dial targets the platform's own machine (a
+         * `HostEntry.local` host, the desktop's "self"): main then opens
+         * processes directly instead of speaking SSH. Platforms without a
+         * local transport never see the flag.
+         */
+        local?: boolean;
       }) => Promise<ConnectResult>;
     "exec": (connectionId: string, command: string) => Promise<ExecResult>;
     "close": (connectionId: string) => Promise<boolean>;

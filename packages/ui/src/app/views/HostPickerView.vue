@@ -532,7 +532,10 @@ function onClearDefault(): void {
                 }"
               />
               <span class="host-name">{{ host.name }}</span>
-              <span class="host-detail">
+              <!-- A local host dials nothing, so the user@host:port spelling
+                   would read as a bug ("self@self:0"). One honest line instead. -->
+              <span v-if="host.local" class="host-detail">This computer — local, no SSH</span>
+              <span v-else class="host-detail">
                 {{ host.user || '(default user)' }}@{{ host.hostname }}:{{ host.port }}
               </span>
               <span v-if="connectingKey === hostEntryId(host)" class="muted">connecting…</span>
