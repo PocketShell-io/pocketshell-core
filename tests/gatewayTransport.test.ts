@@ -23,6 +23,14 @@ import type { HostEntry } from '../src/types';
 // service.go, identity.go).
 
 describe('gateway target validation', () => {
+  it('refuses original credential path and control placements before URL canonicalization', () => {
+    for (const input of [ 'wss://secret@gateway.example', 'wss://gateway.example/secret/..',
+      'wss://gate\tway.example', 'wss://gate\nway.example', 'wss://%67ateway.example',
+      'wss://gateway.example?token=secret', 'wss://gateway.example#secret' ]) {
+      expect(normalizeGatewayServerUrl(input)).toBeNull();
+    }
+  });
+
   it('the canonical production URL normalizes to itself', () => {
     expect(normalizeGatewayServerUrl('wss://gateway.pocketshell.io')).toBe(GATEWAY_DEFAULT_SERVER_URL);
     expect(normalizeGatewayServerUrl('wss://gateway.pocketshell.io/')).toBe(GATEWAY_DEFAULT_SERVER_URL);

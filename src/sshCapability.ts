@@ -1,3 +1,4 @@
+import type { GatewayTransportTarget } from './gatewayTransport';
 import type { HostKeyTrustPin, PresentedHostKey } from './hostKeyTrustCore';
 
 /** Stable opaque identifier owned by the platform's SSH key storage. */
@@ -66,6 +67,9 @@ export interface SshHostTarget {
    * then be `link-token`; `hostname`/`port` are display-only for such hosts.
    */
   link?: LinkTransportTarget;
+  /** Gateway transports MUST verify the independently paired host key before authentication.
+   * They never use ordinary TOFU or a caller-supplied expectedHostKey. */
+  gateway?: GatewayTransportTarget;
 }
 
 export interface SshConnectionRef {
@@ -106,6 +110,9 @@ export interface SshConnectOptions extends SshHostTarget {
 }
 
 export interface SshConnectResult extends SshConnectionRef {
+  /** Trusted platform receipt: true ONLY after native/local pairing pin verification
+   * before userauth. Never derived from a gateway ready advisory. */
+  gatewayHostKeyVerified?: true;
   requestId: string;
   hostKey: PresentedHostKey;
 }
