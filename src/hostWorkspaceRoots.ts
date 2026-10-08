@@ -51,6 +51,8 @@ export interface WorkspaceRootsCli {
  * platform builds it with {@link workspaceRootsApiFromExec}.
  */
 export interface WorkspaceRootsApi {
+  /** Optional per-connection authority. Absent retains platform-wide host roots. */
+  capability?(connectionId: string): Promise<{ hostIdentity: string } | null>;
   list(connectionId: string, host: string): Promise<WorkspacesListing>;
   add(connectionId: string, host: string, path: string): Promise<WorkspacesListing>;
   remove(connectionId: string, host: string, path: string): Promise<WorkspacesListing>;

@@ -46,7 +46,8 @@ function browserStorage(): WorkspaceStringStorage {
 
 export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
   const settings = useSettingsStore();
-  const hostManaged = computed(() => api.workspaces !== undefined);
+  const authority = ref<'local' | 'checking' | 'host'>(api.workspaces?.capability ? 'local' : 'host');
+  const hostManaged = computed(() => api.workspaces !== undefined && authority.value !== 'local');
 
   let model: HostWorkspaceRoots | null = null;
   let orderStore: WorkspaceRootOrderStore | null = null;
@@ -68,7 +69,7 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
    * rows stay true, but a user should not act on rows that are being read).
    */
   const rootsBusy = computed(
-    () => hostManaged.value && (state.value.mutating || state.value.status === 'loading'),
+    () => hostManaged.value && (authority.value === 'checking' || state.value.mutating || state.value.status === 'loading'),
   );
   const boundConnection = ref<string | null>(null);
   /**
@@ -82,6 +83,7 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
    *  caller for the same binding waits on it instead of re-listing. */
   let bindTask: Promise<void> = Promise.resolve();
   let bindKey = '';
+  let bindEpoch = 0;
 
   function ensureModel(): HostWorkspaceRoots {
     if (model) return model;
@@ -113,26 +115,62 @@ export const useWorkspaceRootsStore = defineStore('workspaceRoots', () => {
     if (key && key === bindKey && entry) boundName.value = entry.name;
     if (key === bindKey) return bindTask;
     bindKey = key;
+    const epoch = ++bindEpoch;
     if (!connectionId || !host || !entry) {
+      authority.value = workspaces.capability ? 'local' : 'host';
       boundConnection.value = null;
       boundName.value = '';
       bindTask = roots.select(null);
       return bindTask;
     }
+    authority.value = workspaces.capability ? 'checking' : 'host';
     boundConnection.value = connectionId;
     boundName.value = entry.name;
-    // The Settings list is keyed by alias; it is only read, as the restore source.
-    const local = settings.sessionRootsFor(entry.name);
-    bindTask = roots.select({
-      hostIdentity: host,
-      cli: workspaceRootsCliForConnection(workspaces, connectionId),
-      previousRoots: local.length ? { roots: local, rootOrder: local } : null,
-    });
+    bindTask = (async () => {
+      await roots.select(null);
+      if (epoch !== bindEpoch) return;
+      let identity = host;
+      if (workspaces.capability) {
+        authority.value = 'checking';
+        state.value = { ...state.value, status: 'loading', error: null };
+        try {
+          const capability = await workspaces.capability(connectionId);
+          if (epoch !== bindEpoch) return;
+          if (capability === null) {
+            authority.value = 'local';
+            boundConnection.value = null;
+            boundName.value = '';
+            await roots.select(null);
+            return;
+          }
+          if (typeof capability.hostIdentity !== 'string' || !capability.hostIdentity.trim()
+            || capability.hostIdentity.trim() !== capability.hostIdentity) {
+            throw new Error('The host workspace capability has no valid canonical identity.');
+          }
+          identity = capability.hostIdentity;
+        } catch (error) {
+          if (epoch !== bindEpoch) return;
+          // Failed qualification must remain visible, never become local authority.
+          authority.value = 'host';
+          state.value = { ...state.value, status: 'error', error: (error as Error).message };
+          return;
+        }
+      }
+      authority.value = 'host';
+      boundConnection.value = connectionId;
+      // Settings stays the read-only restore source, partitioned by display alias.
+      const local = settings.sessionRootsFor(boundName.value);
+      await roots.select({
+        hostIdentity: identity,
+        cli: workspaceRootsCliForConnection(workspaces, connectionId),
+        previousRoots: local.length ? { roots: local, rootOrder: local } : null,
+      });
+    })();
     return bindTask;
   }
 
   async function refresh(): Promise<void> {
-    if (hostManaged.value) await ensureModel().refresh();
+    if (authority.value === 'host' && hostManaged.value) await ensureModel().refresh();
   }
 
   /** The registered roots, in display order, as membership rows. */

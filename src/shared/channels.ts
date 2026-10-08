@@ -261,6 +261,13 @@ export const ipc = {
      */
     open: 'update:open',
   },
+  /** Registered roots for a qualified per-connection host CLI. */
+  workspaces: {
+    capability: 'workspaces:capability',
+    list: 'workspaces:list',
+    add: 'workspaces:add',
+    remove: 'workspaces:remove',
+  },
   /**
    * Open this host + folder in an external desktop editor (docs/ARCHITECTURE.md
    * §10). The renderer sends FIELDS — which host token, which path — and main
