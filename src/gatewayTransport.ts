@@ -72,6 +72,9 @@ export function isValidGatewayDeviceId(deviceId: string): boolean {
 export function normalizeGatewayServerUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
+  // Reviewed cd917b7 origin grammar: inspect text before WHATWG can erase placements.
+  const origin = /^(wss|ws|https|http):\/\/([^/?#]*)(\/)?$/i.exec(trimmed);
+  if (!origin || !/^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(:[0-9]{1,5})?$/.test(origin[2]!)) return null;
   let candidate = trimmed;
   const httpLike = /^(https?):\/\//i.exec(trimmed);
   if (httpLike !== null) {

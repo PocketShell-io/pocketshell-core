@@ -464,6 +464,56 @@ describe('JS connection and session policy', () => {
     await Promise.all(controllers.splice(0).map((controller) => controller.close()));
   });
 
+  it('requires a platform gateway pin-verification receipt without loading ordinary TOFU trust', async () => {
+    const capability = new FakeCapability();
+    capability.connect = async (options) => {
+      capability.connectCalls.push(options);
+      return { requestId: options.requestId, connectionId: 'gateway-connection', generationId: options.generationId,
+        hostKey: HOST_KEY, gatewayHostKeyVerified: true };
+    };
+    const trust = trustStore(PIN);
+    const { controller } = controllerFor(capability, trust);
+    controllers.push(controller);
+    expect((await controller.connect({ ...host, gateway: { serverUrl: 'wss://gateway.example', deviceId: 'device-a' } })).ok).toBe(true);
+    expect(trust.store.get).not.toHaveBeenCalled();
+    expect(trust.store.record).not.toHaveBeenCalled();
+    expect(capability.connectCalls[0].expectedHostKey).toBeNull();
+    expect(controller.getSnapshot().trustDecision).toBeNull();
+  });
+
+  it('closes a gateway result lacking pin verification and never offers TOFU', async () => {
+    const capability = new FakeCapability();
+    capability.connect = async (options) => ({ requestId: options.requestId, connectionId: 'unverified-gateway',
+      generationId: options.generationId, hostKey: HOST_KEY });
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    expect((await controller.connect({ ...host, gateway: { serverUrl: 'wss://gateway.example', deviceId: 'device-a' } })).ok).toBe(false);
+    expect(capability.closedConnectionIds).toContain('unverified-gateway');
+    expect(controller.getSnapshot().phase).toBe('error');
+    expect(controller.getSnapshot().trustDecision).toBeNull();
+  });
+
+  it('never offers a gateway host-key mismatch as a TOFU decision', async () => {
+    const capability = new FakeCapability();
+    capability.connect = async () => { throw new SshCapabilityError('Paired host key mismatch.', 'HOST_KEY_REJECTED', HOST_KEY); };
+    const { controller } = controllerFor(capability);
+    controllers.push(controller);
+    expect((await controller.connect({ ...host, gateway: { serverUrl: 'wss://gateway.example', deviceId: 'device-a' } })).ok).toBe(false);
+    expect(controller.getSnapshot().phase).toBe('error');
+    expect(controller.getSnapshot().trustDecision).toBeNull();
+  });
+
+  it('rejects present malformed and conflicting gateway markers before a capability effect', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability);
+    controllers.push(controller);
+    for (const target of [ { ...host, gateway: null }, { ...host, gateway: undefined },
+      { ...host, gateway: { serverUrl: 'wss://gateway.example', deviceId: 'device-a' }, link: undefined } ]) {
+      expect((await controller.connect(target as unknown as SshHostTarget)).ok).toBe(false);
+    }
+    expect(capability.connectCalls).toHaveLength(0);
+  });
+
   it('runs the portable policy contract as a shared source-level suite', async () => {
     await expect(runConnectionControllerContract(await import('../src'))).resolves.toMatch(/^assertions=\d+$/);
   });

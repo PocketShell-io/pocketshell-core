@@ -1,3 +1,4 @@
+import { normalizeGatewayTarget } from './gatewayTransport';
 import { HostCliCore } from './hostCliCore';
 import { HostCliFailed, type HostCliExecOutcome, type HostCliTransport } from './hostCliCommon';
 import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
@@ -953,8 +954,17 @@ export class ConnectionController {
     this.lastDialRetryable = true;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
     try {
-      expectedHostKey = (await this.trustStore.get(host.hostId))
-        ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
+      const gatewayDial = Object.prototype.hasOwnProperty.call(host, 'gateway');
+      if (gatewayDial) {
+        const gateway = normalizeGatewayTarget(host.gateway);
+        if (!gateway || Object.prototype.hasOwnProperty.call(host, 'link')
+          || gateway.serverUrl !== host.gateway?.serverUrl || gateway.deviceId !== host.gateway?.deviceId) {
+          throw new Error('The gateway target is malformed or conflicts with a link target.');
+        }
+      } else {
+        expectedHostKey = (await this.trustStore.get(host.hostId))
+          ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
+      }
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const connected = await this.capability.connect({
         ...host,
@@ -976,7 +986,11 @@ export class ConnectionController {
         await this.closeReturnedConnection(connected);
         throw new Error('SSH connect returned an invalid host key.');
       }
-      const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
+      if (gatewayDial && connected.gatewayHostKeyVerified !== true) {
+        await this.closeReturnedConnection(connected);
+        throw new Error('The gateway transport did not verify the paired SSH host key.');
+      }
+      const verdict = gatewayDial ? 'trusted' : verifyHostKeyTrustPin(expectedHostKey, presented);
       if (verdict !== 'trusted') {
         await this.closeReturnedConnection(connected);
         if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
@@ -997,7 +1011,7 @@ export class ConnectionController {
       const sshError = readSshCapabilityError(error);
       this.lastDialRetryable = isRetryableDialError(error);
       const presented = this.readPresentedKey(sshError.data);
-      if (sshError.code === 'HOST_KEY_REJECTED' && presented) {
+      if (!Object.prototype.hasOwnProperty.call(host, 'gateway') && sshError.code === 'HOST_KEY_REJECTED' && presented) {
         const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
         if (verdict !== 'trusted') {
           return this.presentHostKeyDecision(host, generationId, expectedHostKey, presented, verdict);
