@@ -426,7 +426,9 @@ export interface PocketShellApi {
     // Optional capability: the host CLI's `pocketshell workspaces` contract
     // (core `workspaceRootsApiFromExec` builds it from the platform's exec).
     // With it, the session panel's roots are the host's own registrations,
-    // partitioned by the stable host identity; without it they stay the
+    // partitioned by the stable host identity. Optional capability(connectionId)
+    // selects host authority per connection; null retains local Settings roots.
+    // Without the group they stay the
     // per-host list in Settings. See stores/workspaceRoots.ts.
     "workspaces"?: WorkspaceRootsApi;
 
