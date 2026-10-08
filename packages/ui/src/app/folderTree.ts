@@ -33,20 +33,22 @@
  *
  * ## The pipeline, and the quick search at its end
  *
- * The full derivation is four pure stages: the host's order
+ * The full derivation is five pure stages: the host's order
  * (`groupSessionsIntoRoots`), the user's picked sort (`applyFolderSort`),
- * the user's dragged arrangement (`applyFolderOrder`), and the quick search
- * (`filterFolderRoots`) — the only stage that REMOVES rows rather than
- * ordering them. It runs last so that everything downstream — the rows, the
- * chord, the collapsed rail's switcher — sees exactly the tree the panel
- * draws: a `Ctrl+↓` that opened a workspace whose row the filter is hiding
- * would be this file's two-derivations bug, one level up. The one reader that
- * must NOT see the filter is a count that describes the host, which is why
- * `allFolders` is published beside `folders`.
+ * the user's dragged arrangement (`applyFolderOrder`), the user's dragged
+ * ROOT arrangement (`applyRootOrder` — one level up from the folder one), and
+ * the quick search (`filterFolderRoots`) — the only stage that REMOVES rows
+ * rather than ordering them. It runs last so that everything downstream — the
+ * rows, the chord, the collapsed rail's switcher — sees exactly the tree the
+ * panel draws: a `Ctrl+↓` that opened a workspace whose row the filter is
+ * hiding would be this file's two-derivations bug, one level up. The one
+ * reader that must NOT see the filter is a count that describes the host,
+ * which is why `allFolders` is published beside `folders`.
  */
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 import { filterFolderRoots } from './folderFilter';
 import { applyFolderOrder } from './folderOrder';
+import { applyRootOrder } from './rootOrder';
 import { applyFolderSort } from './folderSort';
 import { inferHome } from './sessionRoots';
 import { groupSessionsIntoRoots, type SessionDirectory, type SessionRootFolder } from './sessionTree';
@@ -152,14 +154,17 @@ export function useFolderTree(): FolderTree {
   const host = computed(() => connection.activeHost?.name ?? '');
 
   /**
-   * The panel's order, in its three stages.
+   * The panel's order, in its four stages.
    *
    * The HOST's order first (`groupSessionsIntoRoots` folds the listing
    * document-order), then the sort the user picked (`applyFolderSort` — a no-op
    * for the `host` key, which is what a user who never opened the sort menu
    * sees), then the user's own dragged arrangement on top (`applyFolderOrder`
    * — a manual position wins over both; unranked folders keep the sorted order
-   * relative to each other, because both projections are stable).
+   * relative to each other, because both projections are stable), then the
+   * dragged ROOT arrangement (`applyRootOrder` — same ranking shape, applied
+   * to the root sections the folders group under; it composes with any sort,
+   * because a sort never reorders the root sequence).
    *
    * Pure projections, deliberately: the sessions store refreshes every five
    * seconds and this recomputes each time, so every stage is re-APPLIED rather
@@ -181,7 +186,10 @@ export function useFolderTree(): FolderTree {
     ),
   );
   const arranged = computed(() =>
-    applyFolderOrder(grouped.value, settings.folderOrderFor(host.value)),
+    applyRootOrder(
+      applyFolderOrder(grouped.value, settings.folderOrderFor(host.value)),
+      settings.rootOrderFor(host.value),
+    ),
   );
 
   // The filter is the LAST stage and the only one that removes rows rather

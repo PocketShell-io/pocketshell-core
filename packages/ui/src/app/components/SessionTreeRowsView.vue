@@ -62,6 +62,10 @@ const props = withDefaults(
     /** Folder drag state, owned by the wrapper's `useFolderDrag`. */
     dragging?: string | null;
     dropTarget?: FolderDropTarget | null;
+    /** Root drag state, same owner: the header being dragged, and where it would land. */
+    rootDragging?: string | null;
+    /** The gap index a dragged root header would land in, over the panel's roots. */
+    rootDropTarget?: number | null;
     /**
      * Every drawn folder's stored tab ranking, keyed by folder key — what the
      * folder's workspace tab bar applies (`applyTabOrder` over the
@@ -100,6 +104,8 @@ const props = withDefaults(
     showSessions: false,
     dragging: null,
     dropTarget: null,
+    rootDragging: null,
+    rootDropTarget: null,
     showMaintenance: false,
     maintenanceCount: 0,
   },
@@ -121,6 +127,9 @@ const emit = defineEmits<{
   dragOver: [root: SessionRootFolder, index: number, e: DragEvent];
   drop: [];
   dragEnd: [];
+  rootDragStart: [root: SessionRootFolder, e: DragEvent];
+  rootDragOver: [index: number, e: DragEvent];
+  rootDrop: [];
 }>();
 
 /**
@@ -223,14 +232,28 @@ function onFolderClick(dir: SessionDirectory): void {
        abandoned over the header would leave the dragged row faded forever.
        Same placement, same reason, as the tab strip's `<nav @dragend>`. -->
   <div class="folder-list" :class="{ leaves: props.showSessions }" @dragend="emit('dragEnd')">
-    <section v-for="{ root, header } in rootRows" :key="root.key" class="folder">
+    <section v-for="({ root, header }, ri) in rootRows" :key="root.key" class="folder">
       <!-- A plain element, not a <button>, and no disclosure mark: now that
            sessions live in workspace tabs the panel is root -> folder, and a
            root row is a grouping HEADER over its folders rather than a node
            with something hidden under it. A chevron here would advertise an
-           interaction that does not exist, so the row is not interactive at
-           all — the tooltip is the only thing it still offers, and it carries
+           interaction that does not exist, so the row still takes no CLICK —
+           the tooltip is the only thing it offers on hover, and it carries
            real information (the root's path and its size).
+
+           The one gesture it does take is the reorder drag the folder rows
+           take: the header is draggable, and pulling it up or down moves the
+           ROOT among its siblings (`../rootOrder.ts` holds why the headers,
+           unlike the rows, may be rearranged). Same native DnD family, so the
+           same three rules carry over — the drag does not fight any click
+           because there is no click to fight, the dragged header fades but
+           stays in place, and the landing place is drawn as a 2px accent rule
+           in the gap, with a refused drop drawing nothing at all.
+
+           NOT while a filter is up (a drag writes the whole panel's root keys
+           in draw order, and under a filter that list is the survivors'), and
+           not on `other`, which is a bucket pinned last — there is no gap it
+           can meaningfully land in (`canDropRootAt` refuses every one).
 
            ROOT ROWS ARE DELIBERATELY ALWAYS OPEN. If collapsing ever comes
            back, it must NOT be driven off the root list: `roots` recomputes
@@ -239,7 +262,20 @@ function onFolderClick(dir: SessionDirectory): void {
            user closed it. The state removed here dodged that by watching the
            ACTIVE FOLDER instead, so a deliberate collapse survived until the
            user navigated somewhere else. That is the trap, written down. -->
-      <div class="folder-header" :title="rootTooltip(root)">
+      <div
+        class="folder-header"
+        :class="{
+          dragging: props.rootDragging === root.key,
+          'drop-above': props.rootDropTarget === ri,
+          'drop-below':
+            props.rootDropTarget === props.roots.length && ri === props.roots.length - 1,
+        }"
+        :title="rootTooltip(root)"
+        :draggable="root.other || props.filtering ? 'false' : 'true'"
+        @dragstart="emit('rootDragStart', root, $event)"
+        @dragover="emit('rootDragOver', ri, $event)"
+        @drop.prevent="emit('rootDrop')"
+      >
         <!-- The dot is how a root reports attachment in ONE mark: a reader
              scanning the headers sees which roots have something live in them
              without reading the folder rows underneath, and on a registered
@@ -683,6 +719,25 @@ function onFolderClick(dir: SessionDirectory): void {
  * cursor" failure the fade is avoiding. The shadow is drawn on the `<li>`
  * because the button's own left border is already spent on the selection rail.
  */
+/* ---- dragging a ROOT header ---------------------
+ *
+ * The folder drag's three rules, one level up (`.dir-header.dragging` and the
+ * `li` rules below): the carried header FADES BUT STAYS IN PLACE, the landing
+ * place is a 2px accent rule in the gap, and a REFUSED drop draws nothing at
+ * all — which is how the rules this drag enforces (the `other` bucket cannot
+ * be carried, and nothing lands below it) are made visible while the drag is
+ * still in the air. `inset` box-shadow rather than a real border, for the same
+ * height-shifting reason the folder rows give.
+ */
+.folder-header.dragging {
+  opacity: var(--disabled-opacity);
+}
+.folder-header.drop-above {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.folder-header.drop-below {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
 .dir-header.dragging {
   opacity: var(--disabled-opacity);
 }

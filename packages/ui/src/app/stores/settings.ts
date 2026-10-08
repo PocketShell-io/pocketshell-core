@@ -12,6 +12,7 @@ import {
   normaliseFolderSort,
   type FolderSortKey,
 } from '../folderSort';
+import { type RootOrder } from '../rootOrder';
 import { normaliseRootList, normaliseRootPath, SESSION_ROOTS_MAX } from '../sessionRoots';
 import { LOCAL_SHELL_DEFAULT, parseLocalShell } from '@pocketshell/core';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
@@ -196,6 +197,26 @@ export interface AppSettings {
    * them.
    */
   folderOrder: FolderOrder;
+  /**
+   * The session panel's HAND-ARRANGED ROOT order, per host alias — the
+   * headers (`~/git`, `~/tmp`) the folder rows group under, one level above
+   * {@link folderOrder}.
+   *
+   * Same shape, same ranking-not-a-list argument (`app/rootOrder.ts`, which
+   * cites `app/folderOrder.ts`'s): roots come and go — registered in
+   * Settings, unregistered on the host, appearing because a session landed in
+   * one — while the panel re-reads every five seconds, so a stored list would
+   * need reconciling on every tick. Root keys are home-relative paths
+   * (`~/git`) or the `other` sentinel, so they survive restarts the way folder
+   * keys do. PER HOST, keyed on the alias, for `folderOrder`'s reason.
+   *
+   * DELIBERATELY NOT cleared by {@link setSessionTreeSort}: a sort reorders
+   * the rows WITHIN a root and never touches the root sequence
+   * (`app/folderSort.ts`), so a kept sort cannot veto these ranks the way it
+   * vetoes folder ranks — there is nothing to make exclusive, and a root drag
+   * correspondingly leaves the sort alone.
+   */
+  rootOrder: RootOrder;
   /**
    * The sort the session panel orders its folder rows by, one of
    * `app/folderSort.ts`'s keys — `host` (the listing's own order, what
@@ -506,6 +527,12 @@ const SETTING_SPECS: SettingSpecs = {
   // the panel does for a user who has never dragged a row — the same rule
   // every other default here follows.
   folderOrder: { default: {}, parse: normaliseFolderOrder },
+  // Parsed by `folderOrder`'s normaliser on purpose: the blob shape, its caps
+  // and its failure modes are identical, only the keys name roots. Empty
+  // means "the grouped order — registered, or first appearance — as the
+  // panel has always drawn it", which is what a user who never dragged a
+  // header must keep seeing.
+  rootOrder: { default: {}, parse: normaliseFolderOrder },
   // 'host' is what shipped — the listing's own order, no client-side sort —
   // so an upgrade changes nothing on screen until the user opens the sort menu.
   sessionTreeSort: { default: FOLDER_SORT_DEFAULT, parse: normaliseFolderSort },
@@ -798,6 +825,36 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   /**
+   * The root headers [host] has been arranged into, or `[]` when it has none.
+   *
+   * `rootOrderFor` is to {@link rootOrder} exactly what `folderOrderFor` is to
+   * `folderOrder` — one read helper so every caller gets `[]` for an alias
+   * that has never been arranged, the value `applyRootOrder` reads as "use the
+   * grouped order", instead of each caller remembering the `?? []`.
+   */
+  function rootOrderFor(host: string): string[] {
+    return values.rootOrder[host] ?? [];
+  }
+
+  /**
+   * Record a root drag: [order] becomes [host]'s root arrangement.
+   *
+   * REPLACED rather than merged, and an empty order removes the entry rather
+   * than storing `[]` — {@link setFolderOrder}'s reasoning, unchanged one
+   * level up: `reorderRoots` already returned the whole panel's keys in draw
+   * order, and "this host's roots are not arranged" and "there is no entry for
+   * this host" are one state. The map is rebuilt rather than mutated in place
+   * for the shared-default reason every map action here carries.
+   */
+  function setRootOrder(host: string, order: readonly string[]): void {
+    if (host === '') return;
+    const next = { ...values.rootOrder };
+    if (order.length === 0) delete next[host];
+    else next[host] = [...order];
+    values.rootOrder = next;
+  }
+
+  /**
    * Pick the panel's folder sort, and clear every host's manual arrangement.
    *
    * ONE action rather than a bare write, because the two settings interact
@@ -818,6 +875,12 @@ export const useSettingsStore = defineStore('settings', () => {
    * EVERY host's arrangement clears, not just the active one: the sort is a
    * global statement, and an arrangement kept for a host the user is not
    * looking at is a veto waiting to be rediscovered there.
+   *
+   * `rootOrder` deliberately does NOT clear: a sort reorders the rows WITHIN
+   * each root and never the root sequence (`app/folderSort.ts`), so a kept
+   * root arrangement cannot veto it — there is no exclusivity to enforce, and
+   * erasing an arrangement the user can still see honoured would be a loss
+   * with nothing to point at.
    */
   function setSessionTreeSort(key: FolderSortKey): void {
     values.sessionTreeSort = key;
@@ -928,6 +991,8 @@ export const useSettingsStore = defineStore('settings', () => {
     removeSessionRoot,
     folderOrderFor,
     setFolderOrder,
+    rootOrderFor,
+    setRootOrder,
     setSessionTreeSort,
     shortcutBindings,
     hasShortcutOverrides,

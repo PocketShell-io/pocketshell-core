@@ -1,5 +1,6 @@
 import { ref, type ComputedRef, type Ref } from 'vue';
 import { canDropFolderAt, reorderFolders } from './folderOrder';
+import { canDropRootAt, reorderRoots } from './rootOrder';
 import type { SessionDirectory, SessionRootFolder } from './sessionTree';
 import type { useSettingsStore } from './stores/settings';
 import { useStripDrag } from './useStripDrag';
@@ -13,16 +14,22 @@ export interface FolderDragDeps {
 }
 
 /**
- * Dragging a folder row of the session panel up and down to reorder it.
- * Extracted from SessionTree.vue with its reasoning; the rows component binds
- * the handlers, this owns the state and the commit.
+ * Dragging a folder row of the session panel up and down to reorder it — and,
+ * the same gesture one level up, dragging a root header to reorder the roots
+ * the folders group under. Extracted from SessionTree.vue with its reasoning;
+ * the rows component binds the handlers, this owns the state and the commit.
  */
 export function useFolderDrag(deps: FolderDragDeps): {
   dragging: Ref<string | null>;
   dropTarget: Ref<{ root: string; gap: number } | null>;
+  rootDragging: Ref<string | null>;
+  rootDropTarget: Ref<number | null>;
   onRowDragStart: (dir: SessionDirectory, e: DragEvent) => void;
   onRowDragOver: (root: SessionRootFolder, index: number, e: DragEvent) => void;
   onRowDrop: () => void;
+  onRootDragStart: (root: SessionRootFolder, e: DragEvent) => void;
+  onRootDragOver: (index: number, e: DragEvent) => void;
+  onRootDrop: () => void;
   onRowDragEnd: () => void;
 } {
   /* ── Dragging a folder row up and down ───────────
@@ -54,6 +61,7 @@ export function useFolderDrag(deps: FolderDragDeps): {
    *     draws it. A refused drop draws nothing, and that absence IS the refusal.
    */
   const FOLDER_DRAG_TYPE = 'application/x-pocketshell-folder';
+  const ROOT_DRAG_TYPE = 'application/x-pocketshell-root';
 
   // The drag MECHANICS (payload, midpoint rule, drop-target marking) live in
   // useStripDrag, the tab bar's composable; the folder list keeps its own
@@ -65,6 +73,19 @@ export function useFolderDrag(deps: FolderDragDeps): {
   });
   /** The folder key being dragged, and the gap the drop indicator is sitting in. */
   const dropTarget = ref<{ root: string; gap: number } | null>(null);
+
+  /**
+   * The root headers run their own strip beside the folders', in the same
+   * family for the reason the folder drag is in the tab bar's. The two carry
+   * DIFFERENT payload types on purpose: a type nothing else claims is what
+   * keeps a folder drag from lighting up a header on the way past, and a root
+   * drag from lighting up the rows — each strip's `dragging` is null while the
+   * other is in flight, so the crossed `dragover` handlers refuse before the
+   * policy is even asked.
+   */
+  const rootStrip = useStripDrag({ dragType: ROOT_DRAG_TYPE, axis: 'y' });
+  /** The root key being dragged, and the gap index the indicator sits in. */
+  const rootDropTarget = ref<number | null>(null);
 
   function onRowDragStart(dir: SessionDirectory, e: DragEvent): void {
     startDrag(dir.key, e);
@@ -129,7 +150,68 @@ export function useFolderDrag(deps: FolderDragDeps): {
   function onRowDragEnd(): void {
     endDrag();
     dropTarget.value = null;
+    rootStrip.endDrag();
+    rootDropTarget.value = null;
   }
 
-  return { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDragEnd };
+  /**
+   * The pointer is over the root header at [index].
+   *
+   * `canDropRootAt` is the policy — a root cannot land after the pinned `other`
+   * bucket, and the bucket itself cannot be dragged — and a refusal draws
+   * nothing and keeps the no-drop cursor, exactly as the folder drag's does.
+   */
+  function onRootDragOver(index: number, e: DragEvent): void {
+    const from = rootStrip.dragging.value;
+    if (from === null) return;
+    const gap = rootStrip.gapFor(index, e);
+    if (!canDropRootAt(deps.roots.value, from, gap)) {
+      rootDropTarget.value = null;
+      return;
+    }
+    rootStrip.markDroppable(e);
+    rootDropTarget.value = gap;
+  }
+
+  /**
+   * Commit the drag: `reorderRoots` is handed the roots as the panel is
+   * drawing them THIS instant and returns every root key in draw order, the
+   * whole-panel ranking `reorderFolders` writes, and null for a drag that
+   * ended where it started.
+   *
+   * The one deliberate difference from {@link onRowDrop}: the sort setting is
+   * left alone. A sort reorders the rows WITHIN each root and never the root
+   * sequence (`folderSort.ts`), so there is no kept sort to switch away from —
+   * the fresh ranks cannot be vetoed, and picking a sort later does not clear
+   * them either (`setSessionTreeSort`).
+   */
+  function onRootDragStart(root: SessionRootFolder, e: DragEvent): void {
+    rootStrip.startDrag(root.key, e);
+    rootDropTarget.value = null;
+  }
+
+  function onRootDrop(): void {
+    const from = rootStrip.dragging.value;
+    const target = rootDropTarget.value;
+    rootStrip.endDrag();
+    rootDropTarget.value = null;
+    if (from === null || target === null) return;
+    const next = reorderRoots(deps.roots.value, from, target);
+    if (!next) return;
+    deps.settings.setRootOrder(deps.host.value, next);
+  }
+
+  return {
+    dragging,
+    dropTarget,
+    rootDragging: rootStrip.dragging,
+    rootDropTarget,
+    onRowDragStart,
+    onRowDragOver,
+    onRowDrop,
+    onRootDragStart,
+    onRootDragOver,
+    onRootDrop,
+    onRowDragEnd,
+  };
 }

@@ -61,9 +61,21 @@ const sessions = useSessionsStore();
 const settings = useSettingsStore();
 
 // The drag's state, handlers and reasoning live in ../useFolderDrag.ts; this
-// binds them to the rows.
-const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDragEnd } =
-  useFolderDrag({ roots, host, settings });
+// binds them to the rows — the folder rows' drag and, one level up, the root
+// headers' own.
+const {
+  dragging,
+  dropTarget,
+  rootDragging,
+  rootDropTarget,
+  onRowDragStart,
+  onRowDragOver,
+  onRowDrop,
+  onRootDragStart,
+  onRootDragOver,
+  onRootDrop,
+  onRowDragEnd,
+} = useFolderDrag({ roots, host, settings });
 </script>
 
 <template>
@@ -81,6 +93,8 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
     :show-sessions="props.showSessions ?? false"
     :dragging="dragging"
     :drop-target="dropTarget"
+    :root-dragging="rootDragging"
+    :root-drop-target="rootDropTarget"
     :tab-orders="tabOrders"
     @select="(folder, session) => emit('select', folder, session)"
     @menu="(dir, e) => emit('menu', dir, e)"
@@ -90,5 +104,8 @@ const { dragging, dropTarget, onRowDragStart, onRowDragOver, onRowDrop, onRowDra
     @drag-over="onRowDragOver"
     @drop="onRowDrop"
     @drag-end="onRowDragEnd"
+    @root-drag-start="onRootDragStart"
+    @root-drag-over="onRootDragOver"
+    @root-drop="onRootDrop"
   />
 </template>
