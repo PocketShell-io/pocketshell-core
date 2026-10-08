@@ -158,6 +158,19 @@
  *     trailing cells the CLI itself underlined ({@link linksPerRow}): what is
  *     presented underlined is what opens, and the padding of every CLI that
  *     underlines only its text stays bare as before.
+ *   - the fourteenth report wrapped three GitHub/deploy addresses at `/`
+ *     opportunities with the second and third schemes stranded on the row
+ *     ABOVE their rest — `…app.css https://` / `github.com/DataTalksClub/
+ *     dapier/` / `commit/4b…` — so the middle row's tail was a SCHEMELESS
+ *     address-so-far: no `://` for the web branch, and continuesPath defers
+ *     to the path detector, which refuses hostname first segments. The gate
+ *     refused, the commit URL stayed torn, and the middle row's click opened
+ *     the truncated repo address. A `/`-cut tail the URL scan's own family
+ *     standard vouches for ({@link continuesSchemelessAddress} — host with
+ *     port-or-path evidence, the `.js` carve-out intact) is now admitted, and
+ *     rule 1/1a refuse it so the strongest geometry still only glues
+ *     vouched content: rule 1b and rule 2 decide it under the opportunity
+ *     character and the fit guard, like every other cut in this file.
  *
  * Both rules are deliberately narrow, for the reason terminalPaths.ts's header
  * gives: joining two rows that were never one line can only invent a path that
@@ -261,7 +274,7 @@ import {
   leadingDecorationWidth,
   stripFileScheme,
 } from './terminalPaths';
-import { findUrls } from './terminalUrls';
+import { findUrls, continuesSchemelessAddress } from './terminalUrls';
 import { useFilesStore } from './stores/files';
 import { useSessionsStore } from './stores/sessions';
 
@@ -576,10 +589,22 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
   // cut at `/` and `-` like every other in this file.
   const mdTail = /\]?\(<([^<>()]*)$/.exec(tail);
   const tailPath = mdTail !== null ? (mdTail[1] ?? '') : tail.slice(leadingDecorationWidth(tail));
+  // A SCHEMELESS address cut at its own `/` (the fourteenth report:
+  // `…app.css https://` on one row, `github.com/DataTalksClub/dapier/` on the
+  // next, `commit/4b…` on the one below): the middle row's tail is the URL
+  // family's so-far shape, but neither existing admission sees it — no
+  // `://` on that row for the web branch, and continuesPath defers to the
+  // path detector, which refuses hostname first segments. The predicate is
+  // the URL scan's own family standard (terminalUrls.ts); the rules below
+  // keep the admission away from the geometry-only glue (rule 1, rule 1a)
+  // and decide it under the opportunity-cut rules' evidence, where the
+  // trailing `/` and the fit guard do the refusing.
+  const schemelessCut = tail.endsWith('/') && continuesSchemelessAddress(tail);
   if (
     !webSchemeTail &&
     !tail.endsWith('-') &&
-    !continuesPath(tailPath)
+    !continuesPath(tailPath) &&
+    !schemelessCut
   ) {
     return null;
   }
@@ -665,6 +690,14 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
       // earlier reports carry has no extension either: `…8b64-ab0e95b` ends
       // mid-hex, and the row below starts with `7d5c6`.
       if (webSchemeTail && HAS_EXTENSION.test(webPathOf(tail))) return null;
+      // A schemeless address's `/` cut is decided by rule 1b below, where the
+      // opportunity character and the fit guard carry the evidence. Rule 1's
+      // geometry alone must not glue a word-wrapped sentence onto a row that
+      // happens to end at a bare address's slash (`…see node.js/blog/` full to
+      // the margin, `for details` below): the family shape is not
+      // continuesPath-grade vouching, and this is the one rule that had no
+      // content guard of its own.
+      if (schemelessCut) return null;
       return indent;
     }
 
@@ -720,6 +753,7 @@ function joinedRowSkip(prev: RowRead, next: RowRead, wrapWidth: number): number 
       head !== '' &&
       left <= WRAP_SHORTFALL &&
       head.length > left &&
+      !schemelessCut &&
       !(webSchemeTail ? HAS_EXTENSION.test(webPathOf(tail)) : HAS_EXTENSION.test(tail)) &&
       (webSchemeTail ? continuesUrl : !head.startsWith('/'))
     ) {

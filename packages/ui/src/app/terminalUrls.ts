@@ -178,23 +178,52 @@ export function findUrls(line: string): UrlMatch[] {
     const host = whole[1] ?? '';
     const rest = address.slice(host.length);
     if (rest === '' && !QUAD_ONLY.test(host)) continue;
-    // The `.js` carve-out ([JS_TLD]): one extension-less path segment is
-    // prose with a slash (`Node.js/Python`), not an address. A `:port` is
-    // evidence on its own and skips the carve-out, as do a trailing slash
-    // (`node.js/blog/`, the shape a server prints) and an extension-shaped
-    // or multi-segment path.
-    if (
-      JS_TLD.test(host) &&
-      rest.startsWith('/') &&
-      !rest.endsWith('/') &&
-      !HAS_EXTENSION.test(rest) &&
-      rest.split('/').filter((s) => s !== '').length < 2
-    ) {
-      continue;
-    }
+    if (schemelessProse(host, rest)) continue;
     if (hasControlChar(address)) continue;
 
     out.push({ start, end: start + address.length, url: `http://${address}`, schemeless: true });
   }
   return out.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * The `.js` carve-out ([JS_TLD]): one extension-less path segment is
+ * prose with a slash (`Node.js/Python`), not an address. A `:port` is
+ * evidence on its own and skips the carve-out, as do a trailing slash
+ * (`node.js/blog/`, the shape a server prints) and an extension-shaped
+ * or multi-segment path.
+ */
+function schemelessProse(host: string, rest: string): boolean {
+  return (
+    JS_TLD.test(host) &&
+    rest.startsWith('/') &&
+    !rest.endsWith('/') &&
+    !HAS_EXTENSION.test(rest) &&
+    rest.split('/').filter((s) => s !== '').length < 2
+  );
+}
+
+/**
+ * Could [token] be a SCHEMELESS address so far — the bare family above, cut
+ * mid-address at a wrapper's `/` break? The fourteenth report's transcript
+ * wrapped `https://` onto one row's last token and the address's rest onto
+ * the next (`…app.css https://` / `github.com/DataTalksClub/dapier/` /
+ * `commit/4b…`): the middle row's tail IS this family's so-far shape, but
+ * the scheme anchor sees nothing (no `://` on that row) and the path
+ * detector refuses hostname first segments — so the join gate would refuse
+ * the very tail this module exists to rejoin. The anchor and family rules
+ * are the scan's own, minus what needs line context: a bare hostname still
+ * refuses (a hostname mentioned is prose; the `:port`/`/path` evidence is
+ * required) and the `.js` carve-out holds.
+ */
+export function continuesSchemelessAddress(token: string): boolean {
+  if (token.length === 0 || token.length > MAX_LINE) return false;
+  const whole = SCHEMELESS.exec(token);
+  if (whole === null) return false;
+  const host = whole[1] ?? '';
+  const rest = token.slice(host.length);
+  if (rest === '') return false;
+  if (schemelessProse(host, rest)) return false;
+  if (hasControlChar(token)) return false;
+  return true;
 }
