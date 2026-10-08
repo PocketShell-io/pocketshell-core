@@ -295,7 +295,7 @@ export type SessionNamePolicy = 'reuse' | 'unique';
 
 // ---- src/main/projects/ProjectsService.ts ----
 
-export type StartSessionFailure = 'folder-missing' | 'create-failed' | 'name-unavailable';
+export type StartSessionFailure = 'folder-missing' | 'create-failed' | 'create-uncertain' | 'name-unavailable';
 export interface UsageWindow {
   percent_remaining: number | null;
   reset_at: string | null;

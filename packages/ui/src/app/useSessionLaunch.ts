@@ -64,6 +64,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
   createSession: (choice: LaunchChoice | null) => Promise<void>;
 } {
   const route = useRoute();
+  let uncertainReadPending = false;
 
   /**
    * True while the launch dialog is up.
@@ -320,6 +321,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
    * to have.
    */
   async function createSession(choice: LaunchChoice | null): Promise<void> {
+    if (uncertainReadPending) return;
     deps.addAnchor.value = null;
     launching.value = false;
     createError.value = null;
@@ -360,6 +362,12 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
       return;
     }
     if (!result.ok || !result.sessionName) {
+      if (result.code === 'create-uncertain') {
+        uncertainReadPending = true;
+        try { await deps.sessions.refresh(connectionId); }
+        catch { /* Keep the explicit uncertain outcome if refreshing also fails. */ }
+        finally { uncertainReadPending = false; }
+      }
       createError.value = result.error ?? 'Could not start a session here.';
       return;
     }

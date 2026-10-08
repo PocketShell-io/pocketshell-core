@@ -362,6 +362,12 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
     const result = await projects.start(id, folder, customName.value.trim() || undefined, 'unique');
 
     if (!result.ok) {
+      if (result.code === 'create-uncertain') {
+        preparing.value = 'Refreshing host sessions…';
+        try { await sessions.refresh(id); }
+        catch { /* The creation remains uncertain even when this refresh fails. */ }
+        finally { preparing.value = null; }
+      }
       outcome.value = result;
       return;
     }
