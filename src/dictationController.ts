@@ -11,6 +11,11 @@
  * shorter than the last partial, an error, an early endpoint, backgrounding,
  * a target change or a closed surface) the latest partial is promoted into
  * `transcript`. Only `cancel()` - an explicit user action - drops text.
+ *
+ * While listening, `noSpeech` reports that recognition is producing no text
+ * (issue #3062): nothing was recognized for `noTextWarningMs`, or the
+ * recognizer keeps ending turns with no match while the controller silently
+ * restarts them. It only informs; it never changes the transcript.
  */
 
 export type DictationPhase =
@@ -34,6 +39,28 @@ export type DictationInterruptReason = 'background' | 'target-change' | 'closed'
 
 /** Endpointing outcomes that should resume an active dictation. */
 export type DictationRecoverableEnd = 'no-match' | 'speech-timeout' | 'recognizer-busy';
+
+/**
+ * Coarse microphone evidence since the last recognized text: `unknown` when
+ * the adapter reports no audio levels, `silent` when it reported only
+ * silence, `sound` once it reported any sound.
+ */
+export type DictationAudioEvidence = 'unknown' | 'silent' | 'sound';
+
+/** Why listening is flagged as producing no recognized text. */
+export type DictationNoSpeechReason = 'no-text-timeout' | 'empty-turns';
+
+export interface DictationNoSpeech {
+  reason: DictationNoSpeechReason;
+  audio: DictationAudioEvidence;
+  /** Consecutive recognizer turns that ended with no match since the last text. */
+  emptyTurns: number;
+}
+
+/** Default "no recognized text yet" window (#3062). */
+export const DEFAULT_NO_TEXT_WARNING_MS = 8_000;
+/** Consecutive empty (no-match / speech-timeout) turns that raise the signal early. */
+export const DEFAULT_NO_TEXT_RESTART_LIMIT = 2;
 
 export interface DictationError {
   code: string;
@@ -61,6 +88,12 @@ export interface DictationSnapshot {
   cancelReason: DictationCancelReason | null;
   /** Set when a lifecycle event ended the run as `completed`, keeping the text. */
   interruptReason: DictationInterruptReason | null;
+  /**
+   * Non-null while listening has produced no recognized text for a while
+   * (#3062). Cleared by any non-blank partial or final, and whenever the run
+   * stops listening. Informational only.
+   */
+  noSpeech: DictationNoSpeech | null;
 }
 
 export interface DictationControllerOptions {
@@ -76,6 +109,14 @@ export interface DictationControllerOptions {
   cancelScheduled(handle: unknown): void;
   /** Optional deterministic ID source. IDs must be unique for this controller's lifetime. */
   createRequestId?: () => string;
+  /** Milliseconds of listening without recognized text before `noSpeech` is raised. */
+  noTextWarningMs?: number;
+  /** Consecutive empty recognizer turns that raise `noSpeech` before the window elapses. */
+  noTextRestartLimit?: number;
+  /** Delayed callback for the no-text window; defaults to `setTimeout`. */
+  setTimer?: (callback: () => void, delayMs: number) => unknown;
+  /** Cancels a handle returned by `setTimer`; defaults to `clearTimeout`. */
+  clearTimer?: (handle: unknown) => void;
 }
 
 interface PendingRestart {
@@ -92,6 +133,10 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
   return 'Speech recognition failed.';
+}
+
+function positiveOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function wordCount(text: string): number {
@@ -135,6 +180,14 @@ export class DictationController {
   private desiredListening = false;
   private pendingRestart: PendingRestart | null = null;
   private restartToken = 0;
+  private readonly noTextWarningMs: number;
+  private readonly noTextRestartLimit: number;
+  private noTextTimer: { handle: unknown; token: number } | null = null;
+  private noTextToken = 0;
+  private noTextElapsed = false;
+  private emptyTurns = 0;
+  private turnHadText = false;
+  private audioEvidence: DictationAudioEvidence = 'unknown';
   private snapshot: DictationSnapshot = {
     revision: 0,
     phase: 'idle',
@@ -146,10 +199,13 @@ export class DictationController {
     error: null,
     cancelReason: null,
     interruptReason: null,
+    noSpeech: null,
   };
 
   constructor(options: DictationControllerOptions) {
     this.options = options;
+    this.noTextWarningMs = positiveOr(options.noTextWarningMs, DEFAULT_NO_TEXT_WARNING_MS);
+    this.noTextRestartLimit = Math.floor(positiveOr(options.noTextRestartLimit, DEFAULT_NO_TEXT_RESTART_LIMIT));
   }
 
   getSnapshot(): DictationSnapshot {
@@ -199,7 +255,9 @@ export class DictationController {
       error: null,
       cancelReason: null,
       interruptReason: null,
+      noSpeech: null,
     };
+    this.resetNoSpeechTracking();
     const requestId = this.beginTurn();
     this.publish();
     return requestId;
@@ -213,6 +271,7 @@ export class DictationController {
     if (!this.isActive()) return;
     this.desiredListening = false;
     this.cancelPendingRestart();
+    this.endNoSpeechTracking();
     if (this.currentRequestId === null) {
       this.snapshot = { ...this.snapshot, phase: 'completed', requestId: null, partial: '' };
       this.publish();
@@ -233,6 +292,7 @@ export class DictationController {
     const requestId = this.currentRequestId;
     this.desiredListening = false;
     this.cancelPendingRestart();
+    this.endNoSpeechTracking();
     this.currentRequestId = null;
     this.requestStartResolved = false;
     this.stopIssued = false;
@@ -253,6 +313,7 @@ export class DictationController {
     const requestId = this.currentRequestId;
     this.desiredListening = false;
     this.cancelPendingRestart();
+    this.endNoSpeechTracking();
     this.currentRequestId = null;
     this.requestStartResolved = false;
     this.stopIssued = false;
@@ -271,7 +332,25 @@ export class DictationController {
   onPartial(requestId: string, text: string): boolean {
     if (!this.accepts(requestId)) return false;
     this.snapshot = { ...this.snapshot, partial: text };
+    if (text.trim()) this.textRecognized();
     this.publish();
+    return true;
+  }
+
+  /**
+   * Coarse audio evidence for the current turn: `true` when the adapter's
+   * microphone level shows sound, `false` for silence. Used only to word the
+   * `noSpeech` signal; never carries audio content.
+   */
+  onAudioLevel(requestId: string, soundPresent: boolean): boolean {
+    if (!this.accepts(requestId)) return false;
+    const next: DictationAudioEvidence = soundPresent ? 'sound' : this.audioEvidence === 'unknown' ? 'silent' : this.audioEvidence;
+    if (next === this.audioEvidence) return true;
+    this.audioEvidence = next;
+    if (this.snapshot.noSpeech) {
+      this.snapshot = { ...this.snapshot, noSpeech: { ...this.snapshot.noSpeech, audio: next } };
+      this.publish();
+    }
     return true;
   }
 
@@ -281,6 +360,7 @@ export class DictationController {
     const segment = coveringSegment(text.trim(), this.snapshot.partial.trim());
     if (!segment) return this.onRecoverableEnd(requestId, 'no-match');
     this.settleRequest(requestId);
+    this.textRecognized();
     const segments = [...this.snapshot.segments, segment];
     this.snapshot = {
       ...this.snapshot,
@@ -294,6 +374,7 @@ export class DictationController {
       this.publish();
       this.scheduleNextTurn();
     } else {
+      this.endNoSpeechTracking();
       this.snapshot = { ...this.snapshot, phase: 'completed' };
       this.publish();
     }
@@ -303,20 +384,20 @@ export class DictationController {
   /** A known transient endpointing outcome; it resumes only while listening. */
   onRecoverableEnd(requestId: string, reason: DictationRecoverableEnd): boolean {
     if (!this.accepts(requestId)) return false;
+    const emptyTurn = !this.turnHadText && reason !== 'recognizer-busy';
     this.settleRequest(requestId);
     this.promotePartial();
     this.snapshot = { ...this.snapshot, requestId: null };
     if (this.desiredListening) {
+      if (emptyTurn) this.countEmptyTurn();
       this.snapshot = { ...this.snapshot, phase: 'listening' };
       this.publish();
       this.scheduleNextTurn();
     } else {
+      this.endNoSpeechTracking();
       this.snapshot = { ...this.snapshot, phase: 'completed' };
       this.publish();
     }
-    // `reason` is part of the adapter-facing contract even though policy treats
-    // each supported endpointing outcome the same way.
-    void reason;
     return true;
   }
 
@@ -325,6 +406,7 @@ export class DictationController {
     if (!this.accepts(requestId)) return false;
     this.settleRequest(requestId);
     this.promotePartial();
+    this.endNoSpeechTracking();
     this.snapshot = {
       ...this.snapshot,
       phase: 'error',
@@ -342,6 +424,7 @@ export class DictationController {
     this.currentRequestId = requestId;
     this.requestStartResolved = false;
     this.stopIssued = false;
+    this.turnHadText = false;
     this.snapshot = {
       ...this.snapshot,
       phase: 'starting',
@@ -379,6 +462,9 @@ export class DictationController {
     }
     if (this.snapshot.phase === 'starting') {
       this.snapshot = { ...this.snapshot, phase: 'listening' };
+      // The no-text window starts once the microphone is live, not while
+      // a permission prompt may still be open.
+      if (this.noTextTimer === null && !this.noTextElapsed) this.armNoTextTimer();
       this.publish();
     }
   }
@@ -387,6 +473,7 @@ export class DictationController {
     if (this.currentRequestId !== requestId) return;
     this.settleRequest(requestId);
     this.desiredListening = false;
+    this.endNoSpeechTracking();
     this.snapshot = {
       ...this.snapshot,
       phase: 'error',
@@ -417,6 +504,7 @@ export class DictationController {
     this.callCancel(requestId);
     this.settleRequest(requestId);
     this.promotePartial();
+    this.endNoSpeechTracking();
     this.snapshot = {
       ...this.snapshot,
       phase: 'error',
@@ -448,6 +536,7 @@ export class DictationController {
       if (this.pendingRestart !== pending) return;
       this.pendingRestart = null;
       this.desiredListening = false;
+      this.endNoSpeechTracking();
       this.snapshot = {
         ...this.snapshot,
         phase: 'error',
@@ -468,6 +557,78 @@ export class DictationController {
         // The token also invalidates a callback if the scheduler cannot cancel it.
       }
     }
+  }
+
+  /** Any non-blank recognized text: clear the warning and restart the window. */
+  private textRecognized(): void {
+    this.turnHadText = true;
+    this.emptyTurns = 0;
+    this.audioEvidence = 'unknown';
+    this.noTextElapsed = false;
+    if (this.snapshot.noSpeech) this.snapshot = { ...this.snapshot, noSpeech: null };
+    if (this.desiredListening) this.armNoTextTimer();
+  }
+
+  private countEmptyTurn(): void {
+    this.emptyTurns += 1;
+    if (this.snapshot.noSpeech) {
+      this.snapshot = { ...this.snapshot, noSpeech: { ...this.snapshot.noSpeech, emptyTurns: this.emptyTurns } };
+    } else if (this.emptyTurns >= this.noTextRestartLimit) {
+      this.raiseNoSpeech('empty-turns');
+    }
+  }
+
+  private raiseNoSpeech(reason: DictationNoSpeechReason): void {
+    this.snapshot = {
+      ...this.snapshot,
+      noSpeech: { reason, audio: this.audioEvidence, emptyTurns: this.emptyTurns },
+    };
+  }
+
+  private armNoTextTimer(): void {
+    this.clearNoTextTimer();
+    const token = ++this.noTextToken;
+    const fire = () => {
+      if (this.noTextTimer?.token !== token) return;
+      this.noTextTimer = null;
+      this.noTextElapsed = true;
+      if (!this.desiredListening || this.snapshot.noSpeech) return;
+      if (this.snapshot.phase !== 'listening' && this.snapshot.phase !== 'starting') return;
+      this.raiseNoSpeech('no-text-timeout');
+      this.publish();
+    };
+    const setTimer = this.options.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+    this.noTextTimer = { handle: undefined, token };
+    const handle = setTimer(fire, this.noTextWarningMs);
+    if (this.noTextTimer?.token === token) this.noTextTimer.handle = handle;
+  }
+
+  private clearNoTextTimer(): void {
+    const timer = this.noTextTimer;
+    this.noTextTimer = null;
+    this.noTextToken += 1;
+    if (!timer) return;
+    try {
+      const clearTimer = this.options.clearTimer
+        ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+      clearTimer(timer.handle);
+    } catch {
+      // The token already makes a late timer callback inert.
+    }
+  }
+
+  private resetNoSpeechTracking(): void {
+    this.clearNoTextTimer();
+    this.noTextElapsed = false;
+    this.emptyTurns = 0;
+    this.turnHadText = false;
+    this.audioEvidence = 'unknown';
+  }
+
+  /** Listening is over: drop the warning and its timer. */
+  private endNoSpeechTracking(): void {
+    this.resetNoSpeechTracking();
+    if (this.snapshot.noSpeech) this.snapshot = { ...this.snapshot, noSpeech: null };
   }
 
   /** Fold the latest partial into the transcript as its own segment. */
@@ -519,7 +680,12 @@ export class DictationController {
   }
 
   private copySnapshot(): DictationSnapshot {
-    return { ...this.snapshot, segments: [...this.snapshot.segments], error: this.snapshot.error ? { ...this.snapshot.error } : null };
+    return {
+      ...this.snapshot,
+      segments: [...this.snapshot.segments],
+      error: this.snapshot.error ? { ...this.snapshot.error } : null,
+      noSpeech: this.snapshot.noSpeech ? { ...this.snapshot.noSpeech } : null,
+    };
   }
 
   private publish(): void {
