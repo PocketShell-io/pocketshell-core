@@ -111,7 +111,7 @@ describe('DictationController', () => {
   });
 
   it.each(['no-match', 'speech-timeout', 'recognizer-busy'] as const)(
-    'resumes after recoverable %s while listening and preserves recognized text',
+    'resumes after recoverable %s while listening and keeps recognized text and the partial',
     (reason) => {
       const state = setup();
       const first = start(state);
@@ -122,7 +122,7 @@ describe('DictationController', () => {
 
       expect(state.controller.onRecoverableEnd(second, reason)).toBe(true);
       expect(state.controller.getSnapshot()).toMatchObject({
-        phase: 'listening', requestId: null, partial: '', transcript: 'first phrase',
+        phase: 'listening', requestId: null, partial: '', transcript: 'first phrase unconfirmed preview',
       });
       state.scheduler.run(state.scheduler.latestHandle());
       const third = state.controller.getSnapshot().requestId!;
@@ -131,14 +131,16 @@ describe('DictationController', () => {
       expect(state.stops).toEqual([third]);
       state.controller.onRecognizedSegment(third, 'second phrase');
       expect(state.controller.getSnapshot()).toMatchObject({
-        phase: 'completed', segments: ['first phrase', 'second phrase'], transcript: 'first phrase second phrase',
+        phase: 'completed',
+        segments: ['first phrase', 'unconfirmed preview', 'second phrase'],
+        transcript: 'first phrase unconfirmed preview second phrase',
       });
       expect(state.starts).toHaveLength(3);
     },
   );
 
   it.each(['no-match', 'speech-timeout', 'recognizer-busy'] as const)(
-    'completes after Stop when the recognizer ends with recoverable %s',
+    'completes after Stop with the promoted partial when the recognizer ends with recoverable %s',
     (reason) => {
       const state = setup();
       const requestId = start(state);
@@ -149,7 +151,7 @@ describe('DictationController', () => {
 
       expect(state.controller.onRecoverableEnd(requestId, reason)).toBe(true);
       expect(state.controller.getSnapshot()).toMatchObject({
-        phase: 'completed', requestId: null, partial: '', transcript: '',
+        phase: 'completed', requestId: null, partial: '', transcript: 'unconfirmed preview',
       });
       expect(state.scheduler.callbacks.size).toBe(0);
       expect(state.starts).toEqual([requestId]);
@@ -207,7 +209,7 @@ describe('DictationController', () => {
     expect(state.controller.getSnapshot()).toMatchObject({ phase: 'completed', transcript: 'after stop' });
   });
 
-  it('cancels immediately on background and ignores callbacks from the abandoned request', () => {
+  it('ends immediately on background, keeps the partial, and ignores callbacks from the abandoned request', () => {
     const state = setup();
     const requestId = start(state);
     state.controller.onPartial(requestId, 'preview');
@@ -215,17 +217,18 @@ describe('DictationController', () => {
     state.controller.setForeground(false);
     expect(state.cancels).toEqual([requestId]);
     expect(state.controller.getSnapshot()).toMatchObject({
-      phase: 'cancelled', requestId: null, partial: '', cancelReason: 'background',
+      phase: 'completed', requestId: null, partial: '', transcript: 'preview',
+      cancelReason: null, interruptReason: 'background',
     });
     expect(state.controller.onRecognizedSegment(requestId, 'must not land')).toBe(false);
     expect(state.controller.start()).toBeNull();
-    expect(state.controller.getSnapshot().transcript).toBe('');
+    expect(state.controller.getSnapshot().transcript).toBe('preview');
 
     state.controller.setForeground(true);
     expect(start(state)).not.toBe(requestId);
   });
 
-  it('cancels on target change, retains the old target identity, and starts clean for the new target', () => {
+  it('ends on target change keeping the text, retains the old target identity, and starts clean for the new target', () => {
     const state = setup();
     const requestId = start(state);
     state.controller.onPartial(requestId, 'preview');
@@ -233,7 +236,8 @@ describe('DictationController', () => {
     state.controller.setTarget('composer:session-b');
     expect(state.cancels).toEqual([requestId]);
     expect(state.controller.getSnapshot()).toMatchObject({
-      phase: 'cancelled', targetId: 'composer:session-a', partial: '', cancelReason: 'target-change',
+      phase: 'completed', targetId: 'composer:session-a', partial: '', transcript: 'preview',
+      interruptReason: 'target-change',
     });
     expect(state.controller.onRecognizedSegment(requestId, 'stale')).toBe(false);
 

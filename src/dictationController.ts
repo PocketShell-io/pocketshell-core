@@ -3,8 +3,14 @@
  *
  * This controller owns recognition-turn state only. Adapters own microphone
  * permission, recognizer configuration and delivery of the completed
- * transcript to a composer or terminal. Partial text is always preview-only;
- * only recognized segments enter `transcript`.
+ * transcript to a composer or terminal.
+ *
+ * Nothing the user dictated may disappear unless they explicitly cancel it
+ * (issue #3060). A partial is a preview while its turn is live, but whenever
+ * a turn ends without a final that covers it (stop with no result, a final
+ * shorter than the last partial, an error, an early endpoint, backgrounding,
+ * a target change or a closed surface) the latest partial is promoted into
+ * `transcript`. Only `cancel()` - an explicit user action - drops text.
  */
 
 export type DictationPhase =
@@ -16,7 +22,15 @@ export type DictationPhase =
   | 'cancelled'
   | 'error';
 
-export type DictationCancelReason = 'user' | 'background' | 'target-change';
+/** Only an explicit user action may drop dictated text. */
+export type DictationCancelReason = 'user';
+
+/**
+ * Lifecycle events that end a run early but keep everything dictated so far:
+ * the app went to the background (screen off), the target changed, or the
+ * dictation surface closed/unmounted.
+ */
+export type DictationInterruptReason = 'background' | 'target-change' | 'closed';
 
 /** Endpointing outcomes that should resume an active dictation. */
 export type DictationRecoverableEnd = 'no-match' | 'speech-timeout' | 'recognizer-busy';
@@ -34,7 +48,10 @@ export interface DictationSnapshot {
   targetId: string | null;
   /** Identity of the one recognizer turn currently allowed to report events. */
   requestId: string | null;
-  /** Current-turn preview only. It is never folded into `segments` or `transcript`. */
+  /**
+   * Latest partial of the live turn. It is folded into `segments` when the
+   * turn ends without a final that covers it; `cancel()` alone discards it.
+   */
   partial: string;
   /** Final recognized turns, each accepted at most once for its request id. */
   segments: readonly string[];
@@ -42,6 +59,8 @@ export interface DictationSnapshot {
   transcript: string;
   error: DictationError | null;
   cancelReason: DictationCancelReason | null;
+  /** Set when a lifecycle event ended the run as `completed`, keeping the text. */
+  interruptReason: DictationInterruptReason | null;
 }
 
 export interface DictationControllerOptions {
@@ -73,6 +92,20 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
   return 'Speech recognition failed.';
+}
+
+function wordCount(text: string): number {
+  return text ? text.split(/\s+/u).length : 0;
+}
+
+/**
+ * Pick the text for one finished turn. Some recognizers return a final that
+ * drops the tail the last partial already showed ("so let's" after "so let's
+ * solve it"); keep the partial when it has more words. Otherwise the final
+ * wins, so its punctuation and revisions are kept.
+ */
+function coveringSegment(finalText: string, partial: string): string {
+  return wordCount(partial) > wordCount(finalText) ? partial : finalText;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<void> {
@@ -112,6 +145,7 @@ export class DictationController {
     transcript: '',
     error: null,
     cancelReason: null,
+    interruptReason: null,
   };
 
   constructor(options: DictationControllerOptions) {
@@ -129,22 +163,24 @@ export class DictationController {
   }
 
   /**
-   * Set the composer/session target. Changing it during a run immediately
-   * cancels that run; its last snapshot remains tagged with the old target.
+   * Set the composer/session target. Changing it during a run ends that run
+   * immediately but keeps its text; the completed snapshot remains tagged with
+   * the old target so the adapter can file it under the original draft.
    */
   setTarget(targetId: string | null): void {
     if (targetId === this.configuredTargetId) return;
     this.configuredTargetId = targetId;
-    if (this.isActive()) {
-      this.cancel('target-change');
-    }
+    if (this.isActive()) this.interrupt('target-change');
   }
 
-  /** Backgrounding cancels microphone work and invalidates outstanding events. */
+  /**
+   * Backgrounding (screen off) releases the microphone and invalidates
+   * outstanding events, but keeps finals and the latest partial.
+   */
   setForeground(foreground: boolean): void {
     if (this.foreground === foreground) return;
     this.foreground = foreground;
-    if (!foreground && this.isActive()) this.cancel('background');
+    if (!foreground && this.isActive()) this.interrupt('background');
   }
 
   /** Start a fresh dictation for the currently selected target. */
@@ -162,6 +198,7 @@ export class DictationController {
       transcript: '',
       error: null,
       cancelReason: null,
+      interruptReason: null,
     };
     const requestId = this.beginTurn();
     this.publish();
@@ -186,7 +223,31 @@ export class DictationController {
     if (this.requestStartResolved) this.issueStop(this.currentRequestId);
   }
 
-  /** Cancel without producing a completed transcript for delivery. */
+  /**
+   * End the run now without waiting for the recognizer, keeping finals and
+   * the latest partial as a `completed` transcript. The active turn is
+   * abandoned, so its late callbacks cannot change the kept text.
+   */
+  interrupt(reason: DictationInterruptReason): void {
+    if (!this.isActive()) return;
+    const requestId = this.currentRequestId;
+    this.desiredListening = false;
+    this.cancelPendingRestart();
+    this.currentRequestId = null;
+    this.requestStartResolved = false;
+    this.stopIssued = false;
+    this.promotePartial();
+    this.snapshot = {
+      ...this.snapshot,
+      phase: 'completed',
+      requestId: null,
+      interruptReason: reason,
+    };
+    this.publish();
+    if (requestId !== null) this.callCancel(requestId);
+  }
+
+  /** Explicit user cancel: the only path that discards dictated text. */
   cancel(reason: DictationCancelReason = 'user'): void {
     if (!this.isActive()) return;
     const requestId = this.currentRequestId;
@@ -206,7 +267,7 @@ export class DictationController {
     if (requestId !== null) this.callCancel(requestId);
   }
 
-  /** Preview a partial for the current request. Partials never enter transcript. */
+  /** Record the latest partial for the current request (see `partial`). */
   onPartial(requestId: string, text: string): boolean {
     if (!this.accepts(requestId)) return false;
     this.snapshot = { ...this.snapshot, partial: text };
@@ -217,7 +278,7 @@ export class DictationController {
   /** Commit one final recognizer turn, then continue or finish according to policy. */
   onRecognizedSegment(requestId: string, text: string): boolean {
     if (!this.accepts(requestId)) return false;
-    const segment = text.trim();
+    const segment = coveringSegment(text.trim(), this.snapshot.partial.trim());
     if (!segment) return this.onRecoverableEnd(requestId, 'no-match');
     this.settleRequest(requestId);
     const segments = [...this.snapshot.segments, segment];
@@ -243,7 +304,8 @@ export class DictationController {
   onRecoverableEnd(requestId: string, reason: DictationRecoverableEnd): boolean {
     if (!this.accepts(requestId)) return false;
     this.settleRequest(requestId);
-    this.snapshot = { ...this.snapshot, partial: '', requestId: null };
+    this.promotePartial();
+    this.snapshot = { ...this.snapshot, requestId: null };
     if (this.desiredListening) {
       this.snapshot = { ...this.snapshot, phase: 'listening' };
       this.publish();
@@ -258,10 +320,11 @@ export class DictationController {
     return true;
   }
 
-  /** Any non-recoverable recognizer failure ends this run and preserves finals. */
+  /** Any non-recoverable recognizer failure ends this run and keeps finals and the partial. */
   onError(requestId: string, error: DictationError): boolean {
     if (!this.accepts(requestId)) return false;
     this.settleRequest(requestId);
+    this.promotePartial();
     this.snapshot = {
       ...this.snapshot,
       phase: 'error',
@@ -286,6 +349,7 @@ export class DictationController {
       partial: '',
       error: null,
       cancelReason: null,
+      interruptReason: null,
     };
 
     let result: void | Promise<void>;
@@ -352,6 +416,7 @@ export class DictationController {
     if (this.currentRequestId !== requestId) return;
     this.callCancel(requestId);
     this.settleRequest(requestId);
+    this.promotePartial();
     this.snapshot = {
       ...this.snapshot,
       phase: 'error',
@@ -403,6 +468,17 @@ export class DictationController {
         // The token also invalidates a callback if the scheduler cannot cancel it.
       }
     }
+  }
+
+  /** Fold the latest partial into the transcript as its own segment. */
+  private promotePartial(): void {
+    const partial = this.snapshot.partial.trim();
+    if (!partial) {
+      if (this.snapshot.partial) this.snapshot = { ...this.snapshot, partial: '' };
+      return;
+    }
+    const segments = [...this.snapshot.segments, partial];
+    this.snapshot = { ...this.snapshot, partial: '', segments, transcript: segments.join(' ') };
   }
 
   private settleRequest(requestId: string): void {
