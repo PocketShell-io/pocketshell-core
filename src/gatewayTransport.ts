@@ -15,11 +15,13 @@
  * Trust rules this module encodes:
  *  - A short-lived scoped broker JWT — the ROUTING token — only ADMITS the
  *    route. Each platform mints it per dial from its own account-service
- *    origin (`POST /gateway/token` at the trusted sync base), exchanging the
- *    account credential natively; the account's Google ID/bearer token never
- *    rides the gateway, and the broker origin never comes from a saved
- *    gateway target. The routing token travels in the auth frame only —
- *    never in a URL, never persisted, never logged.
+ *    origin (`POST /gateway/token` at the FIXED trusted issuer the platform
+ *    configures for the signed-in account), exchanging the account
+ *    credential natively. The issuer is never derived from a saved gateway
+ *    target, sync data, or a redirect; when the exchange fails the dial
+ *    fails — the raw Google ID/bearer token is never sent to the gateway as
+ *    a fallback. The routing token travels in the auth frame only — never
+ *    in a URL, never persisted, never logged.
  *  - The SSH private key authenticates against the host's sshd: the routing
  *    token admits a tunnel, it never authorizes SSH on the user's machine.
  *  - `ready.ssh_host_key` is the gateway's enrollment record. The gateway
@@ -58,7 +60,12 @@ export const GATEWAY_MAX_WS_MESSAGE_BYTES = (1 << 20) + (64 << 10);
  * independently and must NEVER be read from this saved target.
  */
 export interface GatewayTransportTarget {
-  /** Canonical gateway base URL, `wss://…` (or `ws://…` in explicit dev). */
+  /**
+   * Canonical gateway base URL, `wss://…` (or `ws://…` ONLY for a loopback
+   * development gateway the platform's own trusted dial policy admits —
+   * that allowance is caller configuration, `SshDialPolicy` in
+   * `sshCapability.ts`, never a property of this saved marker).
+   */
   serverUrl: string;
   /** The enrolled device (host agent) id to reach through the gateway. */
   deviceId: string;
@@ -80,10 +87,24 @@ export function isValidGatewayDeviceId(deviceId: string): boolean {
  * credentials (`wss://me:pass@host`) are rejected too, never stripped:
  * silently dropping them would accept a sanitized target while the secret
  * sat in paste history, logs and the saved record as "the URL".
+ *
+ * The placement rules run on the ORIGINAL text, before WHATWG
+ * canonicalization: the URL parser would silently erase exactly the
+ * placements this contract refuses (`/secret/..` collapses to `/`,
+ * embedded tab/newline/control characters vanish, percent- and IDN-encoded
+ * hosts are rewritten), so a hostile-looking input could normalize into a
+ * clean-looking origin. Only host case, an explicit default port
+ * (`wss://host:443`, `ws://host:80`), and one trailing root slash may
+ * differ from the canonical output; the host itself is plain ASCII
+ * (`reg-name`/IPv4 characters, or a bracketed IPv6 literal) with an
+ * optional port. This is shape normalization only — a `ws://` URL still
+ * normalizes here; the secure-transport decision belongs to the dial
+ * boundary (`classifySshDial`).
  */
 export function normalizeGatewayServerUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
+  if (!isOriginOnlyGatewayUrlText(trimmed)) return null;
   let candidate = trimmed;
   const httpLike = /^(https?):\/\//i.exec(trimmed);
   if (httpLike !== null) {
@@ -107,10 +128,24 @@ export function normalizeGatewayServerUrl(input: string): string | null {
   return `${url.protocol}//${url.host}`;
 }
 
+/** The strict grammar the raw text must already satisfy before the URL
+ * parser is allowed to touch it: scheme, bare authority, optional single
+ * trailing slash. Every character class here excludes the separators
+ * (`/`, `?`, `#`, `@`) and the characters WHATWG strips or rewrites
+ * (control characters, whitespace, `%`, non-ASCII), so anything the
+ * parser would change about the placement is refused instead. */
+function isOriginOnlyGatewayUrlText(input: string): boolean {
+  const match = /^(wss|ws|https|http):\/\/([^/?#]*)(\/)?$/i.exec(input);
+  if (match === null) return false;
+  return /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(:[0-9]{1,5})?$/.test(match[2]!);
+}
+
 /**
  * Normalize a raw (JSON-round-tripped) gateway target. Null when either
  * field is unusable — callers treat null as "not a gateway host" and the
- * entry must then refuse to dial rather than guess.
+ * entry must then refuse to dial rather than guess. This validates SHAPE
+ * only (a `ws://` URL still normalizes); enforcing the secure-transport
+ * policy is the dial boundary's job (`classifySshDial`).
  */
 export function normalizeGatewayTarget(raw: unknown): GatewayTransportTarget | null {
   if (typeof raw !== 'object' || raw === null) return null;
@@ -154,18 +189,24 @@ export function gatewaySshUrl(
 
 /**
  * A short-lived gateway ROUTING token: the scoped broker JWT each platform
- * mints per dial at its OWN account-service origin (`POST /gateway/token` at
- * the trusted sync base, no redirects, bounded body), exchanging the account
- * credential natively. It admits the tunnel route — it never authorizes SSH
- * on the host (public-key userauth stays mandatory), never replaces the
- * account's Google ID/bearer credential on the wire, and is never persisted
- * or logged: only token+expiry cross into transport code, and the broker
- * origin is platform configuration, never a saved gateway target's URL.
+ * mints per dial at its OWN account-service origin (`POST /gateway/token`
+ * at the FIXED trusted issuer the platform configures for the signed-in
+ * account — never a saved gateway target's URL, never a redirect, no
+ * fallback to the raw Google ID/bearer credential when the exchange
+ * fails). It admits the tunnel route — it never authorizes SSH on the host
+ * (public-key userauth stays mandatory) — and is never persisted or
+ * logged: only token+expiry cross into transport code.
  */
 export interface GatewayRoutingToken {
   token: string;
-  /** Epoch ms after which the broker stops honoring the token, when stated. */
-  expiresEpochMs: number | null;
+  /**
+   * Epoch ms after which the broker stops honoring the token. The scoped
+   * broker exchange ALWAYS states one — a response with a missing,
+   * non-finite, or already-passed expiry fails closed (the platform
+   * validates before the token is used; `null`/absent expiry is never
+   * legal on this path, so the type does not admit one).
+   */
+  expiresEpochMs: number;
 }
 
 // --- JSON handshake frames ---------------------------------------------------

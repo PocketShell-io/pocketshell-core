@@ -119,11 +119,15 @@ export function isLinkDial(target: SshHostTarget): boolean {
 // One pure, effect-free answer to "how may this dial travel, if at all?",
 // evaluated BEFORE any effect: before a controller creates a connection
 // record, before a native plugin opens a socket, before a broker token is
-// minted. Platform shells (Android's host store/app guard, desktop's
-// SshService, the browser) call it at their entry points and refuse
-// `refused` plans verbatim; the capability implementations call
-// {@link classifySshConnect} first thing in `connect` and never open a
-// transport for anything but a direct/link/gateway plan.
+// minted. Every platform shell (Android's host store/app guard, desktop's
+// SshService, the browser) MUST run it at its entry points and refuse
+// `refused` plans verbatim once that platform adopts the gateway transport;
+// capability implementations run {@link classifySshConnect} first thing in
+// `connect` and never open a transport for anything but a direct/link/
+// gateway plan. This is the ADOPTION CONTRACT, not a description of
+// current calls: this module ships the boundary — no controller or existing
+// capability invokes it yet, and until a platform adopts it the boundary
+// proves nothing on that platform.
 //
 // The rules it enforces (docs/gateway-dial-contract.md has the long form):
 //  - Presence is intent. An OWN `gateway` or `link` property — a valid
@@ -132,11 +136,15 @@ export function isLinkDial(target: SshHostTarget): boolean {
 //    the host is ordinary SSH.
 //  - Transports are exclusive. Both markers refuse even when each is
 //    individually well-formed.
-//  - A gateway dial needs a NORMALIZED target (canonical `wss://` origin +
-//    registry-valid device id), a real SSH key credential, and — at connect
-//    time, via {@link classifySshConnect} — an independently provisioned
-//    host-key fingerprint pin on `expectedHostKey`. Passwords, link tokens
-//    and absent pins never ride the gateway; there is no TOFU prompt.
+//  - A gateway dial needs a NORMALIZED target (canonical origin +
+//    registry-valid device id) that is SECURE: `wss://` by default, with
+//    `ws://` admitted only by the caller's explicit {@link SshDialPolicy}
+//    development allowance and only for a loopback gateway — never from a
+//    field on the saved marker. It also needs a real SSH key credential
+//    and — at connect time, via {@link classifySshConnect} — an
+//    independently provisioned, canonically shaped host-key pin on
+//    `expectedHostKey`. Passwords, link tokens and absent pins never ride
+//    the gateway; there is no TOFU prompt.
 //  - Healthy direct and link dials classify exactly as before: direct with
 //    a private-key/password/key-handle credential, link with the link
 //    target + link-token credential. This boundary adds refusals for
@@ -148,12 +156,31 @@ export function isLinkDial(target: SshHostTarget): boolean {
 // URLs, device ids, credential material and marker shapes must not be
 // reflected into user-visible errors.
 
+/** The trusted caller's transport policy for the dial boundary. Its fields
+ * are PLATFORM CONFIGURATION, supplied by the code that owns the dial from
+ * its own trusted settings; they must never be derived from the saved
+ * gateway marker, from sync data, or from anything a gateway delivered — a
+ * marker can never widen its own transport policy. */
+export interface SshDialPolicy {
+  /**
+   * DEVELOPMENT ONLY, an explicit opt-in from trusted platform
+   * configuration (a developer settings toggle the platform owns): admit
+   * an unencrypted `ws://` gateway origin when — and only when — it points
+   * at a LOOPBACK host (localhost, 127.0.0.0/8, ::1). Absent or false,
+   * every `ws://` gateway origin refuses, loopback or not; even with the
+   * flag a non-loopback `ws://` origin refuses. The production default is
+   * `wss://` and stays `wss://`.
+   */
+  allowInsecureLoopbackWs?: boolean;
+}
+
 /** Stable refusal codes on {@link SshDialPlan}; platforms branch on these
  * for their own copy/telemetry but must not weaken them into fallbacks. */
 export type SshDialRefusalCode =
   | 'dial-target-invalid'
   | 'dial-transport-conflict'
   | 'gateway-marker-invalid'
+  | 'gateway-transport-insecure'
   | 'gateway-credential-unsupported'
   | 'gateway-host-key-unpinned'
   | 'link-marker-invalid'
@@ -184,6 +211,39 @@ function hasOwnMarker(target: object, key: 'link' | 'gateway'): boolean {
   return Object.prototype.hasOwnProperty.call(target, key);
 }
 
+/** Whether an already-NORMALIZED gateway URL points at a loopback host —
+ * the only thing the {@link SshDialPolicy} development allowance may ever
+ * admit. Pure string/URL inspection of the canonical origin. */
+function isLoopbackGatewayServerUrl(serverUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(serverUrl);
+  } catch {
+    return false;
+  }
+  // WHATWG keeps the brackets in `hostname` for IPv6 literals.
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host.endsWith('.localhost') || host.startsWith('127.') || host === '::1';
+}
+
+/** A private-key credential carries nonempty key material and, when a
+ * passphrase rides along, a string one (absent and null mean "none") — a
+ * numeric or structured passphrase is a broken credential shape, refused
+ * before any effect. The key itself is never parsed or decrypted here:
+ * nonempty fixture text is not proof of a cryptographically usable key,
+ * and key custody stays a platform responsibility. */
+function privateKeyCredentialRefusal(
+  credential: { privateKeyPem: unknown; passphrase?: unknown },
+): SshDialPlan | null {
+  if (typeof credential.privateKeyPem !== 'string' || credential.privateKeyPem.trim().length === 0) {
+    return refusedDial('credential-invalid', 'The private-key credential carries no key material.');
+  }
+  if (credential.passphrase !== undefined && credential.passphrase !== null && typeof credential.passphrase !== 'string') {
+    return refusedDial('credential-invalid', 'The private-key passphrase must be a string when present.');
+  }
+  return null;
+}
+
 /** A gateway dial authenticates with the host's real SSH key — nothing else. */
 function gatewayCredentialRefusal(credential: SshCredential): SshDialPlan | null {
   if (credential.kind === 'password' || credential.kind === 'link-token') {
@@ -193,10 +253,7 @@ function gatewayCredentialRefusal(credential: SshCredential): SshDialPlan | null
     );
   }
   if (credential.kind === 'private-key') {
-    if (typeof credential.privateKeyPem !== 'string' || credential.privateKeyPem.trim().length === 0) {
-      return refusedDial('credential-invalid', 'The private-key credential carries no key material.');
-    }
-    return null;
+    return privateKeyCredentialRefusal(credential);
   }
   if (!isValidSshKeyHandleCredential(credential)) {
     return refusedDial('credential-invalid', 'The credential is not a usable SSH key credential.');
@@ -208,10 +265,7 @@ function gatewayCredentialRefusal(credential: SshCredential): SshDialPlan | null
  * the three SSH credential kinds it always has. */
 function directCredentialRefusal(credential: SshCredential): SshDialPlan | null {
   if (credential.kind === 'private-key') {
-    if (typeof credential.privateKeyPem !== 'string' || credential.privateKeyPem.trim().length === 0) {
-      return refusedDial('credential-invalid', 'The private-key credential carries no key material.');
-    }
-    return null;
+    return privateKeyCredentialRefusal(credential);
   }
   if (credential.kind === 'password') {
     if (typeof credential.password !== 'string' || credential.password.length === 0) {
@@ -233,18 +287,26 @@ function directCredentialRefusal(credential: SshCredential): SshDialPlan | null 
  * 2. OWN `link` and `gateway` markers are read; both present is a
  *    `dial-transport-conflict` refusal even when each is well-formed;
  * 3. a present `gateway` marker must normalize (`normalizeGatewayTarget`) —
- *    null/malformed refuses as `gateway-marker-invalid` — and its
- *    credential must be a real private-key/key-handle credential;
- * 4. else a present `link` marker must be a usable link target and pair
+ *    null/malformed refuses as `gateway-marker-invalid`. The normalized
+ *    origin must then be SECURE: `wss://` by default, and `ws://` only
+ *    when `policy.allowInsecureLoopbackWs` — trusted platform
+ *    configuration, never a field of the saved marker — admits a LOOPBACK
+ *    development gateway; anything unencrypted beyond that refuses as
+ *    `gateway-transport-insecure`;
+ * 4. the gateway dial's credential must be a real private-key/key-handle
+ *    credential (`password`/`link-token` refuse with
+ *    `gateway-credential-unsupported`, broken shapes with
+ *    `credential-invalid`);
+ * 5. else a present `link` marker must be a usable link target and pair
  *    with the `link-token` credential;
- * 5. else the dial is direct with a private-key/password/key-handle
+ * 6. else the dial is direct with a private-key/password/key-handle
  *    credential (a link-token without a link marker refuses: that
  *    credential is only ever meaningful to the link capability).
  *
  * Pure: no I/O, no network, no crypto, no platform calls. For the
  * connect-time pin requirement see {@link classifySshConnect}.
  */
-export function classifySshDial(target: SshHostTarget): SshDialPlan {
+export function classifySshDial(target: SshHostTarget, policy?: SshDialPolicy): SshDialPlan {
   if (typeof target !== 'object' || target === null) {
     return refusedDial('dial-target-invalid', 'The dial target is missing.');
   }
@@ -266,6 +328,12 @@ export function classifySshDial(target: SshHostTarget): SshDialPlan {
       return refusedDial(
         'gateway-marker-invalid',
         'This host carries a gateway transport whose target is not a usable gateway address; fix the saved record before dialling.',
+      );
+    }
+    if (gateway.serverUrl.startsWith('ws://') && !(policy?.allowInsecureLoopbackWs === true && isLoopbackGatewayServerUrl(gateway.serverUrl))) {
+      return refusedDial(
+        'gateway-transport-insecure',
+        'The gateway origin is unencrypted ws://; a dial needs wss:// unless the platform\u2019s explicit development setting admits a loopback gateway.',
       );
     }
     const credentialRefusal = gatewayCredentialRefusal(credential as SshCredential);
@@ -300,27 +368,100 @@ export function classifySshDial(target: SshHostTarget): SshDialPlan {
 }
 
 /**
- * The connect-time boundary every {@link SshCapability.connect}
- * implementation runs FIRST, before opening any transport or minting any
- * token: {@link classifySshDial}'s verdict, plus the gateway rule that the
- * dial arrive with an independently provisioned host-key fingerprint pin on
- * `expectedHostKey`. A gateway dial without a usable pin is a refusal —
- * there is no first-contact prompt on this transport, because a value the
- * gateway delivers can never vouch for the host. Direct and link plans
- * keep their existing trust flows unchanged.
+ * The gateway pin rule, enforced before any effect: `expectedHostKey` must
+ * be a pin this boundary supports, in its CANONICAL persisted form —
+ *
+ *  - `kind: 'sha256-fingerprint'` whose `fingerprintSha256` is exactly the
+ *    canonical OpenSSH display form `SHA256:<43 unpadded base64 chars>`
+ *    (what `normalizeSha256Fingerprint` returns; the base64 digest is
+ *    case-sensitive and is never case-folded), or
+ *  - `kind: 'wire-key'` with that same canonical fingerprint plus the
+ *    structurally valid known_hosts fields the platform compares exactly:
+ *    a `keyType` label and a base64 key blob whose embedded RFC 4251 type
+ *    string IS that label.
+ *
+ * Anything else — an unknown kind, a full `ssh-keygen -lf` line, a padded
+ * or differently spelled fingerprint, a toy or mismatched wire blob —
+ * refuses as `gateway-host-key-unpinned`. The canonical requirement is the
+ * handoff: platform code compares persisted fingerprints as exact strings
+ * (`hostKeyTrustCore`), so the boundary accepts only the form such a
+ * comparison can honor. Pairing flows persist the canonical form at
+ * pairing time; that the pin was provisioned independently of the gateway
+ * stays a platform responsibility this pure contract cannot verify.
  */
-export function classifySshConnect(options: SshConnectOptions): SshDialPlan {
-  const plan = classifySshDial(options);
-  if (plan.kind !== 'gateway') return plan;
-  const fingerprint = options.expectedHostKey === null || options.expectedHostKey === undefined
-    ? null
-    : options.expectedHostKey.fingerprintSha256;
-  if (typeof fingerprint !== 'string' || normalizeSha256Fingerprint(fingerprint) === null) {
+function gatewayHostKeyPinRefusal(expectedHostKey: unknown): SshDialPlan | null {
+  if (typeof expectedHostKey !== 'object' || expectedHostKey === null) {
     return refusedDial(
       'gateway-host-key-unpinned',
       'This gateway host has no independently paired host-key fingerprint; pair the host out of band before dialling.',
     );
   }
+  const pin = expectedHostKey as Record<string, unknown>;
+  if (pin['kind'] !== 'sha256-fingerprint' && pin['kind'] !== 'wire-key') {
+    return refusedDial(
+      'gateway-host-key-unpinned',
+      'The host-key pin is not a shape this boundary supports; re-pair the host out of band.',
+    );
+  }
+  const fingerprint = pin['fingerprintSha256'];
+  if (typeof fingerprint !== 'string' || normalizeSha256Fingerprint(fingerprint) !== fingerprint) {
+    return refusedDial(
+      'gateway-host-key-unpinned',
+      'The paired host-key fingerprint is not in its canonical form; re-pair the host out of band.',
+    );
+  }
+  if (pin['kind'] === 'wire-key' && !wireKeyPinShapeMatches(pin)) {
+    return refusedDial(
+      'gateway-host-key-unpinned',
+      'The paired host-key pin\u2019s key type and key blob do not form a usable known_hosts key; re-pair the host out of band.',
+    );
+  }
+  return null;
+}
+
+/** Structural check of the wire-key fields: a known_hosts-shaped key type
+ * label plus a base64 blob whose leading RFC 4251 string IS that label
+ * (`<uint32 len><type><key data>`), decoded without any crypto. */
+function wireKeyPinShapeMatches(pin: Record<string, unknown>): boolean {
+  const keyType = pin['keyType'];
+  const keyB64 = pin['keyB64'];
+  if (typeof keyType !== 'string' || !/^[A-Za-z0-9._-]+$/.test(keyType)) return false;
+  if (typeof keyB64 !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(keyB64) || keyB64.length === 0) return false;
+  let bytes: Uint8Array;
+  try {
+    const binary = atob(`${keyB64}${'='.repeat((4 - (keyB64.length % 4)) % 4)}`);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  } catch {
+    return false;
+  }
+  if (bytes.length < 4) return false;
+  const typeLength = (bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!;
+  if (typeLength <= 0 || 4 + typeLength > bytes.length) return false;
+  for (let i = 0; i < typeLength; i += 1) {
+    if (bytes[4 + i] !== keyType.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+/**
+ * The connect-time boundary every {@link SshCapability.connect}
+ * implementation MUST run FIRST once its platform adopts the gateway
+ * transport, before opening any transport or minting any token:
+ * {@link classifySshDial}'s verdict (with the same trusted
+ * {@link SshDialPolicy}), plus the gateway rule that the dial arrive with
+ * an independently provisioned, canonically shaped host-key pin on
+ * `expectedHostKey` ({@link gatewayHostKeyPinRefusal}). A gateway dial
+ * without a usable pin is a refusal — there is no first-contact prompt on
+ * this transport, because a value the gateway delivers can never vouch for
+ * the host. Direct and link plans keep their existing trust flows
+ * unchanged.
+ */
+export function classifySshConnect(options: SshConnectOptions, policy?: SshDialPolicy): SshDialPlan {
+  const plan = classifySshDial(options, policy);
+  if (plan.kind !== 'gateway') return plan;
+  const pinRefusal = gatewayHostKeyPinRefusal((options as { expectedHostKey?: unknown }).expectedHostKey);
+  if (pinRefusal !== null) return pinRefusal;
   return plan;
 }
 

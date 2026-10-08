@@ -67,7 +67,9 @@ client. Sync's job is unchanged — to carry the property, not to interpret it:
   desktop refuses the whole apply before touching `~/.ssh/config` (no HostName
   downgrade, no partial write). The shared connect payload carries the marker
   to the platform boundary for the same reason: the store preserves, the
-  platform decides.
+  platform decides. All transport policy — including the secure `wss://`
+  default and any development allowance — is applied at the dial boundary
+  (`classifySshDial`), never from a field of the carried marker.
 
 ## Selection, merge, and conflicts
 
