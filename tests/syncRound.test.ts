@@ -26,8 +26,18 @@ interface SyncRoundVectors {
     id: string;
     remote: unknown[];
     checked: string[];
-    localAliases: string[];
+    unticked: string[];
     expected: string[];
+    expectedUnticked: string[];
+  }>;
+  untickRoundCases: Array<{
+    id: string;
+    local: unknown[];
+    remote: unknown[];
+    checked: string[];
+    unticked: string[];
+    expectedUploaded: string[];
+    expectedUntickedAfterPush: string[];
   }>;
   payloadCases: Array<{
     id: string;
@@ -65,7 +75,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     const effects = effectsFor({ kind: 'absent' });
     const result = await runSyncRound(
       [{ name: 'prod', hostname: 'prod.example.net' }],
-      ['prod'],
+      { checked: ['prod'], unticked: [] },
       effects,
     );
 
@@ -84,7 +94,12 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
         plaintext: JSON.stringify({ hosts: vector.remote }),
       });
 
-      const result = await runSyncRound(hosts(vector.local), vector.checked, effects);
+      // A merge case's `checked` is the final selection, so every account
+      // alias it leaves out is one the user explicitly unticked.
+      const unticked = hosts(vector.remote)
+        .map((entry) => entry.name)
+        .filter((name) => !vector.checked.includes(name));
+      const result = await runSyncRound(hosts(vector.local), { checked: vector.checked, unticked }, effects);
 
       expect(result.kind).toBe('synced');
       expect(effects.uploads).toHaveLength(1);
@@ -96,19 +111,56 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
   for (const vector of vectors.autoCheckCases) {
     it(vector.id, async () => {
-      const local = vector.localAliases.map((name) => ({ name, hostname: `${name}.example.net` }));
+      const local = vector.checked.map((name) => ({ name, hostname: `${name}.example.net` }));
       const effects = effectsFor({
         kind: 'ok',
         version: 3,
         plaintext: JSON.stringify({ hosts: vector.remote }),
       });
 
-      const result = await runSyncRound(local, vector.checked, effects);
+      const observed: SyncRoundPulled[] = [];
+      const result = await runSyncRound(
+        local,
+        { checked: vector.checked, unticked: vector.unticked },
+        { ...effects, onPulled: (pulled) => observed.push(pulled) },
+      );
 
+      // The vector pins the state after the pull…
+      expect(observed[0]?.selectedAliases).toEqual(vector.expected);
+      expect(observed[0]?.untickedAliases).toEqual(vector.expectedUnticked);
       expect(result.kind).toBe('synced');
-      if (result.kind === 'synced') expect(result.selectedAliases).toEqual(vector.expected);
+      // …and the push then carries every pending untick out (one-shot).
+      if (result.kind === 'synced') {
+        expect(result.selectedAliases).toEqual(vector.expected);
+        expect(result.untickedAliases).toEqual([]);
+      }
+      expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+        .toEqual(vector.expected);
     });
   }
+
+  for (const vector of vectors.untickRoundCases) {
+    it(vector.id, async () => {
+      const effects = effectsFor({ kind: 'ok', version: 2, plaintext: JSON.stringify({ hosts: vector.remote }) });
+
+      const result = await runSyncRound(hosts(vector.local), { checked: vector.checked, unticked: vector.unticked }, effects);
+
+      expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+        .toEqual(vector.expectedUploaded);
+      expect(result).toMatchObject({ kind: 'synced', untickedAliases: vector.expectedUntickedAfterPush });
+    });
+  }
+
+  it('keeps an untick whose push failed', async () => {
+    const effects = effectsFor(
+      { kind: 'ok', version: 2, plaintext: JSON.stringify({ hosts: [{ name: 'a', hostname: 'a' }, { name: 'b', hostname: 'b' }] }) },
+      async () => ({ kind: 'error', message: 'offline' }),
+    );
+    const observed: SyncRoundPulled[] = [];
+    const result = await runSyncRound([], { checked: [], unticked: ['a'] }, { ...effects, onPulled: (p) => observed.push(p) });
+    expect(result).toMatchObject({ kind: 'error', stage: 'push' });
+    expect(observed.at(-1)?.untickedAliases).toEqual(['a']);
+  });
 
   for (const vector of vectors.payloadCases) {
     it(vector.id, async () => {
@@ -117,7 +169,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
       const effects = effectsFor({ kind: 'ok', version: 4, plaintext: vector.plaintext });
 
-      const result = await runSyncRound([], [], effects);
+      const result = await runSyncRound([], { checked: [], unticked: [] }, effects);
 
       expect(result).toMatchObject({ kind: 'invalid-payload', reason: vector.expected.reason });
       expect(result).not.toHaveProperty('hosts');
@@ -129,7 +181,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
   it('accepts an explicit empty payload but never uploads an empty selection', async () => {
     const effects = effectsFor({ kind: 'ok', version: 5, plaintext: '{"hosts":[]}' });
 
-    const result = await runSyncRound([], [], effects);
+    const result = await runSyncRound([], { checked: [], unticked: [] }, effects);
 
     expect(parseSyncPayloadResult('{"hosts":[]}')).toEqual({ kind: 'ok', hosts: [] });
     expect(result).toEqual({ kind: 'empty-selection' });
@@ -174,7 +226,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
     const result = await runSyncRound(
       [{ name: 'prod', hostname: 'phone.example.net', port: 2222, user: 'alexey' }],
-      ['prod'],
+      { checked: ['prod'], unticked: [] },
       effects,
     );
 
@@ -195,7 +247,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
   });
 
   it('returns visible pull and push failures', async () => {
-    const pullFailure = await runSyncRound([], [], {
+    const pullFailure = await runSyncRound([], { checked: [], unticked: [] }, {
       async pull() { throw new Error('offline'); },
       async push() { throw new Error('must not push'); },
     });
@@ -203,7 +255,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
     const pushFailure = await runSyncRound(
       [{ name: 'prod', hostname: 'prod.example.net' }],
-      ['prod'],
+      { checked: ['prod'], unticked: [] },
       effectsFor({ kind: 'absent' }, async () => ({ kind: 'error', message: 'service unavailable' })),
     );
     expect(pushFailure).toEqual({ kind: 'error', stage: 'push', message: 'service unavailable' });
@@ -213,7 +265,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     for (const version of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       const effects = effectsFor({ kind: 'ok', version, plaintext: '{"hosts":[]}' });
 
-      expect(await runSyncRound([], [], effects)).toMatchObject({ kind: 'error', stage: 'pull' });
+      expect(await runSyncRound([], { checked: [], unticked: [] }, effects)).toMatchObject({ kind: 'error', stage: 'pull' });
       expect(effects.uploads).toEqual([]);
     }
   });
@@ -231,7 +283,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
       expect(await runSyncRound(
         [{ name: 'prod', hostname: 'prod.example.net' }],
-        ['prod'],
+        { checked: ['prod'], unticked: [] },
         effects,
       )).toMatchObject({ kind: 'error', stage: 'pull' });
       expect(uploads).toEqual([]);
@@ -239,7 +291,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
     const invalidPush = await runSyncRound(
       [{ name: 'prod', hostname: 'prod.example.net' }],
-      ['prod'],
+      { checked: ['prod'], unticked: [] },
       {
         async pull() { return { kind: 'absent' as const }; },
         async push() { return { kind: 'unknown' }; },
@@ -250,7 +302,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
   it('stops after the bounded conflict retry policy', async () => {
     let pullCount = 0;
-    const result = await runSyncRound([{ name: 'prod', hostname: 'prod.example.net' }], ['prod'], {
+    const result = await runSyncRound([{ name: 'prod', hostname: 'prod.example.net' }], { checked: ['prod'], unticked: [] }, {
       async pull() {
         pullCount += 1;
         return {
@@ -283,7 +335,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     ];
     const observed: SyncRoundPulled[] = [];
     const uploads: Array<{ baseVersion: number | null; plaintext: string }> = [];
-    const result = await runSyncRound([{ name: 'a', hostname: 'a.example.net' }], ['a'], {
+    const result = await runSyncRound([{ name: 'a', hostname: 'a.example.net' }], { checked: ['a'], unticked: [] }, {
       async pull() { return pulls.shift()!; },
       async push(input) {
         uploads.push(input);
@@ -293,8 +345,8 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     });
 
     expect(observed).toEqual([
-      { version: null, hosts: [], selectedAliases: ['a'] },
-      { version: 9, hosts: [{ name: 'q', hostname: 'q.laptop' }], selectedAliases: ['a', 'q'] },
+      { version: null, hosts: [], selectedAliases: ['a'], untickedAliases: [] },
+      { version: 9, hosts: [{ name: 'q', hostname: 'q.laptop' }], selectedAliases: ['a', 'q'], untickedAliases: [] },
     ]);
     expect(uploads.map((upload) => upload.baseVersion)).toEqual([null, 9]);
     expect(result).toMatchObject({ kind: 'synced', version: 10, selectedAliases: ['a', 'q'], attempts: 2 });
@@ -302,7 +354,7 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
 
   it('does not report a pull whose payload it refused', async () => {
     const observed: SyncRoundPulled[] = [];
-    const result = await runSyncRound([{ name: 'a', hostname: 'a.example.net' }], ['a'], {
+    const result = await runSyncRound([{ name: 'a', hostname: 'a.example.net' }], { checked: ['a'], unticked: [] }, {
       async pull() { return { kind: 'ok', version: 1, plaintext: '{"hosts":[{"name":"broken"}]}' }; },
       async push() { throw new Error('must not push'); },
       onPulled(pulled) { observed.push(pulled); },
@@ -311,13 +363,33 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     expect(observed).toEqual([]);
   });
 
+  it('keeps an account host this client also has, unless it was explicitly unticked (#3072)', async () => {
+    const account = JSON.stringify({ hosts: [
+      { name: 'hetzner', hostname: 'h.example' },
+      { name: 'fixture', hostname: 'f.example' },
+    ] });
+    const local = [{ name: 'hetzner', hostname: 'h.example' }, { name: 'other', hostname: 'o.example' }];
+
+    const untouched = effectsFor({ kind: 'ok', version: 1, plaintext: account });
+    await runSyncRound(local, { checked: ['other'], unticked: [] }, untouched);
+    expect(JSON.parse(untouched.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+      .toEqual(['other', 'hetzner', 'fixture']);
+
+    const unticked = effectsFor({ kind: 'ok', version: 1, plaintext: account });
+    const result = await runSyncRound(local, { checked: ['other'], unticked: ['hetzner'] }, unticked);
+    expect(JSON.parse(unticked.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+      .toEqual(['other', 'fixture']);
+    // The push carried the untick out, so it is spent (one-shot).
+    expect(result).toMatchObject({ kind: 'synced', untickedAliases: [] });
+  });
+
   it('refuses to upload an empty set when a conflict re-pull leaves nothing selected', async () => {
     const pulls: SyncRoundSnapshot[] = [
       { kind: 'ok', version: 1, plaintext: JSON.stringify({ hosts: [{ name: 'gone', hostname: 'g.example' }] }) },
       { kind: 'ok', version: 2, plaintext: '{"hosts":[]}' },
     ];
     const uploads: string[] = [];
-    const result = await runSyncRound([], ['gone'], {
+    const result = await runSyncRound([], { checked: ['gone'], unticked: [] }, {
       async pull() { return pulls.shift()!; },
       async push(input) {
         uploads.push(input.plaintext);

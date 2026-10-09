@@ -283,9 +283,10 @@ export interface AppSettings {
    * The host aliases ticked for settings sync (docs/SYNC.md), as
    * `~/.ssh/config` aliases. Only ticked hosts are uploaded to the sync
    * account — an unticked host never leaves the machine — and the sync
-   * store auto-ticks aliases it pulls from the account, so this list is
-   * "the selection" rather than "the local opinion": it grows on every pull
-   * and shrinks only on an explicit untick.
+   * store auto-ticks every alias it pulls from the account unless it is in
+   * {@link syncUntickedHosts}, so this list is "the selection" rather than
+   * "the local opinion": it grows on every pull and shrinks only on an
+   * explicit untick.
    *
    * It lives here, persisted per machine, rather than in the sync store's
    * memory, because a FORGOTTEN selection is the dangerous direction: a
@@ -293,6 +294,16 @@ export interface AppSettings {
    * push an empty list and wipe the account.
    */
   syncSelectedHosts: string[];
+  /**
+   * Account aliases the user explicitly UNTICKED on this device — the only
+   * way a host leaves the sync account (pocketshell#3072). Every other
+   * account alias is auto-ticked on each pull, including one this device's
+   * own host list also has. Persisted so an untick made before a restart
+   * still counts until a sync carries it out. An untick is one-shot: it is
+   * dropped once this device's push removes the host (or a pull shows the
+   * account no longer holds it), and on sign-out — never a standing ban.
+   */
+  syncUntickedHosts: string[];
   /**
    * How long a backgrounded app holds its live connection before closing it
    * (0.5.x `background_grace_millis`). One of core's offered windows, 30 s to
@@ -546,6 +557,7 @@ const SETTING_SPECS: SettingSpecs = {
   // Empty means "no host is synced", which is what a fresh install must say:
   // syncing nothing is the safe default, and the user opt in per host.
   syncSelectedHosts: { default: [], parse: asAliasList },
+  syncUntickedHosts: { default: [], parse: asAliasList },
   backgroundGraceMs: { default: DEFAULT_BACKGROUND_GRACE_MS, parse: parseBackgroundGraceMs },
   reconnectOnReturn: { default: DEFAULT_RECONNECT_ON_RETURN, parse: asBoolean },
   usageWarnPercent: { default: null, parse: parseUsageWarnPercentSetting },
