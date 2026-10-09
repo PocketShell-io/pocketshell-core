@@ -242,7 +242,10 @@ export const useSyncStore = defineStore('sync', () => {
       // The push carried out every pending untick: spend them (one-shot).
       persistSelection({ checked: result.selectedAliases, unticked: result.untickedAliases });
       // The synced set IS the payload: the ticked hosts, local entry first.
-      const set = result.hosts as HostEntry[];
+      // A plain deep copy: a local entry is the connection store's reactive
+      // object, and a platform transport that structured-clones its
+      // arguments (Electron IPC) cannot clone a Vue proxy.
+      const set = JSON.parse(JSON.stringify(result.hosts)) as HostEntry[];
       accountHosts.value = set;
 
       // Restore path: the synced set is offered to main, which appends

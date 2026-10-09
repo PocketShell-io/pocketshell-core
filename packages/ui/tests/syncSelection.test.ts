@@ -266,6 +266,26 @@ describe('one tick rule: an untouched Sync now keeps every account host (#3072)'
   });
 });
 
+describe('Sync now crosses a structured-clone boundary (desktop IPC)', () => {
+  it('hands applyHosts a plain, cloneable host list, not reactive store entries', async () => {
+    // Electron's ipcRenderer.invoke structured-clones its arguments; a Vue
+    // reactive proxy from the connection store makes it throw "An object
+    // could not be cloned" after the push already landed (found by the
+    // #3072 desktop e2e).
+    const account = fakeAccount([host('fixture')]);
+    const sync = await launch(account, [host('other')]);
+    vi.mocked(account.sync.applyHosts).mockImplementation(async (hosts) => {
+      structuredClone(hosts);
+      return { added: [] };
+    });
+    sync.setSelected('other', true);
+
+    await sync.syncNow();
+
+    expect(sync.message).toEqual({ kind: 'ok', text: 'Synced: 2 hosts in your account.' });
+  });
+});
+
 describe('AccountView never shows "remove on sync" without a user action (#3072)', () => {
   async function mountAccount(account: ReturnType<typeof fakeAccount>, local: HostEntry[]) {
     setActivePinia(createPinia());
