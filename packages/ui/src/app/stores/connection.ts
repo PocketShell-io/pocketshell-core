@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, ref, shallowRef } from 'vue';
+import { computed, ref, shallowRef, toRaw } from 'vue';
 import { api } from '../ipc';
 import type { ConnectionStateEvent } from '../api';
 import type {
@@ -456,8 +456,8 @@ export const useConnectionStore = defineStore('connection', () => {
   function transportMarkers(host: HostEntry): { link?: unknown; gateway?: unknown } {
     const raw = host as unknown as Record<string, unknown>;
     const markers: { link?: unknown; gateway?: unknown } = {};
-    if (Object.prototype.hasOwnProperty.call(host, 'link')) markers['link'] = raw['link'];
-    if (Object.prototype.hasOwnProperty.call(host, 'gateway')) markers['gateway'] = raw['gateway'];
+    if (Object.prototype.hasOwnProperty.call(host, 'link')) markers['link'] = toRaw(raw['link']);
+    if (Object.prototype.hasOwnProperty.call(host, 'gateway')) markers['gateway'] = toRaw(raw['gateway']);
     return markers;
   }
 
