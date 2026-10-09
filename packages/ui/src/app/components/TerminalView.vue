@@ -66,7 +66,7 @@ import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { usePaneIdentity } from '../paneIdentity';
 import { recordDiagDetail } from '../diag';
 import { TerminalPane } from '../terminalPane';
-import { extensionsFor } from '../extensions';
+import { createTerminalInputOwnership, mayRestoreTerminalFocus } from '../terminalInputOwnership';
 import type { ConnectionId } from '@pocketshell/core';
 import '@xterm/xterm/css/xterm.css';
 
@@ -157,8 +157,6 @@ let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 /** View-side xterm disposables: link provider, highlighter, OSC 52 handler. */
 let termDisposables: IDisposable[] = [];
-/** Detach functions of the platform's `terminal.inputAdapter` contributions. */
-let inputAdapterDetaches: Array<() => void> = [];
 /**
  * Set once the component is being torn down. The mount hook's continuation
  * after the join (`await pane.open()`) reads this: the join is seconds long —
@@ -173,24 +171,6 @@ let unmounted = false;
 /** True between mousedown inside the terminal and the mouse-up that ends it. */
 let selecting = false;
 
-/**
- * Re-attaching a PTY must not redirect a keystroke from another surface.
- *
- * A reconnect can finish after the prompt composer has taken focus, and the
- * old unconditional `term.focus()` then made the next character land in the
- * terminal. Only restore focus for a visible pane when it already owns focus,
- * or when the document has no meaningful focused control (the initial mount).
- */
-function mayRestoreTerminalFocus(): boolean {
-  const container = containerEl.value;
-  if (!container || container.clientWidth <= 0 || container.clientHeight <= 0) {
-    return false;
-  }
-  const active = document.activeElement;
-  if (active && container.contains(active)) return true;
-  return active === null || active === document.body || active === document.documentElement;
-}
-
 // The pane's PTY lifecycle controller. The getters keep the controller reading
 // the props that are CURRENT whenever a join or repair runs, so a watcher
 // re-point needs no re-wiring.
@@ -204,7 +184,7 @@ const pane = new TerminalPane({
   getWorkspace: () => props.workspace,
   getAplexerId: () => props.aplexerId,
   isVisible: () => !!containerEl.value?.clientHeight && !!containerEl.value?.clientWidth,
-  mayRestoreFocus: mayRestoreTerminalFocus,
+  mayRestoreFocus: () => mayRestoreTerminalFocus(containerEl.value),
   // Read at exit time, not captured: the store is the one place that knows
   // whether this pane's link is up or its recovery owner is at work.
   isLinkUp: () => {
@@ -215,18 +195,19 @@ const pane = new TerminalPane({
 /** Drives the join veil in the template; the controller arms and clears it. */
 const joinPending = pane.joinPending;
 
-// The aplexer prefix owns exactly one following key in this pane. This is
-// keyboard ownership, not an acknowledgement from the remote program.
-let prefixOwner: string | null = null;
-let prefixVisibilityObserver: ResizeObserver | null = null;
-const prefixDetaches: Array<() => void> = [];
+const inputOwnership = createTerminalInputOwnership({
+  getPrefixOwner: currentPrefixOwner,
+  getContainer: () => containerEl.value,
+  getSessionKey: () => registryKey.value,
+  routeKey: routeCustomKey,
+  cancelDetachCandidate: () => pane.cancelDetachCandidate(),
+  expectIntentionalDetach: () => pane.expectIntentionalDetach(),
+});
+const clearPrefix = inputOwnership.clearPrefix;
+const onCustomKey = inputOwnership.onCustomKey;
+
 function prefixConnection(): ReturnType<typeof useConnectionStore> | null {
   return props.backend === 'aplexer' && !props.bare && props.aplexerId ? useConnectionStore() : null;
-}
-
-function clearPrefix(): void {
-  prefixOwner = null;
-  pane.cancelDetachCandidate();
 }
 
 function currentPrefixOwner(): string | null {
@@ -254,34 +235,6 @@ watch(
   clearPrefix,
   { flush: 'sync' },
 );
-
-function attachPrefixResets(container: HTMLElement): void {
-  const listen = (target: EventTarget, type: string, listener: EventListener): void => {
-    target.addEventListener(type, listener, true);
-    prefixDetaches.push(() => target.removeEventListener(type, listener, true));
-  };
-  listen(container, 'focusout', (event) => {
-    const next = (event as FocusEvent).relatedTarget;
-    if (!(next instanceof Node) || !container.contains(next)) clearPrefix();
-  });
-  for (const type of ['compositionstart', 'paste', 'drop']) listen(container, type, clearPrefix);
-  listen(window, 'blur', clearPrefix);
-  listen(document, 'visibilitychange', () => {
-    if (document.visibilityState === 'hidden') clearPrefix();
-  });
-
-}
-
-function observePrefixVisibility(): void {
-  if (prefixVisibilityObserver || typeof ResizeObserver === 'undefined') return;
-  const container = containerEl.value;
-  if (!container) return;
-  prefixVisibilityObserver = new ResizeObserver(() => {
-    if (!container.clientWidth || !container.clientHeight) clearPrefix();
-  });
-  prefixVisibilityObserver.observe(container);
-  prefixDetaches.push(() => { prefixVisibilityObserver?.disconnect(); prefixVisibilityObserver = null; });
-}
 
 /**
  * Terminal look & feel, transcribed from the user's Windows Terminal config.
@@ -466,30 +419,6 @@ function onTerminalDrop(e: DragEvent): void {
   if (files.length === 0) return;
   e.preventDefault();
   emit('drop-into-composer', files);
-}
-
-/**
- * Intercept the clipboard chords, and (when asked) plain typing, before xterm
- * turns them into input bytes. Returning false tells xterm to leave the event
- * alone.
- */
-function onCustomKey(e: KeyboardEvent): boolean {
-  if (e.type !== 'keydown') return true;
-  if (e.isComposing) clearPrefix();
-  const modifierOnly = ['Control', 'Shift', 'Alt', 'Meta', 'AltGraph'].includes(e.key);
-  const owner = currentPrefixOwner();
-  const suffix = !modifierOnly && !e.isComposing && owner !== null && prefixOwner === owner;
-  if (!modifierOnly) clearPrefix();
-  const allowed = routeCustomKey(e, suffix);
-  if (allowed && suffix && e.key === 'd' && !e.ctrlKey && !e.altKey &&
-    !e.metaKey && !e.shiftKey && !e.repeat) pane.expectIntentionalDetach();
-  if (!allowed) clearPrefix();
-  else if (!modifierOnly && !suffix && !e.isComposing && !e.repeat &&
-    e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'b' && owner !== null) {
-    observePrefixVisibility();
-    prefixOwner = owner;
-  }
-  return allowed;
 }
 
 function routeCustomKey(e: KeyboardEvent, prefixSuffix: boolean): boolean {
@@ -725,8 +654,8 @@ onMounted(async () => {
   // whole lifetime, across session re-points (terminalPane.ts documents why
   // per-shell binding leaked keystrokes).
   pane.attach(term, fitAddon, containerEl.value!);
-  attachInputAdapters(term, containerEl.value!);
-  attachPrefixResets(containerEl.value!);
+  inputOwnership.attachInputAdapters(term, containerEl.value!);
+  inputOwnership.attachPrefixResets(containerEl.value!);
 
   // Path links, registered AFTER WebLinksAddon above, deliberately: xterm
   // gives an EARLIER provider priority over a later one for the same cells
@@ -810,30 +739,6 @@ onMounted(async () => {
   pane.startProbing();
 });
 
-/**
- * The platform's input filters (extensions.ts `terminal.inputAdapter`), one
- * attach per terminal, on xterm's own helper textarea — where keys, IME
- * composition and paste arrive. None contributed: nothing runs. `sendInput`
- * goes through `term.input`, so an adapter's bytes take exactly the path a
- * keystroke takes (the pane's onData route and its input fence).
- */
-function attachInputAdapters(t: Terminal, element: HTMLElement): void {
-  const textarea = t.textarea;
-  if (!textarea) return;
-  for (const adapter of extensionsFor('terminal.inputAdapter')) {
-    const detach = adapter.attach({
-      textarea,
-      element,
-      // A getter: the terminal outlives session re-points, so a snapshot would go stale.
-      get sessionKey() {
-        return registryKey.value;
-      },
-      sendInput: (data) => { clearPrefix(); t.input(data, true); },
-    });
-    if (typeof detach === 'function') inputAdapterDetaches.push(detach);
-  }
-}
-
 /** Bytes into this pane's shell, exactly as typed — the `terminal.dock` route. */
 function sendInput(data: string): void {
   clearPrefix();
@@ -847,8 +752,7 @@ function onWindowResize(): void {
 onBeforeUnmount(() => {
   unmounted = true;
   clearPrefix();
-  for (const detach of prefixDetaches) detach();
-  prefixDetaches.length = 0;
+  inputOwnership.disposePrefixResets();
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mouseup', onDocumentMouseUp);
   containerEl.value?.removeEventListener('mousedown', onTerminalMouseDown, true);
@@ -856,8 +760,7 @@ onBeforeUnmount(() => {
   containerEl.value?.removeEventListener('contextmenu', onTerminalContextMenu);
   for (const d of termDisposables) d.dispose();
   termDisposables = [];
-  for (const detach of inputAdapterDetaches) detach();
-  inputAdapterDetaches = [];
+  inputOwnership.disposeInputAdapters();
   pane.detach();
   term?.dispose();
   term = null;
