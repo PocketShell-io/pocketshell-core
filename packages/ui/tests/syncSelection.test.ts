@@ -204,22 +204,51 @@ describe('one tick rule: an untouched Sync now keeps every account host (#3072)'
     expect(account.names()).toEqual(expect.arrayContaining(['hetzner', 'fixture']));
   });
 
-  it('an untick is spent once the host has left the account: a later re-add elsewhere is kept', async () => {
+  it('an untick is one-shot: the push that removes the host spends it, so a re-add elsewhere is kept', async () => {
     const account = fakeAccount([host('hetzner'), host('fixture')]);
     const sync = await launch(account, [host('hetzner')]);
     await sync.loadAccount();
     sync.setSelected('hetzner', false);
     await sync.syncNow();
     expect(account.names()).toEqual(['fixture']);
-    // The next pull sees the decision carried out.
-    await sync.loadAccount();
+    expect(useSettingsStore().syncUntickedHosts).toEqual([]);
 
-    // Another device adds hetzner back; this machine's old untick must not
-    // silently delete it again on the next untouched Sync now.
+    // Another device adds hetzner back before this one pulls again. No
+    // Check account here: the user just presses Sync now, untouched.
     account.replace([host('fixture'), host('hetzner', 'hetzner.new')]);
     await sync.syncNow();
 
     expect(account.names()).toEqual(expect.arrayContaining(['fixture', 'hetzner']));
+  });
+
+  it('the spent untick stays spent across a restart: a re-add elsewhere is kept', async () => {
+    const account = fakeAccount([host('hetzner'), host('fixture')]);
+    const first = await launch(account, [host('hetzner')]);
+    await first.loadAccount();
+    first.setSelected('hetzner', false);
+    await first.syncNow();
+    expect(account.names()).toEqual(['fixture']);
+
+    account.replace([host('fixture'), host('hetzner', 'hetzner.new')]);
+    const second = await launch(account, [host('hetzner')]);
+    await second.syncNow();
+
+    expect(account.names()).toEqual(expect.arrayContaining(['fixture', 'hetzner']));
+  });
+
+  it('an untick whose push failed is not spent: the next Sync now still removes the host', async () => {
+    const account = fakeAccount([host('hetzner'), host('fixture')]);
+    const sync = await launch(account, [host('hetzner')]);
+    await sync.loadAccount();
+    sync.setSelected('hetzner', false);
+    vi.mocked(account.sync.push).mockResolvedValueOnce({ kind: 'error', message: 'offline' });
+    await sync.syncNow();
+    expect(sync.message?.kind).toBe('error');
+    expect(useSettingsStore().syncUntickedHosts).toEqual(['hetzner']);
+
+    await sync.syncNow();
+
+    expect(account.names()).toEqual(['fixture']);
   });
 
   it('signing out forgets unticks, so the next account starts with every host kept', async () => {

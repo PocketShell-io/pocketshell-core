@@ -201,6 +201,32 @@
       "expectedUnticked": []
     }
   ],
+  "untickRoundCases": [
+    {
+      "id": "push-spends-the-untick-it-carried-out",
+      "local": [{ "name": "hetzner", "hostname": "hetzner.example.net" }],
+      "remote": [
+        { "name": "hetzner", "hostname": "hetzner.example.net" },
+        { "name": "fixture", "hostname": "fixture.example.net" }
+      ],
+      "checked": [],
+      "unticked": ["hetzner"],
+      "expectedUploaded": ["fixture"],
+      "expectedUntickedAfterPush": []
+    },
+    {
+      "id": "re-added-alias-after-a-spent-untick-is-kept",
+      "local": [{ "name": "hetzner", "hostname": "hetzner.example.net" }],
+      "remote": [
+        { "name": "fixture", "hostname": "fixture.example.net" },
+        { "name": "hetzner", "hostname": "hetzner.new.example.net" }
+      ],
+      "checked": ["fixture"],
+      "unticked": [],
+      "expectedUploaded": ["fixture", "hetzner"],
+      "expectedUntickedAfterPush": []
+    }
+  ],
   "payloadCases": [
     {
       "id": "versionless-v1-payload-keeps-unknown-host-fields",

@@ -239,6 +239,8 @@ export const useSyncStore = defineStore('sync', () => {
         message.value = { kind: 'error', text: syncFailureText(result, settings.syncSelectedHosts.length) };
         return;
       }
+      // The push carried out every pending untick: spend them (one-shot).
+      persistSelection({ checked: result.selectedAliases, unticked: result.untickedAliases });
       // The synced set IS the payload: the ticked hosts, local entry first.
       const set = result.hosts as HostEntry[];
       accountHosts.value = set;

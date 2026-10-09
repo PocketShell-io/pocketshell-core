@@ -155,11 +155,15 @@ export async function runSyncRound(
       return { kind: 'error', stage: 'push', message: pushed.message };
     }
     if (pushed.kind === 'ok') {
+      // An untick is one-shot: this push carried it out (the alias is not in
+      // the uploaded set), so it is spent. Keeping it would make it a standing
+      // ban that deletes the host again after another device re-adds it.
+      const uploaded = new Set(hosts.map((host) => host.name));
       return {
         kind: 'synced',
         version: pushed.version,
         selectedAliases: [...selected],
-        untickedAliases: [...unticked],
+        untickedAliases: unticked.filter((alias) => uploaded.has(alias)),
         hosts,
         attempts,
       };

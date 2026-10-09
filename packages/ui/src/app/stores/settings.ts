@@ -299,8 +299,9 @@ export interface AppSettings {
    * way a host leaves the sync account (pocketshell#3072). Every other
    * account alias is auto-ticked on each pull, including one this device's
    * own host list also has. Persisted so an untick made before a restart
-   * still counts; an untick is dropped once a pull shows the account no
-   * longer holds the alias (the decision is carried out), and on sign-out.
+   * still counts until a sync carries it out. An untick is one-shot: it is
+   * dropped once this device's push removes the host (or a pull shows the
+   * account no longer holds it), and on sign-out — never a standing ban.
    */
   syncUntickedHosts: string[];
   /**

@@ -30,6 +30,15 @@ interface SyncRoundVectors {
     expected: string[];
     expectedUnticked: string[];
   }>;
+  untickRoundCases: Array<{
+    id: string;
+    local: unknown[];
+    remote: unknown[];
+    checked: string[];
+    unticked: string[];
+    expectedUploaded: string[];
+    expectedUntickedAfterPush: string[];
+  }>;
   payloadCases: Array<{
     id: string;
     plaintext: string;
@@ -109,17 +118,49 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
         plaintext: JSON.stringify({ hosts: vector.remote }),
       });
 
-      const result = await runSyncRound(local, { checked: vector.checked, unticked: vector.unticked }, effects);
+      const observed: SyncRoundPulled[] = [];
+      const result = await runSyncRound(
+        local,
+        { checked: vector.checked, unticked: vector.unticked },
+        { ...effects, onPulled: (pulled) => observed.push(pulled) },
+      );
 
+      // The vector pins the state after the pull…
+      expect(observed[0]?.selectedAliases).toEqual(vector.expected);
+      expect(observed[0]?.untickedAliases).toEqual(vector.expectedUnticked);
       expect(result.kind).toBe('synced');
+      // …and the push then carries every pending untick out (one-shot).
       if (result.kind === 'synced') {
         expect(result.selectedAliases).toEqual(vector.expected);
-        expect(result.untickedAliases).toEqual(vector.expectedUnticked);
+        expect(result.untickedAliases).toEqual([]);
       }
       expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
         .toEqual(vector.expected);
     });
   }
+
+  for (const vector of vectors.untickRoundCases) {
+    it(vector.id, async () => {
+      const effects = effectsFor({ kind: 'ok', version: 2, plaintext: JSON.stringify({ hosts: vector.remote }) });
+
+      const result = await runSyncRound(hosts(vector.local), { checked: vector.checked, unticked: vector.unticked }, effects);
+
+      expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+        .toEqual(vector.expectedUploaded);
+      expect(result).toMatchObject({ kind: 'synced', untickedAliases: vector.expectedUntickedAfterPush });
+    });
+  }
+
+  it('keeps an untick whose push failed', async () => {
+    const effects = effectsFor(
+      { kind: 'ok', version: 2, plaintext: JSON.stringify({ hosts: [{ name: 'a', hostname: 'a' }, { name: 'b', hostname: 'b' }] }) },
+      async () => ({ kind: 'error', message: 'offline' }),
+    );
+    const observed: SyncRoundPulled[] = [];
+    const result = await runSyncRound([], { checked: [], unticked: ['a'] }, { ...effects, onPulled: (p) => observed.push(p) });
+    expect(result).toMatchObject({ kind: 'error', stage: 'push' });
+    expect(observed.at(-1)?.untickedAliases).toEqual(['a']);
+  });
 
   for (const vector of vectors.payloadCases) {
     it(vector.id, async () => {
@@ -338,7 +379,8 @@ describe('runSyncRound — the shared pull/assemble/push/conflict loop', () => {
     const result = await runSyncRound(local, { checked: ['other'], unticked: ['hetzner'] }, unticked);
     expect(JSON.parse(unticked.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
       .toEqual(['other', 'fixture']);
-    expect(result).toMatchObject({ kind: 'synced', untickedAliases: ['hetzner'] });
+    // The push carried the untick out, so it is spent (one-shot).
+    expect(result).toMatchObject({ kind: 'synced', untickedAliases: [] });
   });
 
   it('refuses to upload an empty set when a conflict re-pull leaves nothing selected', async () => {

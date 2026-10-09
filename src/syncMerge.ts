@@ -112,10 +112,13 @@ export function aliasesToAutoCheck(
 /**
  * Apply one cleanly-read account copy to the selection: auto-tick every
  * account alias that is not explicitly unticked ({@link aliasesToAutoCheck}),
- * and spend each untick whose alias the account no longer holds. An untick
- * means "take this host out of the account"; once the account lacks it the
- * decision is carried out, and keeping it would let a stale decision delete
- * the host again the next time another device adds it back. Forgetting an
+ * and spend each untick whose alias the account no longer holds.
+ *
+ * An untick is ONE-SHOT: it means "take this host out of the account", and it
+ * is spent as soon as that has happened — here, when a pull shows the account
+ * lacks the alias, and in `runSyncRound` when this device's own push removed
+ * it. It is never a standing per-device ban: another device that adds the
+ * host back is kept by this device's next untouched Sync now. Forgetting an
  * untick can only keep a host in the account, never drop one.
  */
 export function applyAccountToSelection(
