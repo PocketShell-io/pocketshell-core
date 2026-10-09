@@ -57,14 +57,21 @@ Sync's job is to carry that property, not to understand it:
   shape) instead of treating the entry as ordinary SSH. A marker that is null
   or malformed is still gateway intent; coercing it to a plain host would dial
   the wrong transport. An entry that carries both `link` and `gateway` refuses
-  too, rather than falling back to the link transport.
+  too, rather than falling back to the link transport. Every client makes this
+  call through ONE shared decision, `unsupportedTransport(entry,
+  { gateway, link })` in `src/sync.ts`, passing its real transport
+  capabilities, at its dial boundary before any key load or socket; the
+  refusal text comes from the same place (`transportRefusalMessage`) so every
+  client words it identically.
 - The desktop config write-back is the one place a synced entry becomes a file
-  on disk, and an OpenSSH block cannot represent the gateway — so
-  `coerceHostEntries` reports `gateway-unsupported` for such an entry and the
-  desktop refuses the whole apply before touching `~/.ssh/config` (no HostName
-  downgrade, no partial write). The shared connect payload carries the marker
-  to the platform boundary for the same reason: the store preserves, the
-  platform decides.
+  on disk, and an OpenSSH block can represent neither the gateway nor a relay
+  link — so `coerceHostEntries` asks the same `unsupportedTransport` decision
+  with `SSH_CONFIG_TRANSPORTS` (`{ gateway: false, link: false }`), reports
+  `transport-unsupported` (with the shared message) for any `gateway`- or
+  `link`-marked entry, and the desktop refuses the whole apply before touching
+  `~/.ssh/config` (no HostName downgrade, no partial write). The shared connect
+  payload carries the marker to the platform boundary for the same reason: the
+  store preserves, the platform decides.
 
 ## Selection, merge, and conflicts
 
@@ -76,6 +83,30 @@ Unticking an alias removes it from the replacement list; this format has no
 tombstones and no per-field deletion markers. An empty checked selection is an
 explicit empty replacement, so callers should require the user to select hosts
 before starting a normal sync.
+
+The tick rule is the same on every client (pocketshell#3072, D43): **every
+account host stays selected unless the user explicitly unticked it.** Each
+device persists two alias lists, the selection and its explicit unticks
+(`SyncSelectionState`). Every clean pull applies `applyAccountToSelection`:
+each account alias that is not explicitly unticked joins the selection, even
+when this device's own host list (`~/.ssh/config`, the web's synced list, the
+phone's saved hosts) also has it. So an untouched Sync now never removes a
+host from the account; only an untick does, whether made this session or
+persisted from an earlier one. An untick is **one-shot**, not a standing
+per-device ban: it is spent by the push that removes the host (`runSyncRound`
+reports the remaining unticks as `untickedAliases`), or by a pull that shows
+the account no longer holds the alias, so a host another device later adds
+back is kept by this device's next untouched Sync now. A push that fails
+leaves the untick pending. Signing out forgets all of them: forgetting an
+untick can only keep a host in the account, never drop one.
+
+Because every overlapping alias is ticked, this device's explicit local
+fields win for it on push (see below). Two devices with a same-named but
+different host (two different `nas` boxes) therefore overwrite each other's
+account entry rather than dropping it; rename one of them to keep both. The
+shared `packages/ui` sync store applies the rule to every account copy it
+learns (Check account, the platform's session cache, each round's pulls), so
+the Account view shows "remove on sync" only after an explicit untick.
 
 For an alias on both sides, each explicit local property wins over the account
 copy, while account properties absent or `undefined` on the local object are
@@ -103,7 +134,10 @@ The vector file has its own `fixtureSchemaVersion` for test-fixture evolution;
 that value is not part of the encrypted wire payload. `mergeCases` cover both
 client directions, local-versus-account conflicts, alias-only selection,
 account-only restore, and deletion by omission. `autoCheckCases` pin the
-fresh-device and local-untick behavior. `payloadCases` pin versionless payload
+tick rule: fresh-device auto-tick, an account alias this device also has,
+an explicit untick, and a spent untick. `untickRoundCases` pin the one-shot
+untick through a whole round: the push that carries an untick out spends it,
+and an alias re-added afterwards is kept. `payloadCases` pin versionless payload
 compatibility, valid empty data, and strict refusal of malformed data or an
 explicit unsupported schema version.
 

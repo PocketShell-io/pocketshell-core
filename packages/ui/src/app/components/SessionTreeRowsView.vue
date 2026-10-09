@@ -19,9 +19,8 @@ import { computed } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { rootHostPath } from '../sessionRoots';
 import { rootHeaderParts, type SessionDirectory, type SessionRootFolder } from '../sessionTree';
-import { agentBadge, agentBadges, dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
-import type { AgentBadgeKind } from '../sessionTreeText';
-import { agentMark, type AgentMark } from '@pocketshell/core/shared/agentBadge';
+import { dirTooltip, fmtRelative, rootTooltip } from '../sessionTreeText';
+import AgentBadgeRun from './AgentBadgeRun.vue';
 import MaintenanceSection from './MaintenanceSection.vue';
 
 /** Where a dragged folder row would land: before row `gap` of `root`. */
@@ -173,34 +172,6 @@ function onSortClick(e: MouseEvent): void {
 }
 
 /**
- * What one folder row's badge slot shows for a kind. The four engines wear
- * their own brand marks (`agentMark`) at the panel's muted grey — VS Code's
- * treatment of tree adornments: present, never competing with the label they
- * qualify. The mark's tooltip names the SESSION the badge stands for, not the
- * engine — the silhouette already says codex, and in a stacked run of
- * look-alike marks the hover is what tells the copies apart. `probing…` and
- * `exited` are detector STATES rather than products, so they keep the word
- * form, dimmed — a logo on those would claim a product that is not running.
- */
-interface AgentBadgeView {
-  kind: AgentBadgeKind;
-  session: string;
-  mark: AgentMark | null;
-  text: string | null;
-}
-
-function badgeViews(dir: SessionDirectory): AgentBadgeView[] {
-  // The folder's tab ranking rides in as the `tabOrders` prop, so the run
-  // follows the arrangement the user dragged the workspace's tabs into — the
-  // wrapper reads the live store and hands the result over as data, the same
-  // as every other prop here.
-  return agentBadges(dir, props.tabOrders[dir.key]).map(({ kind, session }) => {
-    const mark = agentMark(kind);
-    return { kind, session, mark, text: mark === null ? agentBadge(kind) : null };
-  });
-}
-
-/**
  * The session a folder row stands for by itself in the narrow layout: a
  * folder holding exactly one session NAMED like the folder (`api` in `api`).
  * A leaf there would repeat the folder's own label on the next row, so the
@@ -232,7 +203,33 @@ function onFolderClick(dir: SessionDirectory): void {
        abandoned over the header would leave the dragged row faded forever.
        Same placement, same reason, as the tab strip's `<nav @dragend>`. -->
   <div class="folder-list" :class="{ leaves: props.showSessions }" @dragend="emit('dragEnd')">
-    <section v-for="({ root, header }, ri) in rootRows" :key="root.key" class="folder">
+    <!-- The drop target is the WHOLE SECTION, not the header: the reorder
+         gesture aims at the GROUP — "put git under tmp" — and a thin 28px
+         header row among dozens of folder rows is a target a hand can only
+         hit by accident. The first cut bound `dragover`/`drop` on the header
+         alone and every release over the folder rows refused, ten tries to
+         one landing; the events live on the section now, so hovering any row
+         of the group proposes a placement for it. `dragover` bubbles out of
+         the header and the rows alike, and the folder drag's own handlers
+         refuse first (their strip is empty while a root is in flight), so the
+         two gestures still cannot cross.
+
+         The landing rule draws on the SECTION's edges, which is also a
+         measured fix: on the header it drew "after the name" — a rule under
+         `~/tmp` but ABOVE its folders, inside the group it claimed to end.
+         Top edge of the section is the boundary above the group; bottom edge
+         is below its last row, where "after the group" actually is. -->
+    <section
+      v-for="({ root, header }, ri) in rootRows"
+      :key="root.key"
+      class="folder"
+      :class="{
+        'drop-above': props.rootDropTarget === ri,
+        'drop-below': props.rootDropTarget === props.roots.length && ri === props.roots.length - 1,
+      }"
+      @dragover="emit('rootDragOver', ri, $event)"
+      @drop.prevent="emit('rootDrop')"
+    >
       <!-- A plain element, not a <button>, and no disclosure mark: now that
            sessions live in workspace tabs the panel is root -> folder, and a
            root row is a grouping HEADER over its folders rather than a node
@@ -241,19 +238,22 @@ function onFolderClick(dir: SessionDirectory): void {
            the tooltip is the only thing it offers on hover, and it carries
            real information (the root's path and its size).
 
-           The one gesture it does take is the reorder drag the folder rows
-           take: the header is draggable, and pulling it up or down moves the
-           ROOT among its siblings (`../rootOrder.ts` holds why the headers,
-           unlike the rows, may be rearranged). Same native DnD family, so the
-           same three rules carry over — the drag does not fight any click
-           because there is no click to fight, the dragged header fades but
-           stays in place, and the landing place is drawn as a 2px accent rule
-           in the gap, with a refused drop drawing nothing at all.
+           The one gesture it starts is the reorder drag the folder rows take:
+           the header is draggable, and pulling it up or down moves the ROOT
+           among its siblings (`../rootOrder.ts` holds why the headers, unlike
+           the rows, may be rearranged). Same native DnD family, so the same
+           three rules carry over — the drag does not fight any click because
+           there is no click to fight, the dragged header fades but stays in
+           place, and the landing place is drawn as a 2px accent rule on the
+           section's edge, with a refused drop drawing nothing at all.
 
            NOT while a filter is up (a drag writes the whole panel's root keys
            in draw order, and under a filter that list is the survivors'), and
            not on `other`, which is a bucket pinned last — there is no gap it
-           can meaningfully land in (`canDropRootAt` refuses every one).
+           can meaningfully land in (`canDropRootAt` refuses every one). The
+           bucket's section still ACCEPTS drops above it: "just above other"
+           is a real place, and the section handler refuses only the gap
+           below.
 
            ROOT ROWS ARE DELIBERATELY ALWAYS OPEN. If collapsing ever comes
            back, it must NOT be driven off the root list: `roots` recomputes
@@ -264,17 +264,10 @@ function onFolderClick(dir: SessionDirectory): void {
            user navigated somewhere else. That is the trap, written down. -->
       <div
         class="folder-header"
-        :class="{
-          dragging: props.rootDragging === root.key,
-          'drop-above': props.rootDropTarget === ri,
-          'drop-below':
-            props.rootDropTarget === props.roots.length && ri === props.roots.length - 1,
-        }"
+        :class="{ dragging: props.rootDragging === root.key }"
         :title="rootTooltip(root)"
         :draggable="root.other || props.filtering ? 'false' : 'true'"
         @dragstart="emit('rootDragStart', root, $event)"
-        @dragover="emit('rootDragOver', ri, $event)"
-        @drop.prevent="emit('rootDrop')"
       >
         <!-- The dot is how a root reports attachment in ONE mark: a reader
              scanning the headers sees which roots have something live in them
@@ -428,37 +421,14 @@ function onFolderClick(dir: SessionDirectory): void {
             <!-- One mark per session that runs a named agent, in the folder's
                  TAB-BAR order — the folder's tab bar folded flat, the user's
                  dragged arrangement included (the `tabOrders` prop). This
-                 slot used to carry the
-                 session count (from 2 up) beside a DEDUPED kind list, two
-                 notations on one row; the user asked for the tabs' notation
-                 outright — "show the icons from tabs here instead of a
-                 number" — so the count is gone and a folder running three
-                 claudes wears three sparks. A shell wears no mark
-                 (agentBadge's silence rule), so the run can be shorter than
-                 the session list, and the row tooltip still counts the
-                 sessions and names them; the run itself is capped in
-                 `agentBadges`, and past it the tooltip is where the overflow
-                 goes.
-                 The run is one span so the marks can lie on top of each other
-                 (`.agent-run`'s overlap) without the row's `--sp-2` gap
-                 pricing every one of them at 20px — the width the cap spends.
-                 Rendered only when there IS a run: an empty flex item would
-                 still collect two gaps where the label and the timestamp
-                 used to have one.
-                 Keyed by index, not by kind: the kinds repeat now, and a
-                 duplicated key is a Vue warning and broken patching. -->
-            <span v-if="badgeViews(dir).length" class="agent-run">
-              <template v-for="(view, i) in badgeViews(dir)" :key="i">
-                <AppIcon
-                  v-if="view.mark"
-                  :name="view.mark.icon"
-                  :size="12"
-                  :title="view.session"
-                  class="agent-mark"
-                />
-                <span v-else class="agent-badge">{{ view.text }}</span>
-              </template>
-            </span>
+                 slot used to carry the session count beside a DEDUPED kind
+                 list; the user asked for the tabs' notation outright — "show
+                 the icons from tabs here instead of a number" — so a folder
+                 running three claudes wears three sparks. A shell wears no
+                 mark, the run is capped in `agentBadges`, and the row tooltip
+                 counts and names every session. AgentBadgeRun.vue holds the
+                 run, its stacking and its styles. -->
+            <AgentBadgeRun :dir="dir" :tab-order="props.tabOrders[dir.key]" />
             <!-- The folder's age is its NEWEST session's, and it is
                  INDEPENDENT of where the row sits: the list is in the host's
                  order — or the sort the user picked (folderSort.ts) — plus the
@@ -723,19 +693,22 @@ function onFolderClick(dir: SessionDirectory): void {
  *
  * The folder drag's three rules, one level up (`.dir-header.dragging` and the
  * `li` rules below): the carried header FADES BUT STAYS IN PLACE, the landing
- * place is a 2px accent rule in the gap, and a REFUSED drop draws nothing at
- * all — which is how the rules this drag enforces (the `other` bucket cannot
- * be carried, and nothing lands below it) are made visible while the drag is
- * still in the air. `inset` box-shadow rather than a real border, for the same
+ * place is a 2px accent rule, and a REFUSED drop draws nothing at all — which
+ * is how the rules this drag enforces (the `other` bucket cannot be carried,
+ * and nothing lands below it) are made visible while the drag is still in the
+ * air. The rule draws on the SECTION, not the header: its top edge is the
+ * boundary above the group, its bottom edge is below the group's last row —
+ * on the header it drew "after the name", a rule inside the group it claimed
+ * to end. `inset` box-shadow rather than a real border, for the same
  * height-shifting reason the folder rows give.
  */
 .folder-header.dragging {
   opacity: var(--disabled-opacity);
 }
-.folder-header.drop-above {
+.folder.drop-above {
   box-shadow: inset 0 2px 0 0 var(--accent);
 }
-.folder-header.drop-below {
+.folder.drop-below {
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 .dir-header.dragging {
@@ -853,81 +826,6 @@ function onFolderClick(dir: SessionDirectory): void {
    was the list rearranging itself in response to being used. The mark stays; the movement went. */
 .dir-header.attached .label {
   font-weight: var(--fw-semibold);
-}
-/* The engine marks sit at the panel's own muted grey, never a per-kind hue:
-   the SHAPE says which agent (the tooltip names it on first hover), and a
-   row of logos at full contrast would out-shout the labels they qualify —
-   the same call the tab bar's `.tab-agent` made. */
-.agent-mark {
-  flex: none;
-  color: var(--fg-muted);
-}
-/* ── The badge run: stacked at rest, spread under the cursor ──────────────
-   The run is priced by the row's `--sp-2` gap as long as the marks are its
-   direct children — 20px a mark, which is what forced `agentBadges`' cap of
-   four and made a folder's row disagree with its own tab strip (six tabs,
-   four marks). One span, its own flex formatting, and the mark-on-mark
-   overlap buys each extra mark down to 8px, so the cap can rise to the
-   tooltip's six and the row reads as its tabs again.
-
-   At rest each mark after the first lies 4px deep on its neighbor —
-   `margin-left: -4px` against no run gap — enough to read as one compact
-   run without mangling 12px glyphs; the marks are monochrome line art at
-   `--fg-muted`, so the pile stays one texture. Under the cursor (or
-   `:focus-visible`, the root-add's rule: a keyboard user sees what they
-   tabbed to) the same margin walks out to `--sp-1` and the run blooms
-   apart — the reading order the stack is compressed FROM. `@media
-   (hover: none)` keeps it spread: a pointer that cannot hover would never
-   see the bloom at all.
-
-   The spread is a real layout change — margin, not transform — and that is
-   the honest cost of the effect: the timestamp is pinned by its own auto
-   margin and cannot move, so the one thing a wider run can shift is where
-   an ALREADY-ellipsed label cuts. The root-add rule — "a row that changes
-   width under the pointer is worse" — is about an affordance appearing;
-   here the movement is the affordance, asked for outright ("spreading a
-   little on hover"), and it settles the moment the cursor leaves. */
-.agent-run {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-}
-/* Word chips (`probing…`, `exited`) have borders and need a breath between
-   neighbours, whatever they stand next to; mark-on-mark (the rule below)
-   overrides it with the overlap. */
-.agent-run > * + * {
-  margin-left: var(--sp-1);
-}
-.agent-run > .agent-mark + .agent-mark {
-  margin-left: -4px;
-  transition: margin-left var(--dur-fast) var(--ease);
-}
-.dir-header:hover .agent-run > .agent-mark + .agent-mark,
-.dir-header:focus-visible .agent-run > .agent-mark + .agent-mark {
-  margin-left: var(--sp-1);
-}
-@media (hover: none) {
-  .agent-run > .agent-mark + .agent-mark {
-    margin-left: var(--sp-1);
-  }
-}
-/* The transient detector states keep a WORD, not a logo — a state is not a
-   product — in the shared chip metric, dim register only: transparent
-   ground, hairline border, secondary ink. */
-.agent-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: none;
-  line-height: var(--lh-100);
-  font-size: var(--fs-100);
-  font-weight: var(--fw-medium);
-  color: var(--fg-secondary);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-1);
-  white-space: nowrap;
 }
 /* Holds the right edge, which the count used to. It is a column the eye reads
    down — ages only compare against each other — so it is the field that has to

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   aliasesToAutoCheck,
+  applyAccountToSelection,
   assembleSyncSet,
   parseSyncPayload,
   parseSyncPayloadResult,
@@ -24,8 +25,9 @@ interface SyncVectors {
     id: string;
     remote: unknown[];
     checked: string[];
-    localAliases: string[];
+    unticked: string[];
     expected: string[];
+    expectedUnticked: string[];
   }>;
   payloadCases: Array<{
     id: string;
@@ -99,7 +101,7 @@ describe('assembleSyncSet', () => {
   });
 });
 
-describe('aliasesToAutoCheck', () => {
+describe('aliasesToAutoCheck — the one tick rule (pocketshell#3072)', () => {
   it('lists account aliases the selection lacks', () => {
     expect(aliasesToAutoCheck([host('a'), host('b')], ['b'], [])).toEqual(['a']);
   });
@@ -112,10 +114,36 @@ describe('aliasesToAutoCheck', () => {
     expect(aliasesToAutoCheck([host('a'), host('b')], [], [])).toEqual(['a', 'b']);
   });
 
-  it('never claims an alias the local config already has — an untick must stand', () => {
-    // The user unticked 'dropped'; the account still holds it. Because the
-    // config has the alias, the untick survives the next pull.
-    expect(aliasesToAutoCheck([host('kept'), host('dropped')], ['kept'], ['kept', 'dropped'])).toEqual([]);
+  it('ticks an account alias even when this machine has the host too', () => {
+    // The #3072 bug: the overlap host started unticked, and an untouched
+    // Sync now removed it from the account. The local host list no longer
+    // takes part in the rule at all.
+    expect(aliasesToAutoCheck([host('hetzner'), host('fixture')], ['other'], [])).toEqual(['hetzner', 'fixture']);
+  });
+
+  it('never ticks an alias the user explicitly unticked', () => {
+    expect(aliasesToAutoCheck([host('kept'), host('dropped')], ['kept'], ['dropped'])).toEqual([]);
+  });
+
+  it('lists a duplicated account alias once', () => {
+    expect(aliasesToAutoCheck([host('a'), host('a')], [], [])).toEqual(['a']);
+  });
+});
+
+describe('applyAccountToSelection', () => {
+  it('auto-ticks and keeps the unticks the account still needs', () => {
+    expect(applyAccountToSelection([host('a'), host('b'), host('c')], { checked: ['x'], unticked: ['b'] }))
+      .toEqual({ checked: ['x', 'a', 'c'], unticked: ['b'] });
+  });
+
+  it('spends an untick once the account no longer holds the alias', () => {
+    expect(applyAccountToSelection([host('a')], { checked: [], unticked: ['gone'] }))
+      .toEqual({ checked: ['a'], unticked: [] });
+  });
+
+  it('drops an untick the selection ticked again', () => {
+    expect(applyAccountToSelection([host('a')], { checked: ['a'], unticked: ['a'] }))
+      .toEqual({ checked: ['a'], unticked: [] });
   });
 });
 
@@ -160,13 +188,11 @@ describe('shared cross-client sync vectors', () => {
 
   for (const vector of syncVectors.autoCheckCases) {
     it(vector.id, () => {
-      expect(
-        aliasesToAutoCheck(
-          fixtureHosts(vector.remote),
-          vector.checked,
-          vector.localAliases,
-        ),
-      ).toEqual(vector.expected);
+      const remote = fixtureHosts(vector.remote);
+      expect(applyAccountToSelection(remote, { checked: vector.checked, unticked: vector.unticked }))
+        .toEqual({ checked: vector.expected, unticked: vector.expectedUnticked });
+      expect(aliasesToAutoCheck(remote, vector.checked, vector.unticked))
+        .toEqual(vector.expected.filter((alias) => !vector.checked.includes(alias)));
     });
   }
 
