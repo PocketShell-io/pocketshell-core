@@ -119,6 +119,13 @@ export interface TerminalPaneDeps {
  * Everything below behaves exactly as its in-component original did; the
  * comments are the decision records and travel with the code.
  */
+type DetachAcknowledgement = {
+  owner: string;
+  acknowledgement: Promise<boolean>;
+  waiting?: Promise<boolean>;
+  cancelWait?: () => void;
+};
+
 export class TerminalPane {
   // -------------------------------------------------------------------------
   // The join veil
@@ -246,18 +253,22 @@ export class TerminalPane {
     // its join was in flight — seconds, on this user's host.
     this.streamDisposables = [
       term.onData((data) => {
-        if (!this.shellId) return;
+        if (!this.shellId || this.shellGone) return;
         const owner = this.targetOwner();
+        const prefix = this.inputPrefix;
         const detach = data === 'd' && this.detachCandidate === owner &&
-          this.inputPrefixOwner === owner && this.attachedOwner === owner;
+          prefix?.owner === owner && this.attachedOwner === owner;
         this.detachCandidate = null;
-        this.inputPrefixOwner = data === '\x02' ? owner : null;
-        this.intentionalDetachOwner = detach ? owner : null;
-        forget(api.shell.input(this.shellId, data).then((accepted) => {
-          if (!accepted) this.refuseDetachInput(owner);
-        }, () => {
-          this.refuseDetachInput(owner);
-        }));
+        this.cancelPendingDetach();
+        this.intentionalDetachOwner = null;
+        const acknowledgement = api.shell.input(this.shellId, data).then(
+          (accepted) => accepted === true, () => false,
+        );
+        this.inputPrefix = data === '\x02' ? { owner, acknowledgement } : null;
+        if (detach && prefix) {
+          this.pendingDetach = { owner, acknowledgement:
+            Promise.all([prefix.acknowledgement, acknowledgement]).then(([p, d]) => p && d) };
+        }
       }),
       term.onResize(() => {
         this.pushGeometry();
@@ -267,6 +278,7 @@ export class TerminalPane {
 
   /** Give up the PTY and every watcher. Only unmount calls this. */
   detach(): void {
+    this.cancelPendingDetach();
     this.stopProbing();
     this.stopObservingContainer();
     this.stallMonitor?.dispose();
@@ -298,7 +310,9 @@ export class TerminalPane {
   // prefix and its plain d to this exact attached target. No exit-code inference.
   private targetGeneration = 0;
   private attachedOwner: string | null = null;
-  private inputPrefixOwner: string | null = null;
+  private inputPrefix: { owner: string; acknowledgement: Promise<boolean> } | null = null;
+  private pendingDetach: DetachAcknowledgement | null = null;
+  private static readonly DETACH_ACK_TIMEOUT_MS = 2_000;
   private detachCandidate: string | null = null;
   private intentionalDetachOwner: string | null = null;
 
@@ -309,10 +323,29 @@ export class TerminalPane {
       this.deps.getWorkspace() ?? null, this.deps.getAplexerId() ?? null]);
   }
 
-  private refuseDetachInput(owner: string): void {
-    if (this.inputPrefixOwner === owner) this.inputPrefixOwner = null;
-    if (this.detachCandidate === owner) this.detachCandidate = null;
-    if (this.intentionalDetachOwner === owner) this.intentionalDetachOwner = null;
+  private cancelPendingDetach(): void {
+    const pending = this.pendingDetach;
+    this.pendingDetach = null;
+    pending?.cancelWait?.();
+  }
+
+  /** Do not claim delivered input on an exit event from another IPC channel. */
+  private waitForDetachAcknowledgement(receipt: DetachAcknowledgement): Promise<boolean> {
+    if (receipt.waiting) return receipt.waiting;
+    receipt.waiting = new Promise((resolve) => {
+      let settled = false;
+      const finish = (accepted: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        delete receipt.cancelWait;
+        resolve(accepted);
+      };
+      const timer = setTimeout(() => finish(false), TerminalPane.DETACH_ACK_TIMEOUT_MS);
+      receipt.cancelWait = () => finish(false);
+      forget(receipt.acknowledgement.then(finish));
+    });
+    return receipt.waiting;
   }
 
   cancelDetachCandidate(): void {
@@ -324,7 +357,7 @@ export class TerminalPane {
     const owner = this.targetOwner();
     if (!this.shellGone && this.shellId && this.deps.isLinkUp() &&
       this.deps.getBackend() === 'aplexer' && this.deps.getAplexerId() &&
-      this.attachedOwner === owner && this.inputPrefixOwner === owner) {
+      this.attachedOwner === owner && this.inputPrefix?.owner === owner) {
       this.detachCandidate = owner;
     }
   }
@@ -338,7 +371,9 @@ export class TerminalPane {
 
   open(quietFailure = false): Promise<void> {
     this.targetGeneration += 1;
-    this.inputPrefixOwner = this.detachCandidate = this.intentionalDetachOwner = null;
+    this.cancelPendingDetach();
+    this.inputPrefix = null;
+    this.detachCandidate = this.intentionalDetachOwner = null;
     const run = this.showTargetChain.then(() => this.showTarget(quietFailure));
     // showTarget writes its own failures into the pane; this catch only keeps
     // the chain alive for the next rider.
@@ -534,8 +569,6 @@ export class TerminalPane {
     });
     this.unsubscribeExit = api.shell.onExited(({ shellId: id }) => {
       if (id === this.shellId && this.term) {
-        const intentionallyDetached = this.isIntentionallyDetached() && this.deps.isLinkUp();
-        if (!intentionallyDetached) this.intentionalDetachOwner = null;
         this.shellGone = true;
         // A dead PTY must stop answering registry lookups. Everything that aims
         // bytes at this pane by key — the agent launch above all — reads
@@ -545,21 +578,39 @@ export class TerminalPane {
         // gone without a trace. Passing the id keeps a newer registration (a
         // re-join that raced this event) untouched — the store no-ops then.
         if (this.registeredKey !== null) this.deps.shells.unregister(this.registeredKey, id);
-        // An aplexer pane's shell is a client (`a attach`), not the session:
-        // its exit says the viewer lost its channel, nothing about the
-        // workload. Those panes get the bounded silent re-join instead; a bare
-        // shell or a tmux client dying still means what it always meant.
-        if (intentionallyDetached) {
-          this.paneWrite('\r\n\x1b[90m[detached]\x1b[0m\r\n');
+        if (this.isIntentionallyDetached() && this.deps.isLinkUp()) {
+          this.finishClientExit(id);
           return;
         }
-        if (this.deps.getBackend() === 'aplexer' && this.deps.getTargetSession()) {
-          this.rejoinAfterClientExit(id);
+        const owner = this.targetOwner();
+        const receipt = this.pendingDetach;
+        if (receipt?.owner === owner && this.deps.isLinkUp()) {
+          forget(this.waitForDetachAcknowledgement(receipt).then((confirmed) => {
+            if (!this.term || id !== this.shellId || owner !== this.targetOwner() ||
+              this.pendingDetach !== receipt) return;
+            this.pendingDetach = null;
+            this.intentionalDetachOwner = confirmed && this.deps.isLinkUp() ? owner : null;
+            this.finishClientExit(id);
+          }));
           return;
         }
-        this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+        this.cancelPendingDetach();
+        this.intentionalDetachOwner = null;
+        this.finishClientExit(id);
       }
     });
+  }
+
+  private finishClientExit(id: ShellId): void {
+    // The attach client can die while its remote workload remains alive.
+    // Only confirmed keyboard intent suppresses the normal fresh-host verdict.
+    if (this.isIntentionallyDetached() && this.deps.isLinkUp()) {
+      this.paneWrite('\r\n\x1b[90m[detached]\x1b[0m\r\n');
+    } else if (this.deps.getBackend() === 'aplexer' && this.deps.getTargetSession()) {
+      this.rejoinAfterClientExit(id);
+    } else {
+      this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+    }
   }
 
   private unbindShellStream(): void {
@@ -1103,7 +1154,8 @@ export class TerminalPane {
       // budget. Re-joining on this EDGE rather than on the exit itself is what
       // keeps it from fighting the user: a session they exited on purpose stays
       // exited, because that pane never became hidden.
-      if (this.shellGone && this.isIntentionallyDetached()) return;
+      if (this.shellGone && (this.isIntentionallyDetached() ||
+        this.pendingDetach?.owner === this.targetOwner())) return;
       if (wasHidden && this.shellGone) {
         this.shellGone = false;
         void this.open();
