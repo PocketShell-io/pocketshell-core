@@ -64,12 +64,14 @@ Sync's job is to carry that property, not to understand it:
   refusal text comes from the same place (`transportRefusalMessage`) so every
   client words it identically.
 - The desktop config write-back is the one place a synced entry becomes a file
-  on disk, and an OpenSSH block cannot represent the gateway — so
-  `coerceHostEntries` reports `gateway-unsupported` for such an entry and the
-  desktop refuses the whole apply before touching `~/.ssh/config` (no HostName
-  downgrade, no partial write). The shared connect payload carries the marker
-  to the platform boundary for the same reason: the store preserves, the
-  platform decides.
+  on disk, and an OpenSSH block can represent neither the gateway nor a relay
+  link — so `coerceHostEntries` asks the same `unsupportedTransport` decision
+  with `SSH_CONFIG_TRANSPORTS` (`{ gateway: false, link: false }`), reports
+  `transport-unsupported` (with the shared message) for any `gateway`- or
+  `link`-marked entry, and the desktop refuses the whole apply before touching
+  `~/.ssh/config` (no HostName downgrade, no partial write). The shared connect
+  payload carries the marker to the platform boundary for the same reason: the
+  store preserves, the platform decides.
 
 ## Selection, merge, and conflicts
 

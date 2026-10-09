@@ -157,16 +157,27 @@ export function unsupportedTransport(
   return { refused: false };
 }
 
+/**
+ * What an OpenSSH `Host` block can carry: ordinary SSH only. The config
+ * write-back is just another "client" of {@link unsupportedTransport} — one
+ * that can represent neither the gateway nor a relay link.
+ */
+export const SSH_CONFIG_TRANSPORTS: TransportCapabilities = { gateway: false, link: false };
+
 /** The outcome of {@link coerceHostEntries}. */
 export type CoercedHostEntries =
   | { kind: 'ok'; hosts: HostEntry[] }
   | { kind: 'invalid' }
   | {
-      kind: 'gateway-unsupported';
+      kind: 'transport-unsupported';
       /** Position of the refusing entry in the input array. */
       index: number;
       /** The entry's `name` when it has a usable one, for the error copy. */
       name: string | null;
+      /** Why, from {@link unsupportedTransport}. */
+      reason: TransportRefusalReason;
+      /** The shared user-facing refusal text ({@link transportRefusalMessage}). */
+      message: string;
     };
 
 /**
@@ -176,34 +187,33 @@ export type CoercedHostEntries =
  * channel whose payload reaches a user file on disk, so its input is treated
  * as data, not as trusted shape (same posture as the update URL allow-list).
  *
- * A gateway entry is never coerced: any entry with a present gateway marker
- * (see {@link hasGatewayMarker}) refuses the call with `gateway-unsupported`
- * instead of being written back as an ordinary `Host` block — the marker says
- * the host dials through the gateway, and an ordinary block would turn that
- * intent into a plain SSH address (a HostName downgrade). Callers refuse the
- * whole batch: nothing is written when any entry refuses.
+ * A transport-marked entry is never coerced. The decision is the shared
+ * {@link unsupportedTransport} with {@link SSH_CONFIG_TRANSPORTS}: any
+ * present `gateway` or `link` marker (valid, null, malformed, or both)
+ * refuses the call with `transport-unsupported` instead of being written
+ * back as an ordinary `Host` block — an ordinary block would turn the
+ * marker's intent into a plain SSH address (a HostName downgrade). Callers
+ * refuse the whole batch: nothing is written when any entry refuses.
  */
 export function coerceHostEntries(raw: unknown): CoercedHostEntries {
   if (!Array.isArray(raw)) return { kind: 'invalid' };
   const out: HostEntry[] = [];
   for (const [index, entry] of raw.entries()) {
     if (typeof entry !== 'object' || entry === null) continue;
-    if (hasGatewayMarker(entry)) {
-      const marker = entry as Record<string, unknown>;
-      return {
-        kind: 'gateway-unsupported',
-        index,
-        name: typeof marker['name'] === 'string' && marker['name'] !== '' ? marker['name'] : null,
-      };
+    const label = (entry as Record<string, unknown>)['name'];
+    const name = typeof label === 'string' && label !== '' ? label : null;
+    const decision = unsupportedTransport(entry, SSH_CONFIG_TRANSPORTS, name);
+    if (decision.refused) {
+      return { kind: 'transport-unsupported', index, name, reason: decision.reason, message: decision.message };
     }
     const e = entry as Record<string, unknown>;
-    const name = typeof e['name'] === 'string' ? e['name'].trim() : '';
+    const alias = typeof e['name'] === 'string' ? e['name'].trim() : '';
     const hostname = typeof e['hostname'] === 'string' ? e['hostname'].trim() : '';
     // A Host directive needs both, and neither may contain whitespace — the
     // config writer emits them on `Host <name>` / `HostName <hostname>` lines.
-    if (name === '' || hostname === '' || /\s/.test(name) || /\s/.test(hostname)) continue;
+    if (alias === '' || hostname === '' || /\s/.test(alias) || /\s/.test(hostname)) continue;
     out.push({
-      name,
+      name: alias,
       hostname,
       port: typeof e['port'] === 'number' && Number.isInteger(e['port']) && e['port'] > 0 && e['port'] <= 65535 ? e['port'] : 22,
       user: typeof e['user'] === 'string' ? e['user'] : '',
