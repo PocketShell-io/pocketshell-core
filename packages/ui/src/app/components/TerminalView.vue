@@ -215,6 +215,73 @@ const pane = new TerminalPane({
 /** Drives the join veil in the template; the controller arms and clears it. */
 const joinPending = pane.joinPending;
 
+// The aplexer prefix owns exactly one following key in this pane. This is
+// keyboard ownership, not an acknowledgement from the remote program.
+let prefixOwner: string | null = null;
+let prefixVisibilityObserver: ResizeObserver | null = null;
+const prefixDetaches: Array<() => void> = [];
+function prefixConnection(): ReturnType<typeof useConnectionStore> | null {
+  return props.backend === 'aplexer' && !props.bare && props.aplexerId ? useConnectionStore() : null;
+}
+
+function clearPrefix(): void {
+  prefixOwner = null;
+}
+
+function currentPrefixOwner(): string | null {
+  const container = containerEl.value;
+  const shellId = shells.shellIdFor(registryKey.value);
+  const connection = prefixConnection();
+  if (
+    unmounted || props.bare || props.backend !== 'aplexer' || !props.aplexerId ||
+    props.interceptTyping !== true || !shellId ||
+    connection?.connectionId !== props.connectionId || connection.state !== 'connected' ||
+    document.visibilityState === 'hidden' || !container?.clientWidth || !container.clientHeight
+  ) return null;
+  return JSON.stringify([
+    props.connectionId, registryKey.value, targetSession.value, props.sessionKey,
+    props.backend, props.workspace, props.aplexerId, shellId,
+  ]);
+}
+
+// Synchronous resets also catch an away-and-back transition between two keys.
+// Rechecking the receipt at keydown covers geometry and delayed callbacks too.
+watch(
+  () => [props.connectionId, props.sessionKey, targetSession.value, registryKey.value,
+    props.backend, props.workspace, props.aplexerId, props.bare, props.interceptTyping,
+    prefixConnection()?.connectionId, prefixConnection()?.state, shells.shellIdFor(registryKey.value)],
+  clearPrefix,
+  { flush: 'sync' },
+);
+
+function attachPrefixResets(container: HTMLElement): void {
+  const listen = (target: EventTarget, type: string, listener: EventListener): void => {
+    target.addEventListener(type, listener, true);
+    prefixDetaches.push(() => target.removeEventListener(type, listener, true));
+  };
+  listen(container, 'focusout', (event) => {
+    const next = (event as FocusEvent).relatedTarget;
+    if (!(next instanceof Node) || !container.contains(next)) clearPrefix();
+  });
+  for (const type of ['compositionstart', 'paste', 'drop']) listen(container, type, clearPrefix);
+  listen(window, 'blur', clearPrefix);
+  listen(document, 'visibilitychange', () => {
+    if (document.visibilityState === 'hidden') clearPrefix();
+  });
+
+}
+
+function observePrefixVisibility(): void {
+  if (prefixVisibilityObserver || typeof ResizeObserver === 'undefined') return;
+  const container = containerEl.value;
+  if (!container) return;
+  prefixVisibilityObserver = new ResizeObserver(() => {
+    if (!container.clientWidth || !container.clientHeight) clearPrefix();
+  });
+  prefixVisibilityObserver.observe(container);
+  prefixDetaches.push(() => { prefixVisibilityObserver?.disconnect(); prefixVisibilityObserver = null; });
+}
+
 /**
  * Terminal look & feel, transcribed from the user's Windows Terminal config.
  * Kept as a standalone object so the font/theme can be swapped wholesale
@@ -287,6 +354,7 @@ async function copyToClipboard(text: string): Promise<void> {
  * chord branch in `onCustomKey` for why that is the split.
  */
 async function pasteFromClipboard(): Promise<void> {
+  clearPrefix();
   if (!term) return;
   try {
     const text = await navigator.clipboard.readText();
@@ -406,6 +474,23 @@ function onTerminalDrop(e: DragEvent): void {
  */
 function onCustomKey(e: KeyboardEvent): boolean {
   if (e.type !== 'keydown') return true;
+  if (e.isComposing) clearPrefix();
+  const modifierOnly = ['Control', 'Shift', 'Alt', 'Meta', 'AltGraph'].includes(e.key);
+  const owner = currentPrefixOwner();
+  const suffix = !modifierOnly && !e.isComposing && owner !== null && prefixOwner === owner;
+  if (!modifierOnly) clearPrefix();
+  const allowed = routeCustomKey(e, suffix);
+  if (!allowed) clearPrefix();
+  else if (!modifierOnly && !suffix && !e.isComposing && !e.repeat &&
+    e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'b' && owner !== null) {
+    observePrefixVisibility();
+    prefixOwner = owner;
+  }
+  return allowed;
+}
+
+function routeCustomKey(e: KeyboardEvent, prefixSuffix: boolean): boolean {
+  if (e.type !== 'keydown') return true;
 
   // THE WORKSPACE'S TAB CHORDS. `Ctrl+[` / `Ctrl+]` step one tab left or right
   //. They are handled by a window-level capture
@@ -470,7 +555,7 @@ function onCustomKey(e: KeyboardEvent): boolean {
   // Typing opens the composer instead of reaching the shell. Everything
   // `isTypingKey` rejects — every chord, every named key, a bare space —
   // falls through to xterm untouched; see its contract for where that line is.
-  if (props.interceptTyping === true && isTypingKey(e)) {
+  if (!prefixSuffix && props.interceptTyping === true && isTypingKey(e)) {
     // preventDefault IS THE FEATURE, not a precaution. Returning false only
     // tells xterm to stop processing (`_keyDown` bails at the custom handler
     // and, unlike `_keyPress`, never calls its own `cancel()`), so without this
@@ -638,6 +723,7 @@ onMounted(async () => {
   // per-shell binding leaked keystrokes).
   pane.attach(term, fitAddon, containerEl.value!);
   attachInputAdapters(term, containerEl.value!);
+  attachPrefixResets(containerEl.value!);
 
   // Path links, registered AFTER WebLinksAddon above, deliberately: xterm
   // gives an EARLIER provider priority over a later one for the same cells
@@ -739,7 +825,7 @@ function attachInputAdapters(t: Terminal, element: HTMLElement): void {
       get sessionKey() {
         return registryKey.value;
       },
-      sendInput: (data) => t.input(data, true),
+      sendInput: (data) => { clearPrefix(); t.input(data, true); },
     });
     if (typeof detach === 'function') inputAdapterDetaches.push(detach);
   }
@@ -747,6 +833,7 @@ function attachInputAdapters(t: Terminal, element: HTMLElement): void {
 
 /** Bytes into this pane's shell, exactly as typed — the `terminal.dock` route. */
 function sendInput(data: string): void {
+  clearPrefix();
   term?.input(data, true);
 }
 
@@ -756,6 +843,9 @@ function onWindowResize(): void {
 
 onBeforeUnmount(() => {
   unmounted = true;
+  clearPrefix();
+  for (const detach of prefixDetaches) detach();
+  prefixDetaches.length = 0;
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mouseup', onDocumentMouseUp);
   containerEl.value?.removeEventListener('mousedown', onTerminalMouseDown, true);
