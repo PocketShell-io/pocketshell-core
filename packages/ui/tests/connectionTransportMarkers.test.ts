@@ -1,3 +1,4 @@
+import { reactive } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostEntry } from '@pocketshell/core';
@@ -33,7 +34,7 @@ function entryWith(markers: Record<string, unknown>): HostEntry {
 }
 
 function fakeApi() {
-  const connect = vi.fn(async () => ({ ok: true, connectionId: 'conn-1' }));
+  const connect = vi.fn(async (_payload: unknown) => ({ ok: true, connectionId: 'conn-1' }));
   provideApi({
     ssh: {
       onState: () => () => undefined,
@@ -103,5 +104,41 @@ describe('connection store — transport markers ride the connect payload', () =
     const ok = await useConnectionStore().connect(entryWith({ gateway: { deviceId: 'x' } }));
     expect(ok).toBe(true);
     expect(connect).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('reactive transport markers cross the Electron clone boundary', () => {
+  it('clones a reactive gateway host through the actual connection store', async () => {
+    const { connect } = fakeApi();
+    let cloned: Record<string, unknown> | undefined;
+    connect.mockImplementation(async (payload: unknown) => {
+      cloned = structuredClone(payload) as Record<string, unknown>;
+      return { ok: true, connectionId: 'conn-1' };
+    });
+    const gateway = { serverUrl: 'wss://gateway.pocketshell.io', deviceId: 'device-1' };
+    expect(await useConnectionStore().connect(reactive(entryWith({ gateway })))).toBe(true);
+    expect(cloned?.['gateway']).toEqual(gateway);
+  });
+
+  it('retains invalid, undefined and conflicting marker intent after cloning', async () => {
+    for (const markers of [
+      { gateway: undefined },
+      { gateway: null },
+      { gateway: { deviceId: 42, detail: { malformed: true } } },
+      { link: { hostId: 'legacy' }, gateway: { deviceId: 'device-1' } },
+    ]) {
+      const { connect } = fakeApi();
+      let cloned: Record<string, unknown> | undefined;
+      connect.mockImplementation(async (payload: unknown) => {
+        cloned = structuredClone(payload) as Record<string, unknown>;
+        return { ok: true, connectionId: 'conn-1' };
+      });
+      expect(await useConnectionStore().connect(reactive(entryWith(markers)))).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(cloned, 'gateway')).toBe(true);
+      expect(cloned?.['gateway']).toEqual(markers.gateway);
+      expect(Object.prototype.hasOwnProperty.call(cloned, 'link')).toBe(Object.prototype.hasOwnProperty.call(markers, 'link'));
+      if ('link' in markers) expect(cloned?.['link']).toEqual(markers.link);
+    }
   });
 });
