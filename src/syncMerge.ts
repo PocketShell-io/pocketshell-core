@@ -16,9 +16,9 @@ export type SyncHostEntry = Pick<HostEntry, 'name' | 'hostname'> &
  * nothing else — a host the user has not ticked never leaves the machine,
  * encrypted or otherwise. The tick marks are the whole contract, and the
  * account is part of them rather than a rival: aliases pulled from the
- * account tick themselves on ({@link aliasesToAutoCheck}), so a plain
- * sequence of syncs only ever grows the set and an explicit UNTICK is the
- * one way a host leaves the account.
+ * account tick themselves on unless the user explicitly unticked them
+ * ({@link aliasesToAutoCheck}), so a plain sequence of syncs only ever grows
+ * the set and an explicit UNTICK is the one way a host leaves the account.
  *
  * Content per ticked alias:
  *   - when the local entry exists, its explicitly-present fields win. Fields
@@ -72,24 +72,61 @@ export function assembleSyncSet(
 }
 
 /**
- * Account aliases the selection does not have yet AND the local config
- * lacks — the auto-tick. The config clause is what keeps an untick
- * meaningful: an alias this machine can see is one the user has decided
- * about, so their untick must stand; an alias the config lacks is one this
- * machine has never materialised (a fresh machine mid-restore), and it
- * ticks on so the push re-uploads the account instead of wiping it. That
- * is the whole self-healing property.
+ * The selection a sync works from: the ticked aliases, and the aliases the
+ * user explicitly UNTICKED. Both are aliases only, persisted per device.
+ */
+export interface SyncSelectionState {
+  checked: readonly string[];
+  unticked: readonly string[];
+}
+
+/**
+ * The one tick rule every client shares (pocketshell#3072, D43): every
+ * account alias stays selected unless the user explicitly unticked it.
+ * These are the account aliases the selection lacks and the user has not
+ * unticked — the auto-tick.
+ *
+ * Whether this device's own host list (~/.ssh/config, the web's synced list,
+ * the phone's saved hosts) also has the alias does not matter. An earlier
+ * rule skipped such aliases on the theory that a visible host is one the user
+ * has decided about; in practice the host simply started unticked, and an
+ * untouched "Sync now" deleted it from the account for every device. Only an
+ * explicit untick ({@link SyncSelectionState.unticked}) removes a host.
  */
 export function aliasesToAutoCheck(
   remote: readonly SyncHostEntry[],
   checked: readonly string[],
-  localAliases: readonly string[],
+  unticked: readonly string[],
 ): string[] {
   const known = new Set(checked);
-  const local = new Set(localAliases);
-  return remote
-    .map((host) => host.name)
-    .filter((name) => !known.has(name) && !local.has(name));
+  const off = new Set(unticked);
+  const out: string[] = [];
+  for (const { name } of remote) {
+    if (known.has(name) || off.has(name)) continue;
+    known.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Apply one cleanly-read account copy to the selection: auto-tick every
+ * account alias that is not explicitly unticked ({@link aliasesToAutoCheck}),
+ * and spend each untick whose alias the account no longer holds. An untick
+ * means "take this host out of the account"; once the account lacks it the
+ * decision is carried out, and keeping it would let a stale decision delete
+ * the host again the next time another device adds it back. Forgetting an
+ * untick can only keep a host in the account, never drop one.
+ */
+export function applyAccountToSelection(
+  remote: readonly SyncHostEntry[],
+  selection: SyncSelectionState,
+): { checked: string[]; unticked: string[] } {
+  const inAccount = new Set(remote.map((host) => host.name));
+  const checked = [...new Set(selection.checked)];
+  checked.push(...aliasesToAutoCheck(remote, checked, selection.unticked));
+  const unticked = [...new Set(selection.unticked)].filter((alias) => inAccount.has(alias) && !checked.includes(alias));
+  return { checked, unticked };
 }
 
 /**

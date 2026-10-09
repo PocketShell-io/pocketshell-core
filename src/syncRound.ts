@@ -1,10 +1,11 @@
 import {
-  aliasesToAutoCheck,
+  applyAccountToSelection,
   assembleSyncSet,
   parseSyncPayloadResult,
   serializeSyncPayload,
   type SyncHostEntry,
   type SyncPayloadParseResult,
+  type SyncSelectionState,
 } from './syncMerge.js';
 import { describeError } from './sshExec.js';
 
@@ -41,8 +42,10 @@ export interface SyncRoundPulled {
   version: number | null;
   /** The account's hosts; empty for an absent account. */
   hosts: SyncHostEntry[];
-  /** The selection after this pull's auto-check ({@link aliasesToAutoCheck}). */
+  /** The selection after this pull's auto-check ({@link applyAccountToSelection}). */
   selectedAliases: string[];
+  /** The explicit unticks still pending after this pull (spent ones dropped). */
+  untickedAliases: string[];
 }
 
 export interface SyncRoundEffects {
@@ -52,7 +55,8 @@ export interface SyncRoundEffects {
   /**
    * Optional observer, called after every pull that parsed cleanly and
    * before assembly — including each re-pull after a conflict. A client uses
-   * it to show the account copy and persist the auto-checked selection.
+   * it to show the account copy and persist the auto-checked selection and
+   * the remaining unticks.
    */
   onPulled?(pulled: SyncRoundPulled): void;
 }
@@ -65,6 +69,7 @@ export type SyncRoundResult =
       kind: 'synced';
       version: number;
       selectedAliases: string[];
+      untickedAliases: string[];
       hosts: SyncHostEntry[];
       attempts: number;
     }
@@ -78,18 +83,21 @@ export type SyncRoundResult =
   | { kind: 'conflict-limit'; version: number; attempts: number };
 
 /**
- * Run one bounded sync round for the checked aliases. `localHosts` are this
- * client's host entries with only the fields it owns (docs/SYNC.md: omitted
- * fields are carried over from the account). Effect rejections become
- * `error` results; only a throwing `onPulled` observer rejects the round.
+ * Run one bounded sync round for a selection. `localHosts` are this client's
+ * host entries with only the fields it owns (docs/SYNC.md: omitted fields are
+ * carried over from the account). Every pulled account alias joins the
+ * selection unless `selection.unticked` holds it — the one tick rule
+ * (pocketshell#3072), so an untouched round never removes an account host.
+ * Effect rejections become `error` results; only a throwing `onPulled`
+ * observer rejects the round.
  */
 export async function runSyncRound(
   localHosts: readonly SyncHostEntry[],
-  checkedAliases: readonly string[],
+  selection: SyncSelectionState,
   effects: SyncRoundEffects,
 ): Promise<SyncRoundResult> {
-  const selected = [...new Set(checkedAliases)];
-  const localAliases = localHosts.map((host) => host.name);
+  let selected = [...new Set(selection.checked)];
+  let unticked = [...new Set(selection.unticked)];
 
   for (let attempts = 1; attempts <= SYNC_ROUND_CONFLICT_RETRIES + 1; attempts += 1) {
     let snapshot: SyncRoundSnapshot;
@@ -118,11 +126,14 @@ export async function runSyncRound(
         };
       }
       remoteHosts = parsed.hosts;
-      for (const alias of aliasesToAutoCheck(remoteHosts, selected, localAliases)) {
-        selected.push(alias);
-      }
     }
-    effects.onPulled?.({ version, hosts: remoteHosts, selectedAliases: [...selected] });
+    ({ checked: selected, unticked } = applyAccountToSelection(remoteHosts, { checked: selected, unticked }));
+    effects.onPulled?.({
+      version,
+      hosts: remoteHosts,
+      selectedAliases: [...selected],
+      untickedAliases: [...unticked],
+    });
 
     const hosts = assembleSyncSet(localHosts, remoteHosts, selected);
     // An empty assembled list would replace the account with an empty
@@ -148,6 +159,7 @@ export async function runSyncRound(
         kind: 'synced',
         version: pushed.version,
         selectedAliases: [...selected],
+        untickedAliases: [...unticked],
         hosts,
         attempts,
       };

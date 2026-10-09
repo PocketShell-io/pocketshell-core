@@ -84,6 +84,21 @@ tombstones and no per-field deletion markers. An empty checked selection is an
 explicit empty replacement, so callers should require the user to select hosts
 before starting a normal sync.
 
+The tick rule is the same on every client (pocketshell#3072, D43): **every
+account host stays selected unless the user explicitly unticked it.** Each
+device persists two alias lists, the selection and its explicit unticks
+(`SyncSelectionState`). Every clean pull applies `applyAccountToSelection`:
+each account alias that is not explicitly unticked joins the selection, even
+when this device's own host list (`~/.ssh/config`, the web's synced list, the
+phone's saved hosts) also has it. So an untouched Sync now never removes a
+host from the account; only an untick does, whether made this session or
+persisted from an earlier one. An untick is spent once a pull shows the
+account no longer holds the alias, and signing out forgets all of them:
+forgetting an untick can only keep a host in the account, never drop one. The
+shared `packages/ui` sync store applies the rule to every account copy it
+learns (Check account, the platform's session cache, each round's pulls), so
+the Account view shows "remove on sync" only after an explicit untick.
+
 For an alias on both sides, each explicit local property wins over the account
 copy, while account properties absent or `undefined` on the local object are
 preserved. This gives a client with a smaller host model the same behavior as
@@ -110,7 +125,8 @@ The vector file has its own `fixtureSchemaVersion` for test-fixture evolution;
 that value is not part of the encrypted wire payload. `mergeCases` cover both
 client directions, local-versus-account conflicts, alias-only selection,
 account-only restore, and deletion by omission. `autoCheckCases` pin the
-fresh-device and local-untick behavior. `payloadCases` pin versionless payload
+tick rule: fresh-device auto-tick, an account alias this device also has,
+an explicit untick, and a spent untick. `payloadCases` pin versionless payload
 compatibility, valid empty data, and strict refusal of malformed data or an
 explicit unsupported schema version.
 

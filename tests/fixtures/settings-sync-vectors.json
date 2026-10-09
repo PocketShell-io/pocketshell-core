@@ -164,18 +164,41 @@
         { "name": "builder", "hostname": "builder.example.net", "port": 22, "user": "alexey" }
       ],
       "checked": [],
-      "localAliases": [],
-      "expected": ["prod", "builder"]
+      "unticked": [],
+      "expected": ["prod", "builder"],
+      "expectedUnticked": []
     },
     {
-      "id": "local-unticked-alias-is-not-auto-checked",
+      "id": "local-config-alias-in-account-is-auto-checked",
       "remote": [
-        { "name": "local-unticked", "hostname": "local.example.net", "port": 22, "user": "alexey" },
-        { "name": "remote-only", "hostname": "remote.example.net", "port": 22, "user": "alexey" }
+        { "name": "hetzner", "hostname": "hetzner.example.net", "port": 22, "user": "alexey" },
+        { "name": "fixture", "hostname": "fixture.example.net", "port": 22, "user": "alexey" }
+      ],
+      "checked": ["other"],
+      "unticked": [],
+      "expected": ["other", "hetzner", "fixture"],
+      "expectedUnticked": []
+    },
+    {
+      "id": "explicitly-unticked-alias-is-not-auto-checked",
+      "remote": [
+        { "name": "local-unticked", "hostname": "local-unticked.example.net", "port": 22, "user": "alexey" },
+        { "name": "remote-only", "hostname": "remote-only.example.net", "port": 22, "user": "alexey" }
       ],
       "checked": [],
-      "localAliases": ["local-unticked"],
-      "expected": ["remote-only"]
+      "unticked": ["local-unticked"],
+      "expected": ["remote-only"],
+      "expectedUnticked": ["local-unticked"]
+    },
+    {
+      "id": "untick-is-spent-once-the-account-lacks-the-alias",
+      "remote": [
+        { "name": "kept", "hostname": "kept.example.net", "port": 22, "user": "alexey" }
+      ],
+      "checked": ["kept"],
+      "unticked": ["gone"],
+      "expected": ["kept"],
+      "expectedUnticked": []
     }
   ],
   "payloadCases": [
