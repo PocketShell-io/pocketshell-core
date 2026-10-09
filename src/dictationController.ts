@@ -55,6 +55,11 @@ export interface DictationNoSpeech {
   audio: DictationAudioEvidence;
   /** Consecutive recognizer turns that ended with no match since the last text. */
   emptyTurns: number;
+  /**
+   * Words were already recognized earlier in this dictation, so the mic works
+   * and the user has most likely paused; clients should word this neutrally.
+   */
+  afterText: boolean;
 }
 
 /** Default "no recognized text yet" window (#3062). */
@@ -187,6 +192,7 @@ export class DictationController {
   private noTextElapsed = false;
   private emptyTurns = 0;
   private turnHadText = false;
+  private textThisRun = false;
   private audioEvidence: DictationAudioEvidence = 'unknown';
   private snapshot: DictationSnapshot = {
     revision: 0,
@@ -258,6 +264,7 @@ export class DictationController {
       noSpeech: null,
     };
     this.resetNoSpeechTracking();
+    this.textThisRun = false;
     const requestId = this.beginTurn();
     this.publish();
     return requestId;
@@ -562,6 +569,7 @@ export class DictationController {
   /** Any non-blank recognized text: clear the warning and restart the window. */
   private textRecognized(): void {
     this.turnHadText = true;
+    this.textThisRun = true;
     this.emptyTurns = 0;
     this.audioEvidence = 'unknown';
     this.noTextElapsed = false;
@@ -581,7 +589,7 @@ export class DictationController {
   private raiseNoSpeech(reason: DictationNoSpeechReason): void {
     this.snapshot = {
       ...this.snapshot,
-      noSpeech: { reason, audio: this.audioEvidence, emptyTurns: this.emptyTurns },
+      noSpeech: { reason, audio: this.audioEvidence, emptyTurns: this.emptyTurns, afterText: this.textThisRun },
     };
   }
 

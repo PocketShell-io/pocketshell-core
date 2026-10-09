@@ -104,7 +104,7 @@ describe('DictationController no-recognized-text signal (#3062)', () => {
     state.timers.advance(1);
     expect(state.controller.getSnapshot()).toMatchObject({
       phase: 'listening',
-      noSpeech: { reason: 'no-text-timeout', audio: 'sound', emptyTurns: 0 },
+      noSpeech: { reason: 'no-text-timeout', audio: 'sound', emptyTurns: 0, afterText: false },
     });
   });
 
@@ -234,6 +234,24 @@ describe('DictationController no-recognized-text signal (#3062)', () => {
     expect(after.noSpeech).not.toBeNull();
     expect({ transcript: after.transcript, segments: after.segments, partial: after.partial })
       .toEqual({ transcript: before.transcript, segments: before.segments, partial: before.partial });
+  });
+
+  it('marks a warning after earlier recognized words as a pause, not a dead mic', () => {
+    const state = setup();
+    const id = startListening(state);
+    state.timers.advance(8_000);
+    expect(state.controller.getSnapshot().noSpeech?.afterText).toBe(false);
+    state.controller.onPartial(id, 'first thought');
+    state.controller.onAudioLevel(id, false);
+    state.timers.advance(8_000);
+    expect(state.controller.getSnapshot().noSpeech).toMatchObject({ afterText: true, audio: 'silent' });
+    state.controller.stop();
+    // A new dictation starts clean.
+    state.controller.onRecognizedSegment(id, 'first thought');
+    const next = state.controller.start();
+    expect(next).not.toBeNull();
+    state.timers.advance(8_000);
+    expect(state.controller.getSnapshot().noSpeech?.afterText).toBe(false);
   });
 
   it('ignores audio levels from a stale request', () => {
