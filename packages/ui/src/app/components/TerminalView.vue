@@ -46,6 +46,7 @@
 // prompt composer and leave as `paste-into-composer` (see onCustomKey). The
 // MIDDLE click does nothing at all (see onTerminalAuxClick): xterm's own
 // middle-click paste would feed the clipboard to the shell silently.
+// Ctrl+Shift+Y / Ctrl+Shift+B copy the pane itself as text — terminalCapture.ts.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -58,6 +59,7 @@ import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks'
 import { PathHighlighter } from '../terminalPathHighlights';
 import { decodeOsc52SetClipboard } from '@pocketshell/core';
 import { forceLocalMouseSelection } from '../terminalMouseSelection';
+import { captureChord } from '../terminalCapture';
 import { useSettingsStore } from '../stores/settings';
 import { resolveMonoStack } from '@ui/fonts';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
@@ -579,6 +581,9 @@ function routeCustomKey(e: KeyboardEvent, prefixSuffix: boolean): boolean {
       return false;
     }
   }
+
+  // The capture chords: the pane as plain text for a bug report — terminalCapture.ts.
+  if (term && captureChord(settings.shortcutBindings, e, term, copyToClipboard)) return false;
   return true;
 }
 
