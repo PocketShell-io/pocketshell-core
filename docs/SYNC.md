@@ -57,7 +57,12 @@ Sync's job is to carry that property, not to understand it:
   shape) instead of treating the entry as ordinary SSH. A marker that is null
   or malformed is still gateway intent; coercing it to a plain host would dial
   the wrong transport. An entry that carries both `link` and `gateway` refuses
-  too, rather than falling back to the link transport.
+  too, rather than falling back to the link transport. Every client makes this
+  call through ONE shared decision, `unsupportedTransport(entry,
+  { gateway, link })` in `src/sync.ts`, passing its real transport
+  capabilities, at its dial boundary before any key load or socket; the
+  refusal text comes from the same place (`transportRefusalMessage`) so every
+  client words it identically.
 - The desktop config write-back is the one place a synced entry becomes a file
   on disk, and an OpenSSH block cannot represent the gateway — so
   `coerceHostEntries` reports `gateway-unsupported` for such an entry and the
