@@ -232,7 +232,33 @@ function onFolderClick(dir: SessionDirectory): void {
        abandoned over the header would leave the dragged row faded forever.
        Same placement, same reason, as the tab strip's `<nav @dragend>`. -->
   <div class="folder-list" :class="{ leaves: props.showSessions }" @dragend="emit('dragEnd')">
-    <section v-for="({ root, header }, ri) in rootRows" :key="root.key" class="folder">
+    <!-- The drop target is the WHOLE SECTION, not the header: the reorder
+         gesture aims at the GROUP — "put git under tmp" — and a thin 28px
+         header row among dozens of folder rows is a target a hand can only
+         hit by accident. The first cut bound `dragover`/`drop` on the header
+         alone and every release over the folder rows refused, ten tries to
+         one landing; the events live on the section now, so hovering any row
+         of the group proposes a placement for it. `dragover` bubbles out of
+         the header and the rows alike, and the folder drag's own handlers
+         refuse first (their strip is empty while a root is in flight), so the
+         two gestures still cannot cross.
+
+         The landing rule draws on the SECTION's edges, which is also a
+         measured fix: on the header it drew "after the name" — a rule under
+         `~/tmp` but ABOVE its folders, inside the group it claimed to end.
+         Top edge of the section is the boundary above the group; bottom edge
+         is below its last row, where "after the group" actually is. -->
+    <section
+      v-for="({ root, header }, ri) in rootRows"
+      :key="root.key"
+      class="folder"
+      :class="{
+        'drop-above': props.rootDropTarget === ri,
+        'drop-below': props.rootDropTarget === props.roots.length && ri === props.roots.length - 1,
+      }"
+      @dragover="emit('rootDragOver', ri, $event)"
+      @drop.prevent="emit('rootDrop')"
+    >
       <!-- A plain element, not a <button>, and no disclosure mark: now that
            sessions live in workspace tabs the panel is root -> folder, and a
            root row is a grouping HEADER over its folders rather than a node
@@ -241,19 +267,22 @@ function onFolderClick(dir: SessionDirectory): void {
            the tooltip is the only thing it offers on hover, and it carries
            real information (the root's path and its size).
 
-           The one gesture it does take is the reorder drag the folder rows
-           take: the header is draggable, and pulling it up or down moves the
-           ROOT among its siblings (`../rootOrder.ts` holds why the headers,
-           unlike the rows, may be rearranged). Same native DnD family, so the
-           same three rules carry over — the drag does not fight any click
-           because there is no click to fight, the dragged header fades but
-           stays in place, and the landing place is drawn as a 2px accent rule
-           in the gap, with a refused drop drawing nothing at all.
+           The one gesture it starts is the reorder drag the folder rows take:
+           the header is draggable, and pulling it up or down moves the ROOT
+           among its siblings (`../rootOrder.ts` holds why the headers, unlike
+           the rows, may be rearranged). Same native DnD family, so the same
+           three rules carry over — the drag does not fight any click because
+           there is no click to fight, the dragged header fades but stays in
+           place, and the landing place is drawn as a 2px accent rule on the
+           section's edge, with a refused drop drawing nothing at all.
 
            NOT while a filter is up (a drag writes the whole panel's root keys
            in draw order, and under a filter that list is the survivors'), and
            not on `other`, which is a bucket pinned last — there is no gap it
-           can meaningfully land in (`canDropRootAt` refuses every one).
+           can meaningfully land in (`canDropRootAt` refuses every one). The
+           bucket's section still ACCEPTS drops above it: "just above other"
+           is a real place, and the section handler refuses only the gap
+           below.
 
            ROOT ROWS ARE DELIBERATELY ALWAYS OPEN. If collapsing ever comes
            back, it must NOT be driven off the root list: `roots` recomputes
@@ -264,17 +293,10 @@ function onFolderClick(dir: SessionDirectory): void {
            user navigated somewhere else. That is the trap, written down. -->
       <div
         class="folder-header"
-        :class="{
-          dragging: props.rootDragging === root.key,
-          'drop-above': props.rootDropTarget === ri,
-          'drop-below':
-            props.rootDropTarget === props.roots.length && ri === props.roots.length - 1,
-        }"
+        :class="{ dragging: props.rootDragging === root.key }"
         :title="rootTooltip(root)"
         :draggable="root.other || props.filtering ? 'false' : 'true'"
         @dragstart="emit('rootDragStart', root, $event)"
-        @dragover="emit('rootDragOver', ri, $event)"
-        @drop.prevent="emit('rootDrop')"
       >
         <!-- The dot is how a root reports attachment in ONE mark: a reader
              scanning the headers sees which roots have something live in them
@@ -723,19 +745,22 @@ function onFolderClick(dir: SessionDirectory): void {
  *
  * The folder drag's three rules, one level up (`.dir-header.dragging` and the
  * `li` rules below): the carried header FADES BUT STAYS IN PLACE, the landing
- * place is a 2px accent rule in the gap, and a REFUSED drop draws nothing at
- * all — which is how the rules this drag enforces (the `other` bucket cannot
- * be carried, and nothing lands below it) are made visible while the drag is
- * still in the air. `inset` box-shadow rather than a real border, for the same
+ * place is a 2px accent rule, and a REFUSED drop draws nothing at all — which
+ * is how the rules this drag enforces (the `other` bucket cannot be carried,
+ * and nothing lands below it) are made visible while the drag is still in the
+ * air. The rule draws on the SECTION, not the header: its top edge is the
+ * boundary above the group, its bottom edge is below the group's last row —
+ * on the header it drew "after the name", a rule inside the group it claimed
+ * to end. `inset` box-shadow rather than a real border, for the same
  * height-shifting reason the folder rows give.
  */
 .folder-header.dragging {
   opacity: var(--disabled-opacity);
 }
-.folder-header.drop-above {
+.folder.drop-above {
   box-shadow: inset 0 2px 0 0 var(--accent);
 }
-.folder-header.drop-below {
+.folder.drop-below {
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 .dir-header.dragging {

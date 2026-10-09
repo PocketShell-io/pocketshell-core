@@ -155,7 +155,12 @@ export function useFolderDrag(deps: FolderDragDeps): {
   }
 
   /**
-   * The pointer is over the root header at [index].
+   * The pointer is over the root at [index]'s WHOLE SECTION — header and
+   * folder rows alike, because the gesture aims at the group and a thin
+   * header row among dozens of rows is a target a hand only hits by accident
+   * (ten refused drags to one landing, measured in the wild). The midpoint
+   * rule is the strip's, applied to the section's box: top half proposes the
+   * boundary above the group, bottom half the one below it.
    *
    * `canDropRootAt` is the policy — a root cannot land after the pinned `other`
    * bucket, and the bucket itself cannot be dragged — and a refusal draws
