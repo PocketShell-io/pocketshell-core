@@ -246,7 +246,18 @@ export class TerminalPane {
     // its join was in flight — seconds, on this user's host.
     this.streamDisposables = [
       term.onData((data) => {
-        if (this.shellId) forget(api.shell.input(this.shellId, data));
+        if (!this.shellId) return;
+        const owner = this.targetOwner();
+        const detach = data === 'd' && this.detachCandidate === owner &&
+          this.inputPrefixOwner === owner && this.attachedOwner === owner;
+        this.detachCandidate = null;
+        this.inputPrefixOwner = data === '\x02' ? owner : null;
+        this.intentionalDetachOwner = detach ? owner : null;
+        forget(api.shell.input(this.shellId, data).then((accepted) => {
+          if (!accepted) this.refuseDetachInput(owner);
+        }, () => {
+          this.refuseDetachInput(owner);
+        }));
       }),
       term.onResize(() => {
         this.pushGeometry();
@@ -283,9 +294,51 @@ export class TerminalPane {
    * since every trigger reads the props that are current when its turn comes,
    * the last one queued wins with the state that is actually current.
    */
+  // A key event alone is not a detach: xterm must actually forward the
+  // prefix and its plain d to this exact attached target. No exit-code inference.
+  private targetGeneration = 0;
+  private attachedOwner: string | null = null;
+  private inputPrefixOwner: string | null = null;
+  private detachCandidate: string | null = null;
+  private intentionalDetachOwner: string | null = null;
+
+  private targetOwner(): string {
+    return JSON.stringify([this.targetGeneration, this.shellId,
+      this.deps.getConnectionId(), this.deps.getRegistryKey(),
+      this.deps.getBackend(), this.deps.getTargetSession(),
+      this.deps.getWorkspace() ?? null, this.deps.getAplexerId() ?? null]);
+  }
+
+  private refuseDetachInput(owner: string): void {
+    if (this.inputPrefixOwner === owner) this.inputPrefixOwner = null;
+    if (this.detachCandidate === owner) this.detachCandidate = null;
+    if (this.intentionalDetachOwner === owner) this.intentionalDetachOwner = null;
+  }
+
+  cancelDetachCandidate(): void {
+    this.detachCandidate = null;
+  }
+
+  /** Called only for the component's eligible plain d prefix suffix. */
+  expectIntentionalDetach(): void {
+    const owner = this.targetOwner();
+    if (!this.shellGone && this.shellId && this.deps.isLinkUp() &&
+      this.deps.getBackend() === 'aplexer' && this.deps.getAplexerId() &&
+      this.attachedOwner === owner && this.inputPrefixOwner === owner) {
+      this.detachCandidate = owner;
+    }
+  }
+
+  private isIntentionallyDetached(): boolean {
+    return this.intentionalDetachOwner !== null &&
+      this.intentionalDetachOwner === this.targetOwner();
+  }
+
   private showTargetChain: Promise<void> = Promise.resolve();
 
   open(quietFailure = false): Promise<void> {
+    this.targetGeneration += 1;
+    this.inputPrefixOwner = this.detachCandidate = this.intentionalDetachOwner = null;
     const run = this.showTargetChain.then(() => this.showTarget(quietFailure));
     // showTarget writes its own failures into the pane; this catch only keeps
     // the chain alive for the next rider.
@@ -350,6 +403,8 @@ export class TerminalPane {
     const cols = term.cols;
     const rows = term.rows;
 
+    const requestGeneration = this.targetGeneration;
+    const requestTarget = this.targetOwner();
     const previousId = this.shellId;
     // Retract the OLD key's registration BEFORE asking for the new target.
     // With one PTY shared across sessions, the shells store stops being a map of
@@ -398,6 +453,8 @@ export class TerminalPane {
       return;
     }
 
+    const targetStillCurrent = requestGeneration === this.targetGeneration &&
+      requestTarget === this.targetOwner();
     if (result.shellId !== previousId) {
       // A different PTY. Main has already closed the one it replaced, so all that
       // is left here is to stop listening for it, wipe the pane, and adopt the
@@ -432,6 +489,8 @@ export class TerminalPane {
       // owns the modes it set and will not be told to set them again — tmux
       // redrew every row of the PTY itself.
     }
+
+    this.attachedOwner = targetStillCurrent ? this.targetOwner() : '';
 
     // Publish it before the first byte can be typed at it. Under the
     // workspace-qualified registry key, so same-named aplexer tags in different
@@ -475,6 +534,8 @@ export class TerminalPane {
     });
     this.unsubscribeExit = api.shell.onExited(({ shellId: id }) => {
       if (id === this.shellId && this.term) {
+        const intentionallyDetached = this.isIntentionallyDetached() && this.deps.isLinkUp();
+        if (!intentionallyDetached) this.intentionalDetachOwner = null;
         this.shellGone = true;
         // A dead PTY must stop answering registry lookups. Everything that aims
         // bytes at this pane by key — the agent launch above all — reads
@@ -488,6 +549,10 @@ export class TerminalPane {
         // its exit says the viewer lost its channel, nothing about the
         // workload. Those panes get the bounded silent re-join instead; a bare
         // shell or a tmux client dying still means what it always meant.
+        if (intentionallyDetached) {
+          this.paneWrite('\r\n\x1b[90m[detached]\x1b[0m\r\n');
+          return;
+        }
         if (this.deps.getBackend() === 'aplexer' && this.deps.getTargetSession()) {
           this.rejoinAfterClientExit(id);
           return;
@@ -679,6 +744,10 @@ export class TerminalPane {
    * episode ended; the budget is per-episode, not per-pane-lifetime.
    */
   private rejoinAfterClientExit(id: ShellId): void {
+    const owner = this.targetOwner();
+    if (this.attachedOwner !== null && this.attachedOwner !== owner) return;
+    const stillCurrent = (): boolean => id === this.shellId && this.term !== null &&
+      owner === this.targetOwner();
     if (
       this.shellAttachedAt !== null &&
       Date.now() - this.shellAttachedAt >= TerminalPane.REJOIN_MIN_INTERVAL_MS
@@ -705,7 +774,7 @@ export class TerminalPane {
     };
     forget(
       this.hostSaysSessionOutlivedClient(target).then((outlived) => {
-        if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
+        if (!stillCurrent()) return; // the pane moved on meanwhile
         if (!outlived || !this.deps.isLinkUp()) {
           // The session ended: say so, and attach nothing.
           this.paneWrite('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
@@ -718,7 +787,7 @@ export class TerminalPane {
           // not the close, is what delivers the verdict.
           .catch(() => undefined)
           .then(() => {
-            if (id !== this.shellId || !this.term) return; // the pane moved on meanwhile
+            if (!stillCurrent()) return; // the pane moved on meanwhile
             return this.open(true).then(() => {
               if (!this.term) return; // unmounted inside the join
               if (this.shellId === null) {
@@ -1034,6 +1103,7 @@ export class TerminalPane {
       // budget. Re-joining on this EDGE rather than on the exit itself is what
       // keeps it from fighting the user: a session they exited on purpose stays
       // exited, because that pane never became hidden.
+      if (this.shellGone && this.isIntentionallyDetached()) return;
       if (wasHidden && this.shellGone) {
         this.shellGone = false;
         void this.open();

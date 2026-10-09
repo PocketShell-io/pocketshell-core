@@ -226,6 +226,7 @@ function prefixConnection(): ReturnType<typeof useConnectionStore> | null {
 
 function clearPrefix(): void {
   prefixOwner = null;
+  pane.cancelDetachCandidate();
 }
 
 function currentPrefixOwner(): string | null {
@@ -480,6 +481,8 @@ function onCustomKey(e: KeyboardEvent): boolean {
   const suffix = !modifierOnly && !e.isComposing && owner !== null && prefixOwner === owner;
   if (!modifierOnly) clearPrefix();
   const allowed = routeCustomKey(e, suffix);
+  if (allowed && suffix && e.key === 'd' && !e.ctrlKey && !e.altKey &&
+    !e.metaKey && !e.shiftKey && !e.repeat) pane.expectIntentionalDetach();
   if (!allowed) clearPrefix();
   else if (!modifierOnly && !suffix && !e.isComposing && !e.repeat &&
     e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'b' && owner !== null) {
