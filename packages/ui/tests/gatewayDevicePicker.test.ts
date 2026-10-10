@@ -163,6 +163,8 @@ describe('host picker — gateway device source', () => {
     expect(chip.text()).toMatch(/^Online/);
     expect(chip.classes()).toContain('online');
     expect(api.connect).not.toHaveBeenCalled();
+    // The device source is not one of the picker's host groups.
+    expect(wrapper.findAll('.picker .group-label').map((n) => n.text())).not.toContain('PocketShell gateway');
   });
 
   it('a device list refused for sign-in prompts to sign in instead of a generic error', async () => {
