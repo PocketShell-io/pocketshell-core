@@ -72,6 +72,9 @@ export function isValidGatewayDeviceId(deviceId: string): boolean {
 export function normalizeGatewayServerUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
+  // Reviewed cd917b7 origin grammar: inspect text before WHATWG can erase placements.
+  const origin = /^(wss|ws|https|http):\/\/([^/?#]*)(\/)?$/i.exec(trimmed);
+  if (!origin || !/^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(:[0-9]{1,5})?$/.test(origin[2]!)) return null;
   let candidate = trimmed;
   const httpLike = /^(https?):\/\//i.exec(trimmed);
   if (httpLike !== null) {
@@ -231,7 +234,7 @@ export type GatewayCloseKind =
 export function classifyGatewayClose(code: number): { kind: GatewayCloseKind; userMessage: string } {
   switch (code) {
     case 4400:
-      return { kind: 'protocol', userMessage: 'The gateway rejected this connection as malformed.' };
+      return { kind: 'protocol', userMessage: 'The gateway rejected the request — update PocketShell.' };
     case 4401:
       return { kind: 'unauthorized', userMessage: 'Your sign-in expired — sign in again and retry.' };
     case 4403:
@@ -250,6 +253,60 @@ export function classifyGatewayClose(code: number): { kind: GatewayCloseKind; us
     default:
       return { kind: 'abnormal', userMessage: 'The connection to the gateway closed before it was ready.' };
   }
+}
+
+// --- gateway dial failures (the native ↔ ConnectionController contract) -------
+//
+// A platform SshCapability that dials through the gateway reports a gateway
+// refusal — a WS close during the handshake, or an `error` frame the platform
+// maps to its documented close code — by rejecting `connect()` with an
+// SshCapabilityError whose `code` is GATEWAY_CLOSED_ERROR_CODE and whose
+// `data.gatewayCloseCode` is the integer close code. ConnectionController
+// (the one dial/reconnect owner) reads it through classifyGatewayDialFailure
+// and decides retry and advice from the matrix below; no platform decides
+// either on its own.
+
+/** The SshCapabilityError `code` a gateway refusal is reported with. */
+export const GATEWAY_CLOSED_ERROR_CODE = 'GATEWAY_CLOSED';
+
+/** The gateway close codes ConnectionController classifies. */
+export type GatewayDialFailureKind = 'protocol' | 'unauthorized' | 'forbidden' | 'not_found' | 'timeout' | 'quota' | 'host_offline';
+
+/**
+ * A classified gateway refusal. `retryable: false` ends the reconnect ladder
+ * after that attempt; `retryable: true` backs off within the controller's
+ * ordinary retry bounds. `kind` is what a UI reads to say "offline" rather
+ * than "sign-in failed".
+ */
+export interface GatewayDialFailure {
+  closeCode: number;
+  kind: GatewayDialFailureKind;
+  retryable: boolean;
+  userMessage: string;
+}
+
+const GATEWAY_DIAL_RETRY: Readonly<Record<number, { kind: GatewayDialFailureKind; retryable: boolean }>> = {
+  4400: { kind: 'protocol', retryable: false },
+  4401: { kind: 'unauthorized', retryable: false },
+  4403: { kind: 'forbidden', retryable: false },
+  4404: { kind: 'not_found', retryable: false },
+  4408: { kind: 'timeout', retryable: true },
+  4429: { kind: 'quota', retryable: true },
+  4503: { kind: 'host_offline', retryable: true },
+};
+
+/**
+ * Classify a rejected gateway dial. Null when the error is not a gateway
+ * refusal, or carries a close code outside the matrix (1006, a future
+ * code): the caller then applies its ordinary default for that error.
+ */
+export function classifyGatewayDialFailure(code: string, data: Record<string, unknown>): GatewayDialFailure | null {
+  if (code !== GATEWAY_CLOSED_ERROR_CODE) return null;
+  const closeCode = data['gatewayCloseCode'];
+  if (typeof closeCode !== 'number' || !Number.isInteger(closeCode)) return null;
+  const entry = GATEWAY_DIAL_RETRY[closeCode];
+  if (entry === undefined) return null;
+  return { closeCode, kind: entry.kind, retryable: entry.retryable, userMessage: classifyGatewayClose(closeCode).userMessage };
 }
 
 // --- fingerprint + host-key trust policy ---------------------------------------

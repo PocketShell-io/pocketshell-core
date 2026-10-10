@@ -72,6 +72,40 @@ Sync's job is to carry that property, not to understand it:
   `~/.ssh/config` (no HostName downgrade, no partial write). The shared connect
   payload carries the marker to the platform boundary for the same reason: the
   store preserves, the platform decides.
+- `ConnectionController` (the one dial/trust/reconnect owner) applies the same
+  decision again for a gateway target, with `{ gateway:
+  capability.gatewayTransport === true, link: false }`, so a marker that slips
+  past a platform boundary still refuses before any effect (pocketshell#3086).
+  A gateway dial never uses TOFU: the controller skips the trust store, passes
+  `expectedHostKey: null`, and accepts the connection only when the platform
+  returns `gatewayHostKeyVerified: true` — its receipt that the native pairing
+  pin was checked BEFORE userauth. A missing receipt closes the connection; a
+  pin mismatch (`HOST_KEY_REJECTED`) is an error, never a trust prompt. Both
+  end a reconnect ladder, and every re-dial needs the receipt again.
+  Whenever the controller holds a session — a live connection, or one kept
+  without a transport while reconnecting, in background past grace, released
+  or lost — `connect()` admits a gateway-marked request through that same
+  decision FIRST: a refused one (no capability, malformed, `link` alongside)
+  returns the shared message and leaves the connection, terminals, selected
+  session and any running reconnect untouched. A controller holding nothing
+  refuses through the dial and reports it in the snapshot. An admitted
+  request reuses the live connection only for the same transport: two
+  ordinary targets, or two gateway targets with the same normalized route.
+  Ordinary↔gateway or a different route
+  closes the live transport and dials the requested one, so a gateway connect is
+  never answered without its own receipt and an ordinary connect never keeps
+  riding the gateway.
+- A platform reports a gateway refusal by rejecting `connect()` with code
+  `GATEWAY_CLOSED` and `data.gatewayCloseCode` (the WS close code; an `error`
+  frame is mapped to its documented code). `classifyGatewayDialFailure` in
+  `src/gatewayTransport.ts` is the retry matrix: 4400 (malformed request —
+  update PocketShell), 4401 (sign-in refused), 4403
+  (not shared with this account) and 4404 (unknown device) end the ladder
+  after that attempt; 4408 (timeout), 4429 (quota) and 4503 (host offline)
+  back off within the ordinary retry bounds; any other code keeps the default.
+  The classified failure stays on `ConnectionSnapshot.gatewayFailure`
+  (`kind`, `closeCode`, `retryable`), so a UI can say "offline" rather than
+  "sign-in failed".
 
 ## Selection, merge, and conflicts
 
