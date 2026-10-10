@@ -25,26 +25,15 @@ import type { GatewayPairingSummary } from '../api';
  * picker can prompt for the right next step, and it never leaves a stale
  * list on screen as if it were the current account's.
  */
-/**
- * The gateway the device source lists, when the user chose one other than
- * the platform default (a self-hosted gateway): a canonical origin, kept per
- * device like the other picker preferences. Absent: the platform default.
- */
-export const GATEWAY_SERVER_STORAGE_KEY = 'pocketshell.gateway.server.v1';
-
-function storedServerUrl(): string | null {
-  try {
-    const raw = globalThis.localStorage?.getItem(GATEWAY_SERVER_STORAGE_KEY);
-    return raw ? normalizeGatewayServerUrl(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
 export const useGatewayStore = defineStore('gateway', () => {
   const capability = gatewayCapability();
-  /** The gateway whose devices are listed. */
-  const serverUrl = ref<string>(storedServerUrl() ?? capability?.defaultServerUrl ?? '');
+  /**
+   * The gateway whose devices are listed: the one the PLATFORM names (on
+   * Android, its native allowlist). Nothing in this tree can widen it — no
+   * stored override, no user-typed origin — because the platform sends its
+   * gateway credential only there (#3086 review B1).
+   */
+  const serverUrl = ref<string>(capability?.defaultServerUrl ?? '');
   const devices = shallowRef<GatewayDevice[] | null>(null);
   const pairings = shallowRef<GatewayPairingSummary[]>([]);
   const loading = ref(false);
@@ -77,28 +66,6 @@ export const useGatewayStore = defineStore('gateway', () => {
     }
   }
 
-  /**
-   * List another gateway's devices from now on (the add flow's "Gateway
-   * address", when the user adds a device on a self-hosted gateway). The
-   * platform default is remembered as "no choice".
-   */
-  function setServerUrl(next: string): boolean {
-    const canonical = normalizeGatewayServerUrl(next);
-    if (canonical === null) return false;
-    if (canonical === serverUrl.value) return true;
-    serverUrl.value = canonical;
-    try {
-      if (canonical === normalizeGatewayServerUrl(capability?.defaultServerUrl ?? '')) {
-        globalThis.localStorage?.removeItem(GATEWAY_SERVER_STORAGE_KEY);
-      } else {
-        globalThis.localStorage?.setItem(GATEWAY_SERVER_STORAGE_KEY, canonical);
-      }
-    } catch {
-      // Not persisted; this session still lists the chosen gateway.
-    }
-    return true;
-  }
-
   /** Forget everything (sign-out, account switch). */
   function reset(): void {
     sequence += 1;
@@ -124,5 +91,5 @@ export const useGatewayStore = defineStore('gateway', () => {
     return pairings.value.find((row) => sameRoute(target, row.deviceId, row.serverUrl)) ?? null;
   }
 
-  return { available, serverUrl, devices, pairings, loading, failure, loadedAt, load, reset, setServerUrl, deviceFor, pairingFor };
+  return { available, serverUrl, devices, pairings, loading, failure, loadedAt, load, reset, deviceFor, pairingFor };
 });

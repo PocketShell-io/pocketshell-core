@@ -93,3 +93,35 @@ export function gatewayCapability(): GatewayGroup | null {
     return null;
   }
 }
+
+/** The Files pane's view of the platform's file transport (see `sftp.capabilities`). */
+export interface FileTransportCapabilities {
+  write: boolean;
+  download: boolean;
+  readOnlyReason: string | null;
+  /** The largest file the platform reads in one open, or null for no platform cap. */
+  maxReadBytes: number | null;
+}
+
+/**
+ * Read `sftp.capabilities` defensively: absent (or unreadable) means full
+ * read/write. A declared cap must be a positive integer to count.
+ */
+export function fileTransportCapabilities(): FileTransportCapabilities {
+  try {
+    const declared: unknown = api.sftp?.capabilities;
+    if (typeof declared !== 'object' || declared === null) {
+      return { write: true, download: true, readOnlyReason: null, maxReadBytes: null };
+    }
+    const d = declared as Record<string, unknown>;
+    const max = d.maxReadBytes;
+    return {
+      write: d.write !== false,
+      download: d.download !== false,
+      readOnlyReason: typeof d.readOnlyReason === 'string' && d.readOnlyReason.trim() !== '' ? d.readOnlyReason : null,
+      maxReadBytes: typeof max === 'number' && Number.isSafeInteger(max) && max > 0 ? max : null,
+    };
+  } catch {
+    return { write: true, download: true, readOnlyReason: null, maxReadBytes: null };
+  }
+}

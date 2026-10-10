@@ -25,6 +25,7 @@ import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import FileTree from '../components/FileTree.vue';
 import EnvPanelView from './EnvPanelView.vue';
 import { useFilesPane } from '../useFilesPane';
+import { fileTransportCapabilities } from '../platformCapabilities';
 import { useImageViewer } from '../useImageViewer';
 
 /**
@@ -66,6 +67,8 @@ const props = defineProps<{
 
 const connection = useConnectionStore();
 const files = useFilesStore();
+/** The platform's file transport: Save/Download only where wired. */
+const transport = fileTransportCapabilities();
 const settings = useSettingsStore();
 const connId = computed(() => connection.connectionId);
 
@@ -295,8 +298,9 @@ defineExpose({ focus });
                Ctrl+S); the label used to read `Save (⌘S)` — a macOS glyph on a
                Windows-first app. The chord belongs in the tooltip, in this
                app's Ctrl+... convention. -->
+          <span v-if="!transport.write" class="dirty" data-testid="files-read-only" :title="transport.readOnlyReason ?? ''">read-only</span>
           <button
-            v-if="isEditable(files.openMode)"
+            v-if="isEditable(files.openMode) && transport.write"
             class="save-btn"
             :disabled="!files.dirty || files.saving"
             title="Ctrl+S"
@@ -313,7 +317,7 @@ defineExpose({ focus });
                `download()`), pointed at `openPath`. The tooltip carries the
                one honest caveat: the transfer reads the host's saved copy,
                never this buffer. -->
-          <button class="download-btn" :title="downloadTitle" @click="onDownload">
+          <button v-if="transport.download" class="download-btn" :title="downloadTitle" @click="onDownload">
             Download…
           </button>
           <button class="close-btn" title="Close file" @click="files.closeFile()">Close</button>
@@ -340,6 +344,7 @@ defineExpose({ focus });
           ref="editorRef"
           :model-value="files.openContent"
           :filename="files.openPath"
+          :read-only="!transport.write"
           @update:model-value="files.setContent"
         />
 
@@ -493,6 +498,7 @@ defineExpose({ focus });
             v-else
             :model-value="files.openContent"
             :filename="files.openPath"
+            :read-only="!transport.write"
             @update:model-value="files.setContent"
           />
         </div>
@@ -623,12 +629,12 @@ defineExpose({ focus });
           <p class="muted small">
             {{ files.openMime ?? 'unknown type' }}<template v-if="sizeLabel"> · {{ sizeLabel }}</template>
           </p>
-          <button class="save-btn" @click="onDownload">Download…</button>
+          <button v-if="transport.download" class="save-btn" @click="onDownload">Download…</button>
         </div>
       </template>
       <div v-else class="placeholder">
-        <p class="muted">select a file to edit</p>
-        <p class="muted small">changes save back over SFTP</p>
+        <p class="muted">{{ transport.write ? 'select a file to edit' : 'select a file to view' }}</p>
+        <p class="muted small" data-testid="files-write-note">{{ transport.write ? 'changes save back over SFTP' : transport.readOnlyReason ?? 'Files are read-only here.' }}</p>
       </div>
     </div>
   </div>

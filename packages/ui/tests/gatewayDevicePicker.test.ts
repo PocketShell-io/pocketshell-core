@@ -191,12 +191,19 @@ describe('host picker — gateway device source', () => {
     expect(api.openAccount).toHaveBeenCalled();
   });
 
-  it('lists the gateway the user chose (a self-hosted origin), never the default behind its back', async () => {
-    window.localStorage.setItem('pocketshell.gateway.server.v1', 'wss://GW.Self.Example:8443/');
+  it('lists only the gateway the platform names: a stored origin cannot widen it (#3086 review B1)', async () => {
+    window.localStorage.setItem('pocketshell.gateway.server.v1', 'wss://evil.example');
     const api = platform();
-    await mountPicker();
-    expect(api.listDevices).toHaveBeenCalledWith('wss://gw.self.example:8443');
-    expect(api.listDevices).not.toHaveBeenCalledWith(SERVER);
+    const wrapper = await mountPicker();
+    expect(api.listDevices).toHaveBeenCalledWith(SERVER);
+    expect(api.listDevices).not.toHaveBeenCalledWith('wss://evil.example');
+    // ... and the add flow shows that gateway, with no field to type another.
+    await wrapper.find('[data-testid=gateway-add-manual]').trigger('click');
+    await flushPromises();
+    const server = wrapper.find('[data-testid=gateway-add-server]');
+    expect(server.element.tagName).not.toBe('INPUT');
+    expect(server.text()).toContain(SERVER);
+    expect(wrapper.find('[data-testid=gateway-add-device] input[inputmode=url]').exists()).toBe(false);
   });
 
   it('a device-list problem is not the picker\'s dial error line', async () => {
@@ -360,7 +367,7 @@ describe('coordinator review of abd49a2: repair origin and stale results', () =>
     await wrapper.find('[data-testid=picker-error-actions] button').trigger('click');
     await flushPromises();
     const panel = wrapper.find('[data-testid=gateway-add-device]');
-    expect((panel.find('[data-testid=gateway-add-server]').element as HTMLInputElement).value).toBe('wss://gw-b.example');
+    expect(panel.find('[data-testid=gateway-add-server]').text()).toContain('wss://gw-b.example');
     // Gateway A's listing of the same id is not this host's device: no advisory from it.
     expect(panel.find('[data-testid=gateway-add-advisory]').exists()).toBe(false);
     await panel.find('[data-testid=gateway-add-pin]').setValue(KEYS['ed25519']!.line);
@@ -428,5 +435,35 @@ describe('coordinator review of abd49a2: repair origin and stale results', () =>
     expect(panel.emitted('saved')).toBeUndefined();
     expect(panel.find('[data-testid=gateway-add-saved]').exists()).toBe(false);
     expect(panel.find('[data-testid=gateway-add-connect]').exists()).toBe(false);
+  });
+});
+
+describe('host rows: one detail chain, presence chip outside it (core#50 review B2)', () => {
+  const details = (wrapper: VueWrapper, name: string) => {
+    const row = wrapper.findAll('.host-row').find((candidate) => candidate.find('.host-name').text() === name)!;
+    return {
+      detail: row.findAll('[data-testid=host-detail]').map((n) => n.text()),
+      chip: row.find('[data-testid=host-gateway-presence]').exists() ? row.find('[data-testid=host-gateway-presence]').text() : null,
+    };
+  };
+
+  it('a local host, a plain host, and gateway hosts with and without presence each render exactly one detail', async () => {
+    const local = entry('self', { hostname: 'self', port: 0, user: 'self', local: true } as Partial<HostEntry>);
+    const plain = entry('plain-box', { hostname: 'plain.example', user: 'me' });
+    const withPresence = SAVED_GATEWAY_HOST; // hetzner-dev is listed online
+    const withoutPresence = entry('unlisted', { hostname: 'unlisted-dev', gateway: { serverUrl: 'wss://gw-b.example', deviceId: 'unlisted-dev' } });
+    platform({ hosts: [local, plain, withPresence, withoutPresence] });
+    const wrapper = await mountPicker();
+    expect(details(wrapper, 'self')).toEqual({ detail: ['This computer — local, no SSH'], chip: null });
+    expect(details(wrapper, 'plain-box')).toEqual({ detail: ['me@plain.example:22'], chip: null });
+    expect(details(wrapper, 'hetzner')).toEqual({ detail: ['alexey · via gateway'], chip: 'Online' });
+    expect(details(wrapper, 'unlisted')).toEqual({ detail: ['alexey · via gateway'], chip: null });
+  });
+
+  it('signed out, a gateway host still shows no address and no chip', async () => {
+    const api = platform();
+    Object.assign(api.account, { loggedIn: false, email: null });
+    const wrapper = await mountPicker();
+    expect(details(wrapper, 'hetzner')).toEqual({ detail: ['alexey · via gateway'], chip: null });
   });
 });

@@ -59,7 +59,12 @@ const emit = defineEmits<{
 const gateway = api.gateway!;
 
 const deviceId = ref(props.device?.id ?? props.prefill?.deviceId ?? '');
-const server = ref(props.prefill?.serverUrl || props.serverUrl || gateway.defaultServerUrl || GATEWAY_DEFAULT_SERVER_URL);
+/**
+ * The device's gateway: a repaired host's own saved origin, else the one the
+ * platform lists. Not editable here (#3086 review B1); the platform refuses
+ * any origin outside its own allowlist anyway.
+ */
+const server = computed(() => props.prefill?.serverUrl || props.serverUrl || gateway.defaultServerUrl || GATEWAY_DEFAULT_SERVER_URL);
 
 /**
  * The stale-result fence. Every async step (key read, key creation, save)
@@ -259,12 +264,9 @@ onBeforeUnmount(() => {
         <label>SSH user on the device
           <input v-model="username" data-testid="gateway-add-user" autocomplete="off" autocapitalize="off" spellcheck="false" />
         </label>
-        <details class="advanced">
-          <summary>Gateway address</summary>
-          <label>Gateway
-            <input v-model="server" data-testid="gateway-add-server" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" :readonly="prefill != null" />
-          </label>
-        </details>
+        <!-- The gateway is the platform's, shown, never typed: the platform
+             sends its gateway credential to that origin only. -->
+        <p class="muted gateway-origin" data-testid="gateway-add-server">Gateway: <code>{{ server }}</code></p>
       </section>
 
       <section class="step">
@@ -445,14 +447,6 @@ code {
 }
 .warn {
   color: var(--warning);
-}
-.advanced summary {
-  cursor: pointer;
-  color: var(--fg-secondary);
-  font-size: var(--fs-200);
-  min-height: 44px;
-  display: flex;
-  align-items: center;
 }
 .actions {
   display: flex;

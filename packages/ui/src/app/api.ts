@@ -358,6 +358,21 @@ export interface PocketShellApi {
       }) => Promise<boolean>;
     "saveAs": (payload: { connectionId: string; remotePath: string }) => Promise<string | null>;
     "onProgress": (handler: (payload: { transferId: string } & TransferProgress) => void) => Unsubscribe;
+    /**
+     * Optional: what this platform's file transport can do. Absent means
+     * everything above works (desktop, web). A platform that wires only part
+     * of the group says so here, and the Files pane hides or disables what
+     * it cannot do — with the reason — instead of offering it and failing
+     * on use (Android, #3086 slice 4). `maxReadBytes` caps every open: a
+     * larger file is shown as over the limit, never opened truncated.
+     */
+    "capabilities"?: {
+      "write": boolean;
+      "download": boolean;
+      /** Why writes are off, in words the pane shows. */
+      "readOnlyReason"?: string;
+      "maxReadBytes"?: number;
+    };
     };
 
     "preview": {

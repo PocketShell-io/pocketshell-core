@@ -28,7 +28,7 @@
 //   - A FAILED AUTO-CONNECT LEAVES THE DEFAULT ALONE. The error is shown on the
 //     picker; the setting stays set, because a host being down is not a reason
 //     to forget which host the user wants.
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
@@ -47,18 +47,12 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
 import GatewayDevicesSection from '../components/GatewayDevicesSection.vue';
 import GatewayAddDevicePanel from '../components/GatewayAddDevicePanel.vue';
+import GatewayDialErrorActions from '../components/GatewayDialErrorActions.vue';
+import HostRowDetail from '../components/HostRowDetail.vue';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
-import { useGatewayStore } from '../stores/gateway';
-import {
-  describeGatewayDeviceStatus,
-  gatewayDeviceStatus,
-  hostEntryId,
-  type GatewayDevice,
-  type GatewayDialFailureKind,
-  type HostEntry,
-} from '@pocketshell/core';
-import type { GatewayAddDeviceResult } from '../api';
+import { useGatewayPickerSource } from '../useGatewayPickerSource';
+import { hostEntryId, type GatewayDialFailureKind, type HostEntry } from '@pocketshell/core';
 
 const router = useRouter();
 const connection = useConnectionStore();
@@ -79,22 +73,6 @@ const connectingTo = ref<string | null>(null);
 /** The dialling host's identity ({@link hostEntryId}), for the row it marks. */
 const connectingKey = ref<string | null>(null);
 const settingsOpen = ref(false);
-const gateway = useGatewayStore();
-/**
- * The add-device flow, when open: the listed device being added (null: a
- * typed device id), or a saved host being paired again.
- */
-const addingDevice = shallowRef<{
-  device: GatewayDevice | null;
-  prefill: { deviceId: string; name: string; username: string; serverUrl: string } | null;
-  /** The signed-in account the flow was opened for; a switch closes it. */
-  account: string | null;
-} | null>(null);
-
-/** The signed-in account, as the add flow is bound to it. */
-function currentAccount(): string | null {
-  return sync.status?.loggedIn === true ? sync.status.email ?? '' : null;
-}
 const reloadingHosts = ref(false);
 const hostReloadError = ref<string | null>(null);
 
@@ -235,69 +213,26 @@ function onAccountAction(): void {
 }
 
 /**
- * The gateway device source follows the sign-in: it lists the account's
- * devices once an account is signed in and forgets them on sign-out, so a
- * list is never shown for an account that is not the current one.
+ * The gateway device source and the add/pair flow (useGatewayPickerSource):
+ * both follow the signed-in account; the picker only supplies its hosts and
+ * its one dialling path.
  */
-watch(
-  [accountSignedIn, () => sync.status?.email ?? null],
-  ([signedIn]) => {
-    // An add/pair flow belongs to the account it was opened for: a switch or
-    // sign-out closes it (the panel drops anything still in flight).
-    if (addingDevice.value && addingDevice.value.account !== currentAccount()) addingDevice.value = null;
-    if (!gateway.available) return;
-    gateway.reset();
-    if (signedIn) void gateway.load();
-  },
-  { immediate: true },
-);
-
-/** Every host the picker lists, so the device source can leave added ones out. */
-const listedHosts = computed<HostEntry[]>(() => [...connection.hosts, ...accountOnlyHosts.value]);
-
-/** A gateway host's presence, from the gateway's last list (never a probe). */
-function hostPresence(host: HostEntry): { status: string; text: string } | null {
-  const device = gateway.deviceFor(host.gateway);
-  if (!device) return null;
-  return { status: gatewayDeviceStatus(device), text: describeGatewayDeviceStatus(device, gateway.loadedAt ?? Date.now()) };
-}
-
-function openAddDevice(device: GatewayDevice | null): void {
-  addingDevice.value = { device, prefill: null, account: currentAccount() };
-}
-
-/** "Pair again" for a saved gateway host whose dial said it is not paired. */
-function openRepair(host: HostEntry): void {
-  if (!host.gateway) return;
-  addingDevice.value = {
-    // The listed device only when the list is for this host's own gateway.
-    device: gateway.deviceFor(host.gateway),
-    // The host's OWN saved origin rides along: a repair never retargets it.
-    prefill: { deviceId: host.gateway.deviceId, name: host.name, username: host.user ?? '', serverUrl: host.gateway.serverUrl },
-    account: currentAccount(),
-  };
-}
-
-/** True while the open add flow still belongs to the signed-in account. */
-function addFlowIsCurrent(): boolean {
-  return addingDevice.value !== null && addingDevice.value.account === currentAccount();
-}
-
-async function onDeviceSaved(result: GatewayAddDeviceResult): Promise<void> {
-  if (!addFlowIsCurrent()) return;
-  // A device added on another gateway makes that gateway the listed one.
-  gateway.setServerUrl(result.pairing.serverUrl);
-  // The new host is the platform's to list; re-read it and the device list
-  // (it now leaves the device source for the host list).
-  await Promise.allSettled([connection.loadHosts(), gateway.load()]);
-}
-
-async function onConnectAdded(hostName: string): Promise<void> {
-  if (!addFlowIsCurrent()) return;
-  addingDevice.value = null;
-  const host = connection.hosts.find((candidate) => candidate.name === hostName);
-  if (host) await onConnect(host);
-}
+const {
+  gateway,
+  addingDevice,
+  listedHosts,
+  hostPresence,
+  openAddDevice,
+  openRepair,
+  onDeviceSaved,
+  onConnectAdded,
+} = useGatewayPickerSource({
+  account: computed(() => (accountSignedIn.value ? sync.status?.email ?? '' : null)),
+  listedHosts: computed(() => [...connection.hosts, ...accountOnlyHosts.value]),
+  reloadHosts: () => connection.loadHosts(),
+  connect: (host) => onConnect(host),
+  hostByName: (name) => connection.hosts.find((candidate) => candidate.name === name),
+});
 
 /** Open another workspace window on this platform (see {@link canOpenNewWindow}). */
 function onNewWindow(): void {
@@ -640,25 +575,9 @@ function onClearDefault(): void {
                 }"
               />
               <span class="host-name">{{ host.name }}</span>
-              <!-- A local host dials nothing, so the user@host:port spelling
-                   would read as a bug ("self@self:0"). One honest line instead. -->
-              <span v-if="host.local" class="host-detail">This computer — local, no SSH</span>
-              <!-- A gateway host has no address to show: hostname/port are
-                   labels the gateway transport never dials. Its presence is
-                   the gateway's own last word, not a probe. -->
-              <span v-else-if="host.gateway" class="host-detail" :title="`${host.user} via gateway device ${host.gateway.deviceId}`">
-                {{ host.user || '(default user)' }} · via gateway
-              </span>
-              <span
-                v-if="host.gateway && hostPresence(host)"
-                class="presence-chip"
-                :class="hostPresence(host)!.status"
-                :title="hostPresence(host)!.text"
-                data-testid="host-gateway-presence"
-              >{{ hostPresence(host)!.status === 'unknown' ? 'Unknown' : hostPresence(host)!.status === 'revoked' ? 'Revoked' : hostPresence(host)!.status === 'online' ? 'Online' : 'Offline' }}</span>
-              <span v-else class="host-detail">
-                {{ host.user || '(default user)' }}@{{ host.hostname }}:{{ host.port }}
-              </span>
+              <!-- local / gateway / plain detail, then a gateway host's
+                   presence chip — one chain, in its own component. -->
+              <HostRowDetail :host="host" :presence="host.gateway ? hostPresence(host) : null" />
               <span v-if="connectingKey === hostEntryId(host)" class="muted">connecting…</span>
               <!-- A list row that goes somewhere gets a chevron, not an arrow
                    (VS Code / macOS convention). Kept on the connected row too:
@@ -726,25 +645,16 @@ function onClearDefault(): void {
       <!-- The next step for a classified gateway refusal, beside (not inside)
            the message: an offline host is offline, a missing pairing asks to
            pair, a sign-in problem asks to sign in. -->
-      <div v-if="connectError && connectErrorKind" class="error-actions" :data-kind="connectErrorKind" data-testid="picker-error-actions">
-        <button v-if="connectErrorKind === 'sign_in_required' || connectErrorKind === 'unauthorized'" class="btn-ghost" @click="onAccountAction">
-          Sign in
-        </button>
-        <button
-          v-else-if="(connectErrorKind === 'pairing_required' || connectErrorKind === 'not_found') && failedHost?.gateway && gateway.available"
-          class="btn-ghost"
-          @click="openRepair(failedHost)"
-        >
-          Pair this device
-        </button>
-        <button v-else-if="connectErrorKind === 'account_changed' && failedHost" class="btn-ghost" @click="onConnect(failedHost)">
-          Connect again
-        </button>
-        <template v-else-if="connectErrorKind === 'host_offline'">
-          <span class="presence-chip offline">Offline</span>
-          <button v-if="gateway.available" class="btn-ghost" @click="gateway.load()">Reload devices</button>
-        </template>
-      </div>
+      <GatewayDialErrorActions
+        v-if="connectError && connectErrorKind"
+        :kind="connectErrorKind"
+        :host="failedHost"
+        :gateway-available="gateway.available"
+        @sign-in="onAccountAction"
+        @repair="openRepair"
+        @connect-again="onConnect"
+        @reload-devices="gateway.load()"
+      />
     </main>
 
     <!-- Settings remains reachable here with no connection: default-host is
@@ -998,12 +908,6 @@ h1 {
   line-height: var(--lh-400);
   font-weight: var(--fw-semibold);
 }
-.host-detail {
-  color: var(--fg-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-200);
-  flex: 1;
-}
 /* A 2px nudge on row hover — the smallest possible "this row goes somewhere"
    cue. Colour and transform only; the row's own tint does the rest. */
 .chevron {
@@ -1015,39 +919,6 @@ h1 {
 .host-row:hover:not(:disabled) .chevron {
   color: var(--fg-secondary);
   transform: translateX(2px);
-}
-/* A gateway host's presence, as the gateway last reported it. */
-.presence-chip {
-  display: inline-block;
-  flex: none;
-  padding: 0 var(--sp-1);
-  border-radius: var(--r-sm);
-  font-family: var(--font-ui);
-  font-size: var(--fs-100);
-  line-height: var(--lh-200);
-  background: var(--surface-2);
-  color: var(--fg-secondary);
-}
-.presence-chip.online {
-  background: var(--success-soft);
-  color: var(--success);
-}
-.presence-chip.offline {
-  background: var(--warning-soft);
-  color: var(--warning);
-}
-.presence-chip.revoked {
-  background: var(--error-soft);
-  color: var(--error);
-}
-.error-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: calc(-1 * var(--sp-2));
-}
-.error-actions .presence-chip {
-  margin-left: 0;
 }
 .error {
   font-size: var(--fs-300);
