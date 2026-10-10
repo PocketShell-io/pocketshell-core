@@ -92,7 +92,7 @@ export interface ConnectionSnapshot {
    * hosts, after a successful dial, and for failures outside the gateway
    * close-code matrix.
    */
-  gatewayFailure: GatewayDialFailure | null;
+  gatewayFailure?: GatewayDialFailure | null;
 }
 
 export type TerminalOutputHandler = (
@@ -358,7 +358,7 @@ export class ConnectionController {
     try {
       await this.listenerReady;
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
-      if (this.connection && this.host?.hostId === host.hostId) {
+      if (this.connection && this.host?.hostId === host.hostId && this.reusesTransport(this.host, host)) {
         try {
           const stateRequestId = this.createId();
           const status = await this.capability.getConnectionState({ ...this.connection, requestId: stateRequestId });
@@ -1043,6 +1043,26 @@ export class ConnectionController {
       this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null });
       return { ok: false, reason: 'failed', message };
     }
+  }
+
+  /**
+   * Whether a live connection to `live` may answer a `connect(requested)` for
+   * the same hostId (#3086). Only the same transport: two ordinary targets
+   * (unchanged behaviour), or two gateway targets with the same normalized
+   * route on a platform that still dials the gateway. Any other pairing —
+   * ordinary↔gateway, a different or unusable gateway route — is a new host
+   * context: `connect()` closes the live transport and dials the requested one,
+   * so a gateway connect is never answered without its own pin receipt and an
+   * ordinary connect never keeps riding the gateway.
+   */
+  private reusesTransport(live: SshHostTarget, requested: SshHostTarget): boolean {
+    const liveGateway = hasGatewayMarker(live);
+    const requestedGateway = hasGatewayMarker(requested);
+    if (!liveGateway && !requestedGateway) return true;
+    if (!liveGateway || !requestedGateway || this.capability.gatewayTransport !== true) return false;
+    const a = normalizeGatewayTarget(live.gateway);
+    const b = normalizeGatewayTarget(requested.gateway);
+    return a !== null && b !== null && a.serverUrl === b.serverUrl && a.deviceId === b.deviceId;
   }
 
   /**

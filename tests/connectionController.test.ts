@@ -2411,6 +2411,100 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(capability.connectCalls.every((call) => !Object.prototype.hasOwnProperty.call(call, 'gateway'))).toBe(true);
   });
 
+  it('reviewer probe P2: a gateway connect never reuses a live ordinary connection to the same host', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.connectCalls[1]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    expect(capability.closedConnectionIds).toContain('connection-1');
+    expect(controller.getSnapshot().connectionId).toBe('gateway-1');
+    expect(trusted.store.get).toHaveBeenCalledTimes(1);
+
+    // The reconnect stays on the gateway, still without the trust store.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls[2]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    expect(trusted.store.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a gateway connect without the receipt instead of handing back the live ordinary connection', async () => {
+    const capability = new GatewayCapability();
+    capability.receipt = false;
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(host)).ok).toBe(true);
+    const result = await controller.connect(gatewayHost);
+    expect(result).toMatchObject({ ok: false, reason: 'failed' });
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.closedConnectionIds).toEqual(expect.arrayContaining(['connection-1', 'gateway-1']));
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', connectionId: null, trustDecision: null });
+    expect((await controller.refreshSessions()).ok).toBe(false);
+  });
+
+  it('an ordinary connect never keeps riding a live gateway connection to the same host', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(Object.prototype.hasOwnProperty.call(capability.connectCalls[1], 'gateway')).toBe(false);
+    expect(capability.connectCalls[1]!.expectedHostKey).toEqual(PIN);
+    expect(capability.closedConnectionIds).toContain('gateway-1');
+
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'connected');
+    expect(Object.prototype.hasOwnProperty.call(capability.connectCalls[2], 'gateway')).toBe(false);
+    expect(trusted.store.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a live gateway connection only for the same normalized gateway route', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    // Same route, spelled differently: the live, receipted connection answers.
+    const same = { ...host, gateway: { serverUrl: 'https://GATEWAY.example/', deviceId: ' device-a ' } };
+    expect((await controller.connect(same)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+    // A different device behind the same hostId is a fresh gateway dial.
+    expect((await controller.connect({ ...host, gateway: { ...GATEWAY, deviceId: 'device-b' } })).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.connectCalls[1]!.gateway).toEqual({ ...GATEWAY, deviceId: 'device-b' });
+    expect(capability.closedConnectionIds).toContain('gateway-1');
+    // An unusable marker never reuses the live gateway connection: it refuses.
+    const refused = await controller.connect({ ...host, gateway: null } as unknown as SshHostTarget);
+    expect(refused).toMatchObject({ ok: false, message: transportRefusalMessage('gateway-invalid', '127.0.0.1') });
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('still reuses a live ordinary connection for an ordinary connect on a gateway-capable platform', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect((await controller.connect({ ...host })).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('refuses the reconnect after one attempt with no dial when gateway capability switches off mid-session', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.gatewayTransport = false;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot().retryAttempt).toBe(1);
+    expect(controller.getSnapshot().error).toBe(
+      `Could not reconnect to 127.0.0.1 after 1 attempt. ${transportRefusalMessage('gateway-unsupported', '127.0.0.1')}`,
+    );
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    // A fresh connect to the same route on the now-incapable platform refuses too, never reusing anything.
+    expect((await controller.connect(gatewayHost)).ok).toBe(false);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
   it('ignores a GATEWAY_CLOSED shape from an ordinary SSH dial', async () => {
     const capability = new GatewayCapability();
     const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);

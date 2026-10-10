@@ -82,6 +82,12 @@ Sync's job is to carry that property, not to understand it:
   pin was checked BEFORE userauth. A missing receipt closes the connection; a
   pin mismatch (`HOST_KEY_REJECTED`) is an error, never a trust prompt. Both
   end a reconnect ladder, and every re-dial needs the receipt again.
+  `connect()` reuses a live connection only for the same transport: two
+  ordinary targets, or two gateway targets with the same normalized route on a
+  platform that still dials the gateway. Ordinary↔gateway or a different route
+  closes the live transport and dials the requested one, so a gateway connect is
+  never answered without its own receipt and an ordinary connect never keeps
+  riding the gateway.
 - A platform reports a gateway refusal by rejecting `connect()` with code
   `GATEWAY_CLOSED` and `data.gatewayCloseCode` (the WS close code; an `error`
   frame is mapped to its documented code). `classifyGatewayDialFailure` in
