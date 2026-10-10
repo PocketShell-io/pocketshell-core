@@ -2505,6 +2505,61 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(capability.connectCalls).toHaveLength(1);
   });
 
+  async function liveGatewayWithTerminal(capability: GatewayCapability, trusted = trustStore(PIN)) {
+    const built = controllerFor(capability, trusted, { retryDelaysMs: [0, 0, 0] });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    const before = controller.getSnapshot();
+    expect(before).toMatchObject({ phase: 'live', connectionId: 'gateway-1' });
+    return { controller, trusted, before };
+  }
+
+  function expectLiveUntouched(controller: ConnectionController, capability: GatewayCapability, before: ReturnType<ConnectionController['getSnapshot']>) {
+    const after = controller.getSnapshot();
+    expect(after.phase).toBe(before.phase);
+    expect(after.connectionId).toBe(before.connectionId);
+    expect(after.generationId).toBe(before.generationId);
+    expect(after.terminals.map((row) => row.name)).toEqual(before.terminals.map((row) => row.name));
+    expect(after.selectedSession?.name).toBe(before.selectedSession?.name);
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closedConnectionIds).toEqual([]);
+    expect(capability.closePtyCalls).toHaveLength(0);
+  }
+
+  it.each([
+    ['a relay link', { ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['an undefined link', { ...gatewayHost, link: undefined }, 'link-and-gateway'],
+    ['a null link', { ...gatewayHost, link: null }, 'link-and-gateway'],
+    ['a sloppy same route plus link', { ...host, gateway: { serverUrl: 'https://GATEWAY.example/', deviceId: ' device-a ' },
+      link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['a null gateway marker', { ...host, gateway: null }, 'gateway-invalid'],
+    ['a malformed device id', { ...host, gateway: { ...GATEWAY, deviceId: '!' } }, 'gateway-invalid'],
+    ['a credential-bearing route', { ...host, gateway: { ...GATEWAY, serverUrl: 'wss://user@gateway.example' } }, 'gateway-invalid'],
+  ] as const)('warm: refuses the live route with %s before any effect, leaving the session alone', async (_name, target, reason) => {
+    const capability = new GatewayCapability();
+    const { controller, trusted, before } = await liveGatewayWithTerminal(capability);
+    const result = await controller.connect(target as unknown as SshHostTarget);
+    expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage(reason, '127.0.0.1') });
+    expect(unsupportedTransport(target, { gateway: true, link: false })).toMatchObject({ refused: true, reason });
+    expectLiveUntouched(controller, capability, before);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    // The live session still serves.
+    expect((await controller.refreshSessions()).ok).toBe(true);
+  });
+
+  it('warm: does not reuse the live gateway connection once the platform stops reporting gateway capability', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted, before } = await liveGatewayWithTerminal(capability);
+    capability.gatewayTransport = false;
+    const result = await controller.connect(gatewayHost);
+    expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage('gateway-unsupported', '127.0.0.1') });
+    expectLiveUntouched(controller, capability, before);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+  });
+
   it('ignores a GATEWAY_CLOSED shape from an ordinary SSH dial', async () => {
     const capability = new GatewayCapability();
     const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);

@@ -21,7 +21,7 @@ import {
   type SshPtyRef,
   type SshResourceSnapshot,
 } from './sshCapability';
-import { hasGatewayMarker, unsupportedTransport } from './sync';
+import { hasGatewayMarker, unsupportedTransport, type TransportDecision } from './sync';
 
 export type ConnectionPhase =
   | 'idle'
@@ -351,6 +351,14 @@ export class ConnectionController {
         reason: 'failed',
         message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.',
       };
+    }
+    // Admission before any effect (#3059, #3086): a gateway-marked request this
+    // platform must refuse never reuses, closes or supersedes the live
+    // connection or its terminals. With nothing live, the
+    // dial below makes the same refusal and reports it in the snapshot.
+    if (this.connection && hasGatewayMarker(host)) {
+      const admission = this.gatewayAdmission(host);
+      if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
     }
     const intent = ++this.connectIntent;
     const requestId = this.createId();
@@ -974,11 +982,7 @@ export class ConnectionController {
       if (gatewayDial) {
         // The same refusal the platform boundary makes (#3059), so a marker
         // that slipped past it still never degrades into an ordinary dial.
-        const decision = unsupportedTransport(
-          host,
-          { gateway: this.capability.gatewayTransport === true, link: false },
-          host.hostname,
-        );
+        const decision = this.gatewayAdmission(host);
         if (decision.refused) throw new GatewayRefusal(decision.message);
         dialTarget = { ...host, gateway: normalizeGatewayTarget(host.gateway)! };
       } else {
@@ -1045,11 +1049,21 @@ export class ConnectionController {
     }
   }
 
+  /** The shared #3059 transport decision for a gateway-marked target on this platform. */
+  private gatewayAdmission(host: SshHostTarget): TransportDecision {
+    return unsupportedTransport(
+      host,
+      { gateway: this.capability.gatewayTransport === true, link: false },
+      host.hostname,
+    );
+  }
+
   /**
    * Whether a live connection to `live` may answer a `connect(requested)` for
    * the same hostId (#3086). Only the same transport: two ordinary targets
    * (unchanged behaviour), or two gateway targets with the same normalized
-   * route on a platform that still dials the gateway. Any other pairing —
+   * route. `connect()` has already admitted a gateway request (capability and
+   * marker shape) before asking, so a refused one never gets here. Any other pairing —
    * ordinary↔gateway, a different or unusable gateway route — is a new host
    * context: `connect()` closes the live transport and dials the requested one,
    * so a gateway connect is never answered without its own pin receipt and an
@@ -1059,7 +1073,7 @@ export class ConnectionController {
     const liveGateway = hasGatewayMarker(live);
     const requestedGateway = hasGatewayMarker(requested);
     if (!liveGateway && !requestedGateway) return true;
-    if (!liveGateway || !requestedGateway || this.capability.gatewayTransport !== true) return false;
+    if (!liveGateway || !requestedGateway) return false;
     const a = normalizeGatewayTarget(live.gateway);
     const b = normalizeGatewayTarget(requested.gateway);
     return a !== null && b !== null && a.serverUrl === b.serverUrl && a.deviceId === b.deviceId;
