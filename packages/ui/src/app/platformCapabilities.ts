@@ -74,3 +74,22 @@ export async function listDiagnosticReports(group: DiagnosticsGroup): Promise<Di
   if (!Array.isArray(answer)) return null;
   return answer.filter(isReport);
 }
+
+type GatewayGroup = NonNullable<PocketShellApi['gateway']>;
+
+/**
+ * The gateway-devices group (#3086) when the platform really provides it:
+ * every method callable and a usable default server. Absent on a platform
+ * that cannot dial through the gateway or does not keep the gateway
+ * credential and pins itself — the picker then shows no device source.
+ */
+export function gatewayCapability(): GatewayGroup | null {
+  try {
+    const group = api.gateway;
+    if (!group || typeof group.defaultServerUrl !== 'string' || group.defaultServerUrl === '') return null;
+    const methods: (keyof GatewayGroup)[] = ['devices', 'pairings', 'clientKeys', 'addDevice'];
+    return methods.every((name) => typeof group[name] === 'function') ? group : null;
+  } catch {
+    return null;
+  }
+}

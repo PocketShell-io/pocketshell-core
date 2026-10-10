@@ -6,6 +6,7 @@ import type {
   BootstrapResult,
   ConnectionId,
   ConnectionState,
+  GatewayDialFailureKind,
   HostEntry,
   HostKeyTrustChoice,
   HostKeyTrustRequest,
@@ -58,6 +59,13 @@ export const useConnectionStore = defineStore('connection', () => {
   const connectionId = ref<ConnectionId | null>(null);
   const state = ref<ConnectionState>('idle');
   const error = ref<string | null>(null);
+  /**
+   * Why the last dial failed, when it was a gateway dial core's matrix
+   * classified (`ConnectResult.gatewayFailureKind`): the picker turns it into
+   * the right prompt — sign in, pair the device, reconnect as the current
+   * account, or "the host is offline". Null for every other outcome.
+   */
+  const errorKind = ref<GatewayDialFailureKind | null>(null);
   const bootstrap = ref<BootstrapResult | null>(null);
   /** The host we are currently connected to (for the workspace header). */
   const activeHost = shallowRef<HostEntry | null>(null);
@@ -388,6 +396,7 @@ export const useConnectionStore = defineStore('connection', () => {
     useProjectsStore().clear();
     state.value = 'connecting';
     error.value = null;
+    errorKind.value = null;
     activeHost.value = host;
     lastKeyPath.value = privateKeyPath;
     let result: Awaited<ReturnType<typeof api.ssh.connect>>;
@@ -443,6 +452,7 @@ export const useConnectionStore = defineStore('connection', () => {
     }
     state.value = 'idle';
     error.value = result.error ?? 'Connection failed';
+    errorKind.value = result.gatewayFailureKind ?? null;
     return false;
   }
 
@@ -492,6 +502,7 @@ export const useConnectionStore = defineStore('connection', () => {
     connectionId,
     state,
     error,
+    errorKind,
     bootstrap,
     activeHost,
     pendingTrust,

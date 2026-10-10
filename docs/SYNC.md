@@ -44,9 +44,16 @@ understand a field can still carry it forward.
 
 ## The gateway transport marker
 
+A host added from the gateway device list (pocketshell#3086 slice 4: the
+picker's device source, `src/gatewayDevices.ts` and the optional
+`PocketShellApi.gateway` group) is an ordinary saved host carrying this
+marker (`SavedHostInput.gateway`), so it syncs like any other host. Its
+host-key pin and the routing token are NOT part of the entry: they stay with
+the platform that paired it.
+
 A host entry may carry a `gateway` property: the metadata for dialling through
-the PocketShell gateway, a transport that initially ships in the browser only.
-Sync's job is to carry that property, not to understand it:
+the PocketShell gateway (desktop and Android dial it; each client advertises
+its own support). Sync's job is to carry that property, not to understand it:
 
 - `gateway` is an unknown field for every merge and wire rule above, so a valid
   marker survives merge, strict parsing, and a read/merge/write cycle

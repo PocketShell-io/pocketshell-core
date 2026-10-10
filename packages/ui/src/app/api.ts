@@ -32,6 +32,8 @@ import type {
   ExecResult,
   FileStat,
   ForwardSpec,
+  GatewayDevice,
+  GatewayTransportTarget,
   ForwardState,
   GeometryProbe,
   HomeResult,
@@ -72,6 +74,56 @@ export interface InstalledAppInfo {
   versionCode: number | null;
   /** Package or bundle id, including any per-install suffix; '' when unknown. */
   applicationId: string;
+}
+
+/**
+ * A key this device can authenticate to a gateway host with: public data
+ * only. `publicKey` is the OpenSSH line the user puts in the host's
+ * `~/.ssh/authorized_keys`; the private half never leaves the platform's
+ * key store.
+ */
+export interface GatewayClientKey {
+  /** The platform's opaque key reference (Android: the key-vault handle). */
+  id: string;
+  label: string;
+  /** `SHA256:…`, for the user to compare on the host. */
+  fingerprint: string;
+  publicKey: string;
+}
+
+/** One saved gateway pairing, as the platform reports it: public data only. */
+export interface GatewayPairingSummary {
+  serverUrl: string;
+  deviceId: string;
+  /** The pinned host key's `SHA256:…` fingerprint. */
+  fingerprint: string;
+  /** Whether the exact key line or only its fingerprint was pinned. */
+  pinKind: 'host-key' | 'fingerprint';
+  /** The client key this pairing authenticates with ({@link GatewayClientKey.id}). */
+  keyId: string;
+}
+
+/**
+ * "Add this gateway device": save a host carrying the gateway marker and
+ * pair it with the host-key pin the user PASTED (never the device list's
+ * advisory key) and the client key the user chose.
+ */
+export interface GatewayAddDeviceRequest {
+  /** The saved host's display name. */
+  name: string;
+  /** The SSH user on the device. */
+  username: string;
+  gateway: GatewayTransportTarget;
+  /** What the user pasted: a `gateway show --host-key` line, the
+   *  `pocketshell-link show` line, or a `SHA256:` fingerprint. */
+  pin: string;
+  keyId: string;
+}
+
+export interface GatewayAddDeviceResult {
+  /** The saved host's name, to select or dial it. */
+  hostName: string;
+  pairing: GatewayPairingSummary;
 }
 
 /** How a share request ended: handed to a share target, saved locally, or dismissed. */
@@ -410,6 +462,33 @@ export interface PocketShellApi {
      * route) omit it, and the shared UI then offers no create/edit/delete.
      */
     "store"?: PlatformHostStore;
+    };
+
+    // Optional capability: the account's PocketShell gateway devices (#3086).
+    // Present only on a platform that dials through the gateway AND keeps the
+    // gateway credential and the host-key pins itself (Android today: the
+    // routing token and the pins never reach this tree). The host picker
+    // then lists the account's devices with their last authoritative
+    // presence and offers "Add device"; without the group neither appears.
+    // Every rejection carries the platform's error `code`
+    // (classifyGatewayDirectoryFailure reads it).
+    "gateway"?: {
+    /** The gateway the add flow starts from (core GATEWAY_DEFAULT_SERVER_URL). */
+    "defaultServerUrl": string;
+    /**
+     * The account's devices on `serverUrl`, from the gateway's own list:
+     * presence is its last observation, never a probe of the device.
+     */
+    "devices": (serverUrl: string) => Promise<GatewayDevice[]>;
+    /** This device's saved pairings for the signed-in account. */
+    "pairings": () => Promise<GatewayPairingSummary[]>;
+    /** Keys this device can offer a host (public halves only). */
+    "clientKeys": () => Promise<GatewayClientKey[]>;
+    /** Optional: create a new key in the platform's key store. */
+    "createClientKey"?: (label: string) => Promise<GatewayClientKey>;
+    /** Optional: hand a client key's public line to the platform's share sheet. */
+    "shareClientKey"?: (keyId: string) => Promise<void>;
+    "addDevice": (request: GatewayAddDeviceRequest) => Promise<GatewayAddDeviceResult>;
     };
 
     // Optional capability: the vscode:// deep link. Remote-SSH resolves the

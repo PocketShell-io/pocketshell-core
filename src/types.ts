@@ -7,7 +7,7 @@
  */
 
 import type { LinkTransportTarget } from './sshCapability';
-import type { GatewayTransportTarget } from './gatewayTransport';
+import type { GatewayDialFailureKind, GatewayTransportTarget } from './gatewayTransport';
 
 /** Opaque handle for a live SSH connection in the main process. */
 export type ConnectionId = string;
@@ -92,6 +92,14 @@ export interface ConnectResult {
   ok: boolean;
   connectionId?: ConnectionId;
   error?: string;
+  /**
+   * Set on a failed gateway dial whose cause core's gateway matrix knows
+   * (classifyGatewayDialFailure): `sign_in_required`, `pairing_required`,
+   * `account_changed`, `host_offline`, … The picker reads it to prompt for
+   * the right next step — sign in, pair, reconnect, or "the host is offline"
+   * — instead of showing one generic error. Absent for every other failure.
+   */
+  gatewayFailureKind?: GatewayDialFailureKind;
 }
 
 /**
