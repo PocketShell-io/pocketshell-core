@@ -17,7 +17,7 @@
 //
 // Saving pairs the device (pin + key, kept by the platform) and saves a host
 // carrying the gateway marker. Connecting is the picker's ordinary dial.
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   GATEWAY_DEFAULT_SERVER_URL,
   classifyGatewayDirectoryFailure,
@@ -36,8 +36,17 @@ const props = defineProps<{
   /** The listed device being added, or null to type a device id. */
   device: GatewayDevice | null;
   serverUrl: string;
-  /** Prefill for re-pairing a saved host (the picker's "pair again"). */
-  prefill?: { deviceId: string; name: string; username: string } | null;
+  /**
+   * Prefill for re-pairing a saved host (the picker's "pair again"),
+   * INCLUDING the host's own saved gateway origin: a repair never moves a
+   * host to whichever gateway the list happens to show.
+   */
+  prefill?: { deviceId: string; name: string; username: string; serverUrl: string } | null;
+  /**
+   * The account this flow was opened for (the signed-in email). When it
+   * changes, every result still in flight is dropped (see `epoch`).
+   */
+  account?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -50,7 +59,26 @@ const emit = defineEmits<{
 const gateway = api.gateway!;
 
 const deviceId = ref(props.device?.id ?? props.prefill?.deviceId ?? '');
-const server = ref(props.serverUrl || gateway.defaultServerUrl || GATEWAY_DEFAULT_SERVER_URL);
+const server = ref(props.prefill?.serverUrl || props.serverUrl || gateway.defaultServerUrl || GATEWAY_DEFAULT_SERVER_URL);
+
+/**
+ * The stale-result fence. Every async step (key read, key creation, save)
+ * captures this at its start and applies its answer only if it is unchanged:
+ * an account switch or sign-out (the `account` prop) and closing the panel
+ * both advance it, so an old account's keys, a late "saved", or a Connect
+ * for a host the current account did not add can never appear.
+ */
+let epoch = 0;
+function invalidate(): void {
+  epoch += 1;
+  keys.value = [];
+  keyId.value = '';
+  keysLoaded.value = false;
+  creatingKey.value = false;
+  saving.value = false;
+  saved.value = null;
+  failure.value = null;
+}
 const name = ref(props.prefill?.name ?? props.device?.id ?? '');
 const username = ref(props.prefill?.username ?? '');
 const pinText = ref('');
@@ -103,29 +131,37 @@ const problem = computed<string | null>(() => {
 });
 
 async function loadKeys(): Promise<void> {
+  const mine = epoch;
   keysError.value = null;
   try {
-    keys.value = await gateway.clientKeys();
+    const listed = await gateway.clientKeys();
+    if (mine !== epoch) return;
+    keys.value = listed;
     if (!keys.value.some((key) => key.id === keyId.value)) keyId.value = keys.value[0]?.id ?? '';
   } catch (error) {
+    if (mine !== epoch) return;
     keysError.value = error instanceof Error && error.message ? error.message : 'Your keys could not be read.';
   } finally {
-    keysLoaded.value = true;
+    if (mine === epoch) keysLoaded.value = true;
   }
 }
 
 async function createKey(): Promise<void> {
   if (!gateway.createClientKey) return;
+  const mine = epoch;
   creatingKey.value = true;
   keysError.value = null;
   try {
     const created = await gateway.createClientKey(`PocketShell gateway ${deviceId.value.trim() || 'key'}`);
+    if (mine !== epoch) return;
     await loadKeys();
+    if (mine !== epoch) return;
     keyId.value = created.id;
   } catch (error) {
+    if (mine !== epoch) return;
     keysError.value = error instanceof Error && error.message ? error.message : 'The key could not be created.';
   } finally {
-    creatingKey.value = false;
+    if (mine === epoch) creatingKey.value = false;
   }
 }
 
@@ -146,10 +182,11 @@ async function shareKey(): Promise<void> {
 
 async function save(): Promise<void> {
   if (problem.value !== null || pin.value === null || canonicalServer.value === null) return;
+  const mine = epoch;
   saving.value = true;
   failure.value = null;
   try {
-    saved.value = await gateway.addDevice({
+    const result = await gateway.addDevice({
       name: name.value.trim(),
       username: username.value.trim(),
       gateway: { serverUrl: canonicalServer.value, deviceId: deviceId.value.trim() },
@@ -157,15 +194,34 @@ async function save(): Promise<void> {
       pin: gatewayHostPinText(pin.value),
       keyId: keyId.value,
     });
-    emit('saved', saved.value);
+    // Saved for an account that is no longer the one on screen: say nothing,
+    // offer no Connect, publish nothing.
+    if (mine !== epoch) return;
+    saved.value = result;
+    emit('saved', result);
   } catch (error) {
+    if (mine !== epoch) return;
     failure.value = classifyGatewayDirectoryFailure(error);
   } finally {
-    saving.value = false;
+    if (mine === epoch) saving.value = false;
   }
 }
 
+function connectSaved(): void {
+  if (saved.value) emit('connect', saved.value.hostName);
+}
+
+watch(
+  () => props.account,
+  () => {
+    invalidate();
+    void loadKeys();
+  },
+);
 onMounted(() => void loadKeys());
+onBeforeUnmount(() => {
+  epoch += 1;
+});
 </script>
 
 <template>
@@ -179,7 +235,7 @@ onMounted(() => void loadKeys());
         Whether the host accepts this device's key is known only when a login succeeds — connect to check.
       </p>
       <div class="actions">
-        <button class="primary" data-testid="gateway-add-connect" @click="emit('connect', saved.hostName)">Connect</button>
+        <button class="primary" data-testid="gateway-add-connect" @click="connectSaved">Connect</button>
         <button class="btn-ghost" @click="emit('close')">Done</button>
       </div>
     </template>
@@ -206,7 +262,7 @@ onMounted(() => void loadKeys());
         <details class="advanced">
           <summary>Gateway address</summary>
           <label>Gateway
-            <input v-model="server" data-testid="gateway-add-server" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" />
+            <input v-model="server" data-testid="gateway-add-server" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" :readonly="prefill != null" />
           </label>
         </details>
       </section>

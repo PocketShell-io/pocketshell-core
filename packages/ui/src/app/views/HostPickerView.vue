@@ -86,8 +86,15 @@ const gateway = useGatewayStore();
  */
 const addingDevice = shallowRef<{
   device: GatewayDevice | null;
-  prefill: { deviceId: string; name: string; username: string } | null;
+  prefill: { deviceId: string; name: string; username: string; serverUrl: string } | null;
+  /** The signed-in account the flow was opened for; a switch closes it. */
+  account: string | null;
 } | null>(null);
+
+/** The signed-in account, as the add flow is bound to it. */
+function currentAccount(): string | null {
+  return sync.status?.loggedIn === true ? sync.status.email ?? '' : null;
+}
 const reloadingHosts = ref(false);
 const hostReloadError = ref<string | null>(null);
 
@@ -235,6 +242,9 @@ function onAccountAction(): void {
 watch(
   [accountSignedIn, () => sync.status?.email ?? null],
   ([signedIn]) => {
+    // An add/pair flow belongs to the account it was opened for: a switch or
+    // sign-out closes it (the panel drops anything still in flight).
+    if (addingDevice.value && addingDevice.value.account !== currentAccount()) addingDevice.value = null;
     if (!gateway.available) return;
     gateway.reset();
     if (signedIn) void gateway.load();
@@ -253,19 +263,28 @@ function hostPresence(host: HostEntry): { status: string; text: string } | null 
 }
 
 function openAddDevice(device: GatewayDevice | null): void {
-  addingDevice.value = { device, prefill: null };
+  addingDevice.value = { device, prefill: null, account: currentAccount() };
 }
 
 /** "Pair again" for a saved gateway host whose dial said it is not paired. */
 function openRepair(host: HostEntry): void {
   if (!host.gateway) return;
   addingDevice.value = {
+    // The listed device only when the list is for this host's own gateway.
     device: gateway.deviceFor(host.gateway),
-    prefill: { deviceId: host.gateway.deviceId, name: host.name, username: host.user ?? '' },
+    // The host's OWN saved origin rides along: a repair never retargets it.
+    prefill: { deviceId: host.gateway.deviceId, name: host.name, username: host.user ?? '', serverUrl: host.gateway.serverUrl },
+    account: currentAccount(),
   };
 }
 
+/** True while the open add flow still belongs to the signed-in account. */
+function addFlowIsCurrent(): boolean {
+  return addingDevice.value !== null && addingDevice.value.account === currentAccount();
+}
+
 async function onDeviceSaved(result: GatewayAddDeviceResult): Promise<void> {
+  if (!addFlowIsCurrent()) return;
   // A device added on another gateway makes that gateway the listed one.
   gateway.setServerUrl(result.pairing.serverUrl);
   // The new host is the platform's to list; re-read it and the device list
@@ -274,6 +293,7 @@ async function onDeviceSaved(result: GatewayAddDeviceResult): Promise<void> {
 }
 
 async function onConnectAdded(hostName: string): Promise<void> {
+  if (!addFlowIsCurrent()) return;
   addingDevice.value = null;
   const host = connection.hosts.find((candidate) => candidate.name === hostName);
   if (host) await onConnect(host);
@@ -742,6 +762,7 @@ function onClearDefault(): void {
       <GatewayAddDevicePanel
         :device="addingDevice.device"
         :prefill="addingDevice.prefill"
+        :account="addingDevice.account"
         :server-url="gateway.serverUrl"
         @saved="onDeviceSaved"
         @connect="onConnectAdded"

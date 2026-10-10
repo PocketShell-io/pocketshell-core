@@ -8,6 +8,7 @@ import type { ConnectResult, GatewayDevice, HostEntry } from '@pocketshell/core'
 import { provideApi } from '../src/app/ipc';
 import type { GatewayAddDeviceRequest, PocketShellApi } from '../src/app/api';
 import HostPickerView from '../src/app/views/HostPickerView.vue';
+import GatewayAddDevicePanel from '../src/app/components/GatewayAddDevicePanel.vue';
 import { useConnectionStore } from '../src/app/stores/connection';
 
 /**
@@ -64,17 +65,29 @@ interface Platform {
   openAccount: ReturnType<typeof vi.fn>;
   addDevice: ReturnType<typeof vi.fn>;
   listDevices: ReturnType<typeof vi.fn>;
+  listConfigHosts: ReturnType<typeof vi.fn>;
+  /** What sync.status answers from now on (an account switch or sign-out). */
+  account: { loggedIn: boolean; email: string | null };
 }
 
-function platform(options: { devicesError?: Error; connect?: ConnectResult } = {}): Platform {
-  const hosts = [entry('plain-box'), SAVED_GATEWAY_HOST];
+interface PlatformOptions {
+  devicesError?: Error;
+  connect?: ConnectResult;
+  hosts?: HostEntry[];
+  clientKeys?: () => Promise<unknown[]>;
+  addDevice?: (request: GatewayAddDeviceRequest) => Promise<unknown>;
+}
+
+function platform(options: PlatformOptions = {}): Platform {
+  const hosts = options.hosts ?? [entry('plain-box'), SAVED_GATEWAY_HOST];
+  const account = { loggedIn: true, email: 'me@example.test' as string | null };
   const connect = vi.fn(async (): Promise<ConnectResult> => options.connect ?? { ok: false, error: 'nope' });
   const openAccount = vi.fn(async () => undefined);
   const listDevices = vi.fn(async (_server: string) => {
     if (options.devicesError) throw options.devicesError;
     return devices();
   });
-  const addDevice = vi.fn(async (request: GatewayAddDeviceRequest) => ({
+  const addDevice = vi.fn(options.addDevice ?? (async (request: GatewayAddDeviceRequest) => ({
     hostName: request.name,
     pairing: {
       serverUrl: request.gateway.serverUrl,
@@ -83,15 +96,16 @@ function platform(options: { devicesError?: Error; connect?: ConnectResult } = {
       pinKind: 'host-key' as const,
       keyId: request.keyId,
     },
-  }));
+  })));
+  const listConfigHosts = vi.fn(async () => hosts);
   provideApi({
     win: { setTitle: vi.fn(), openAccount },
-    ssh: { listConfigHosts: vi.fn(async () => hosts), connect, onState: () => () => undefined, close: vi.fn(async () => true), exec: vi.fn() },
+    ssh: { listConfigHosts, connect, onState: () => () => undefined, close: vi.fn(async () => true), exec: vi.fn() },
     helper: { bootstrap: async () => null },
     forwards: { isAutoEnabled: async () => false },
     preview: { onStats: () => () => undefined },
     sync: {
-      status: vi.fn(async () => ({ loggedIn: true, email: 'me@example.test', keychainAvailable: true })),
+      status: vi.fn(async () => ({ ...account, keychainAvailable: true })),
       accountHosts: vi.fn(async () => null),
     },
     hosts: { groupLabel: 'On this phone', sourceName: 'saved hosts', emptyHint: 'No hosts saved.' },
@@ -99,11 +113,11 @@ function platform(options: { devicesError?: Error; connect?: ConnectResult } = {
       defaultServerUrl: SERVER,
       devices: listDevices,
       pairings: vi.fn(async () => []),
-      clientKeys: vi.fn(async () => [{ id: 'key-1', label: 'Phone key', fingerprint: 'SHA256:phone', publicKey: PHONE_KEY }]),
+      clientKeys: vi.fn(options.clientKeys ?? (async () => [{ id: 'key-1', label: 'Phone key', fingerprint: 'SHA256:phone', publicKey: PHONE_KEY }])),
       addDevice,
     },
   } as unknown as PocketShellApi);
-  return { connect, openAccount, addDevice, listDevices };
+  return { connect, openAccount, addDevice, listDevices, listConfigHosts, account };
 }
 
 const mounted: VueWrapper[] = [];
@@ -314,5 +328,105 @@ describe('gateway dial refusals get their own prompt', () => {
     expect(api.connect).toHaveBeenCalled();
     expect(wrapper.find('.picker p.error').text()).toBe('Connection refused');
     expect(wrapper.find('[data-testid=picker-error-actions]').exists()).toBe(false);
+  });
+});
+
+/** A promise the test settles by hand. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+/** The picker re-reads the account on focus, as after the Account window signs in or out. */
+async function switchAccount(api: Platform, next: { loggedIn: boolean; email: string | null }): Promise<void> {
+  Object.assign(api.account, next);
+  window.dispatchEvent(new Event('focus'));
+  await flushPromises();
+  await flushPromises();
+}
+
+describe('coordinator review of abd49a2: repair origin and stale results', () => {
+  it('repairing a host saved on gateway B keeps origin B even while the list shows gateway A with the same device id', async () => {
+    const onB = entry('hetzner', { hostname: 'hetzner-dev', gateway: { serverUrl: 'wss://gw-b.example', deviceId: 'hetzner-dev' } });
+    const api = platform({
+      hosts: [onB],
+      connect: { ok: false, error: 'This device is not paired with that host for this SSH key — pair it again, then reconnect.', gatewayFailureKind: 'pairing_required' },
+    });
+    const wrapper = await mountPicker();
+    expect(api.listDevices).toHaveBeenCalledWith(SERVER); // the list is gateway A's
+    await wrapper.findAll('.host-row').find((row) => row.text().includes('hetzner'))!.trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid=picker-error-actions] button').trigger('click');
+    await flushPromises();
+    const panel = wrapper.find('[data-testid=gateway-add-device]');
+    expect((panel.find('[data-testid=gateway-add-server]').element as HTMLInputElement).value).toBe('wss://gw-b.example');
+    // Gateway A's listing of the same id is not this host's device: no advisory from it.
+    expect(panel.find('[data-testid=gateway-add-advisory]').exists()).toBe(false);
+    await panel.find('[data-testid=gateway-add-pin]').setValue(KEYS['ed25519']!.line);
+    await panel.find('form').trigger('submit');
+    await flushPromises();
+    expect((api.addDevice.mock.calls[0]![0] as GatewayAddDeviceRequest).gateway).toEqual({ serverUrl: 'wss://gw-b.example', deviceId: 'hetzner-dev' });
+  });
+
+  it('an account switch while the keys load closes the flow and never shows the old account\'s keys', async () => {
+    const keys = deferred<unknown[]>();
+    const api = platform({ clientKeys: () => keys.promise });
+    const wrapper = await mountPicker();
+    await wrapper.findAll('[data-testid=gateway-device]').find((row) => row.attributes('data-device-id') === 'laptop-1')!
+      .find('[data-testid=gateway-device-add]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid=gateway-add-device]').exists()).toBe(true);
+    await switchAccount(api, { loggedIn: true, email: 'other@example.test' });
+    keys.resolve([{ id: 'key-1', label: 'Phone key', fingerprint: 'SHA256:phone', publicKey: PHONE_KEY }]);
+    await flushPromises();
+    expect(wrapper.find('[data-testid=gateway-add-device]').exists()).toBe(false);
+    expect(document.body.innerHTML).not.toContain(PHONE_KEY);
+  });
+
+  it('a sign-out during save publishes nothing: no saved host re-read, no "saved", no Connect', async () => {
+    const save = deferred<unknown>();
+    const api = platform({ addDevice: () => save.promise });
+    const wrapper = await mountPicker();
+    await wrapper.findAll('[data-testid=gateway-device]').find((row) => row.attributes('data-device-id') === 'laptop-1')!
+      .find('[data-testid=gateway-device-add]').trigger('click');
+    await flushPromises();
+    const panel = wrapper.find('[data-testid=gateway-add-device]');
+    await panel.find('[data-testid=gateway-add-user]').setValue('alexey');
+    await panel.find('[data-testid=gateway-add-pin]').setValue(KEYS['ed25519']!.line);
+    await panel.find('form').trigger('submit');
+    await flushPromises();
+    expect(api.addDevice).toHaveBeenCalledTimes(1);
+    const hostReads = api.listConfigHosts.mock.calls.length;
+    await switchAccount(api, { loggedIn: false, email: null });
+    save.resolve({ hostName: 'laptop-1', pairing: { serverUrl: SERVER, deviceId: 'laptop-1', fingerprint: KEYS['ed25519']!.fingerprint, pinKind: 'host-key', keyId: 'key-1' } });
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.find('[data-testid=gateway-add-saved]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid=gateway-add-connect]').exists()).toBe(false);
+    expect(api.listConfigHosts.mock.calls.length).toBe(hostReads);
+    expect(api.connect).not.toHaveBeenCalled();
+  });
+
+  it('the panel itself drops a save that lands after its account changed (no "saved" event, no Connect)', async () => {
+    const save = deferred<unknown>();
+    platform({ addDevice: () => save.promise });
+    const panel = mount(GatewayAddDevicePanel, {
+      props: { device: null, serverUrl: SERVER, prefill: null, account: 'me@example.test' },
+      attachTo: document.body,
+    });
+    mounted.push(panel);
+    await flushPromises();
+    await panel.find('[data-testid=gateway-add-device-id]').setValue('laptop-1');
+    await panel.find('[data-testid=gateway-add-user]').setValue('alexey');
+    await panel.find('[data-testid=gateway-add-pin]').setValue(KEYS['ed25519']!.line);
+    await panel.find('form').trigger('submit');
+    await flushPromises();
+    await panel.setProps({ account: 'other@example.test' });
+    save.resolve({ hostName: 'laptop-1', pairing: { serverUrl: SERVER, deviceId: 'laptop-1', fingerprint: KEYS['ed25519']!.fingerprint, pinKind: 'host-key', keyId: 'key-1' } });
+    await flushPromises();
+    expect(panel.emitted('saved')).toBeUndefined();
+    expect(panel.find('[data-testid=gateway-add-saved]').exists()).toBe(false);
+    expect(panel.find('[data-testid=gateway-add-connect]').exists()).toBe(false);
   });
 });
