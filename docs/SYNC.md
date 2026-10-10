@@ -102,10 +102,23 @@ Sync's job is to carry that property, not to understand it:
   update PocketShell), 4401 (sign-in refused), 4403
   (not shared with this account) and 4404 (unknown device) end the ladder
   after that attempt; 4408 (timeout), 4429 (quota) and 4503 (host offline)
-  back off within the ordinary retry bounds; any other code keeps the default.
-  The classified failure stays on `ConnectionSnapshot.gatewayFailure`
-  (`kind`, `closeCode`, `retryable`), so a UI can say "offline" rather than
-  "sign-in failed".
+  back off within the ordinary retry bounds. Only close codes 4000–4999 are
+  gateway verdicts: a remote 1000/1001/1011 close, an unlisted 4xxx code, or
+  any other code keeps the default.
+- Before asking the gateway, a platform may refuse a gateway dial itself with
+  a native code (Android `SshCapabilityPlugin`, pocketshell#3086). The same
+  matrix ends the ladder after that attempt for each, with its own advice
+  (core#47): `NOT_SIGNED_IN` (signed out — sign in) and
+  `GATEWAY_BROKER_SIGN_IN_REJECTED` (the token broker refused the sign-in —
+  sign in again) are `sign_in_required`; `GATEWAY_UNPAIRED` (no pairing, or a
+  pairing for a different SSH key — pair again) is `pairing_required`;
+  `GATEWAY_ACCOUNT_CHANGED` (the signed-in account changed mid-dial —
+  reconnect as the current account) is `account_changed`. Other native codes
+  (`GATEWAY_BROKER_UNAVAILABLE`, `SYNC_NETWORK_FAILED`, ...) keep the default.
+- The classified failure stays on `ConnectionSnapshot.gatewayFailure`
+  (`kind`, `code`, `closeCode` — null for a native refusal — `retryable`,
+  `userMessage`), so a UI can say "offline" rather than "sign-in failed" and
+  prompt for sign-in or pairing instead of retrying.
 
 ## Selection, merge, and conflicts
 

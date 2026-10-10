@@ -87,10 +87,12 @@ export interface ConnectionSnapshot {
   trustDecision: PendingHostKeyDecision | null;
   uncertainMutation: UncertainMutation | null;
   /**
-   * The gateway's classified refusal of the last gateway dial (#3086), so a
-   * UI can tell "host offline" from "sign-in refused". Null for ordinary SSH
-   * hosts, after a successful dial, and for failures outside the gateway
-   * close-code matrix.
+   * The classified refusal of the last gateway dial (#3086), so a UI can
+   * tell "host offline" from "sign-in refused", and prompt for sign-in
+   * (`sign_in_required`), pairing (`pairing_required`) or a reconnect as the
+   * current account (`account_changed`) instead of retrying (core#47). Null
+   * for ordinary SSH hosts, after a successful dial, and for failures outside
+   * the gateway dial matrix.
    */
   gatewayFailure?: GatewayDialFailure | null;
 }
@@ -1095,8 +1097,10 @@ export class ConnectionController {
   /**
    * A failed gateway dial. Never a trust prompt: a pin mismatch, a missing
    * pin-verification receipt and a refused marker all end as errors. Gateway
-   * close codes follow the {@link classifyGatewayDialFailure} matrix; every
-   * other failure keeps the ordinary retry default.
+   * close codes and the platform's native refusals (signed out, sign-in
+   * rejected, unpaired, account changed) follow the
+   * {@link classifyGatewayDialFailure} matrix; every other failure keeps the
+   * ordinary retry default.
    */
   private failGatewayDial(error: unknown, generationId: string): ConnectionActionResult<SshConnectionRef> {
     const sshError = readSshCapabilityError(error);

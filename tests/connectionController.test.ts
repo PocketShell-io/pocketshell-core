@@ -2187,6 +2187,8 @@ class GatewayCapability extends FakeCapability {
   closeCode: number | null = null;
   /** While true every gateway dial is refused as a pin mismatch, before userauth. */
   pinMismatch = false;
+  /** While set every gateway dial fails with this native code before any gateway verdict (core#47). */
+  nativeRefusal: { code: string; message: string } | null = null;
   readonly gatewayConnections: string[] = [];
   private gatewayOrdinal = 0;
 
@@ -2200,6 +2202,7 @@ class GatewayCapability extends FakeCapability {
         throw new SshCapabilityError(`gateway closed ${this.closeCode}`, GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: this.closeCode });
       }
       if (this.pinMismatch) throw new SshCapabilityError('Paired host key mismatch.', 'HOST_KEY_REJECTED', HOST_KEY);
+      if (this.nativeRefusal) throw new SshCapabilityError(this.nativeRefusal.message, this.nativeRefusal.code);
       const connectionId = `gateway-${++this.gatewayOrdinal}`;
       this.connections.set(connectionId, options.generationId);
       this.gatewayConnections.push(connectionId);
@@ -2343,7 +2346,7 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     capability.emitLost();
     await waitFor(() => controller.getSnapshot().phase === 'lost');
     expect(capability.connectCalls).toHaveLength(1 + 1);
-    expect(controller.getSnapshot().gatewayFailure).toEqual({ closeCode, kind, retryable: false, userMessage: advice });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code: GATEWAY_CLOSED_ERROR_CODE, closeCode, kind, retryable: false, userMessage: advice });
     expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${advice}`);
   });
 
@@ -2366,7 +2369,7 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     await waitFor(() => controller.getSnapshot().phase === 'lost');
     expect(capability.connectCalls).toHaveLength(1 + 3);
     expect(delays).toEqual([250, 500]);
-    expect(controller.getSnapshot().gatewayFailure).toEqual({ closeCode, kind, retryable: true, userMessage: advice });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code: GATEWAY_CLOSED_ERROR_CODE, closeCode, kind, retryable: true, userMessage: advice });
     expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 3 attempts. ${advice}`);
   });
 
@@ -2384,7 +2387,7 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(a.getSnapshot().error).not.toBe(b.getSnapshot().error);
   });
 
-  it.each([4000, 1006, 4999, '4401', undefined])('falls back to the ordinary retry default for unclassified gateway code %s', async (closeCode) => {
+  it.each([4000, 1000, 1001, 1006, 1011, 4999, 5401, '4401', undefined])('falls back to the ordinary retry default for unclassified gateway code %s', async (closeCode) => {
     const capability = new GatewayCapability();
     const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
     expect((await controller.connect(gatewayHost)).ok).toBe(true);
@@ -2397,6 +2400,76 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(capability.connectCalls).toHaveLength(1 + 3);
     expect(controller.getSnapshot().gatewayFailure).toBeNull();
     expect(controller.getSnapshot().error).toBe('Could not reconnect to 127.0.0.1 after 3 attempts.');
+  });
+
+  // core#47: the Android native refusals a gateway dial reports before any
+  // gateway verdict (pocketshell#3086 slice 2 @ 9218cdeeb). Each ends the
+  // ladder after one attempt and names what the user must do.
+  const NATIVE_REFUSALS = [
+    ['NOT_SIGNED_IN', 'Sign in with Google first.', 'sign_in_required',
+      'Sign in to your PocketShell account to connect through the gateway.'],
+    ['GATEWAY_BROKER_SIGN_IN_REJECTED', 'Your sign-in was not accepted for a gateway credential — sign in again.', 'sign_in_required',
+      'Your sign-in was not accepted for the gateway — sign out, sign in again, then reconnect.'],
+    ['GATEWAY_UNPAIRED', 'Pair this device with the host before connecting through the gateway.', 'pairing_required',
+      'This device is not paired with that host for this SSH key — pair it again, then reconnect.'],
+    ['GATEWAY_ACCOUNT_CHANGED', 'The signed-in account changed.', 'account_changed',
+      'The signed-in account changed while connecting — reconnect as the account signed in now.'],
+  ] as const;
+
+  it.each(NATIVE_REFUSALS)('stops the reconnect ladder after one attempt on native %s', async (code, message, kind, advice) => {
+    const capability = new GatewayCapability();
+    const delays: number[] = [];
+    const built = controllerFor(capability, trustStore(PIN), {
+      retryDelaysMs: [0, 250, 500, 750, 1000],
+      delay: async (ms) => { delays.push(ms); },
+    });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.nativeRefusal = { code, message };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    // Settle any stray timer: a reconnect loop would keep dialling.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(capability.connectCalls).toHaveLength(1 + 1);
+    expect(delays).toEqual([]);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', trustDecision: null });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+    expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${advice}`);
+  });
+
+  it.each(NATIVE_REFUSALS)('reports native %s on a first connect as one attempt with its kind and advice', async (code, message, kind, advice) => {
+    const capability = new GatewayCapability();
+    capability.nativeRefusal = { code, message };
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect(await controller.connect(gatewayHost)).toEqual({ ok: false, reason: 'failed', message: advice });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', error: advice, trustDecision: null });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+    expect(trusted.store.record).not.toHaveBeenCalled();
+  });
+
+  it('keeps sign-in needed, pairing needed and account changed distinguishable in the snapshot', async () => {
+    const kinds = new Set<string>();
+    for (const [code, message] of NATIVE_REFUSALS) {
+      const capability = new GatewayCapability();
+      capability.nativeRefusal = { code, message };
+      const { controller } = gatewayController(capability);
+      await controller.connect(gatewayHost);
+      kinds.add(controller.getSnapshot().gatewayFailure!.kind);
+    }
+    expect([...kinds].sort()).toEqual(['account_changed', 'pairing_required', 'sign_in_required']);
+  });
+
+  it('leaves an ordinary SSH dial that fails with a native gateway code on the ordinary default', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    await connectAndList(controller);
+    capability.refuseLogins = { code: 'NOT_SIGNED_IN', message: 'not a gateway dial' };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(controller.getSnapshot().gatewayFailure).toBeNull();
   });
 
   it('leaves ordinary SSH dials on a gateway-capable platform to TOFU, unchanged', async () => {
