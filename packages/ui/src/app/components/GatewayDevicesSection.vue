@@ -48,7 +48,9 @@ const failure = computed(() => gateway.failure);
 <template>
   <section class="gateway-devices" data-testid="gateway-devices" aria-labelledby="gateway-devices-label">
     <div class="gateway-head">
-      <h2 id="gateway-devices-label" class="group-label">PocketShell gateway</h2>
+      <!-- Its own class, not the picker's `.group-label`: the host groups and
+           this device source are different things (and are counted apart). -->
+      <h2 id="gateway-devices-label" class="gateway-label">PocketShell gateway</h2>
       <button
         class="icon-btn sm"
         :disabled="gateway.loading"
@@ -120,7 +122,7 @@ const failure = computed(() => gateway.failure);
   gap: var(--sp-2);
   margin: 0 0 var(--sp-2);
 }
-.gateway-head .group-label {
+.gateway-head .gateway-label {
   margin: 0;
   color: var(--fg-muted);
   font-size: var(--fs-200);
