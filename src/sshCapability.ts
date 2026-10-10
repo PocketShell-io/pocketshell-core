@@ -242,6 +242,16 @@ export interface SshCapability {
    * controller's default PTY bound applies (#2955).
    */
   readonly maxChannelsPerConnection?: number;
+  /**
+   * True only on a platform whose `connect()` dials an `SshHostTarget.gateway`
+   * through the PocketShell gateway, verifies the independently paired host
+   * key BEFORE userauth, returns `gatewayHostKeyVerified: true`, and reports
+   * gateway refusals as `GATEWAY_CLOSED` (gatewayTransport.ts). Absent means
+   * the controller refuses every gateway target before any effect, exactly
+   * as `unsupportedTransport(..., { gateway: false })` does at the platform
+   * boundary (#3059).
+   */
+  readonly gatewayTransport?: boolean;
   addListener(
     eventName: 'connectionState',
     listenerFunc: (event: SshConnectionStateEvent) => void,

@@ -1,4 +1,4 @@
-import { normalizeGatewayTarget } from './gatewayTransport';
+import { classifyGatewayDialFailure, normalizeGatewayTarget, type GatewayDialFailure } from './gatewayTransport';
 import { HostCliCore } from './hostCliCore';
 import { HostCliFailed, type HostCliExecOutcome, type HostCliTransport } from './hostCliCommon';
 import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
@@ -21,6 +21,7 @@ import {
   type SshPtyRef,
   type SshResourceSnapshot,
 } from './sshCapability';
+import { hasGatewayMarker, unsupportedTransport } from './sync';
 
 export type ConnectionPhase =
   | 'idle'
@@ -85,6 +86,13 @@ export interface ConnectionSnapshot {
   error: string | null;
   trustDecision: PendingHostKeyDecision | null;
   uncertainMutation: UncertainMutation | null;
+  /**
+   * The gateway's classified refusal of the last gateway dial (#3086), so a
+   * UI can tell "host offline" from "sign-in refused". Null for ordinary SSH
+   * hosts, after a successful dial, and for failures outside the gateway
+   * close-code matrix.
+   */
+  gatewayFailure: GatewayDialFailure | null;
 }
 
 export type TerminalOutputHandler = (
@@ -232,6 +240,9 @@ function isUncertainMutation(error: unknown): boolean {
     .includes(readSshCapabilityError(error).code);
 }
 
+/** A gateway dial the controller itself refused; never retried. */
+class GatewayRefusal extends Error {}
+
 function isRetryableDialError(error: unknown): boolean {
   const nativeError = readSshCapabilityError(error);
   return !['AUTH_FAILED', 'HOST_KEY_REJECTED', 'INVALID_ARGUMENT'].includes(nativeError.code);
@@ -273,6 +284,7 @@ export class ConnectionController {
     error: null,
     trustDecision: null,
     uncertainMutation: null,
+    gatewayFailure: null,
   };
   private host: SshHostTarget | null = null;
   private connection: SshConnectionRef | null = null;
@@ -376,6 +388,7 @@ export class ConnectionController {
         error: null,
         trustDecision: null,
         uncertainMutation: null,
+        gatewayFailure: null,
       });
       const result = await this.dial(host, intent, requestId);
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
@@ -953,21 +966,28 @@ export class ConnectionController {
     // colour this one's give-up message.
     this.lastDialRetryable = true;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
+    // A gateway dial (#3086) never uses TOFU: the platform must prove it
+    // checked the independently paired pin before userauth, every dial.
+    const gatewayDial = hasGatewayMarker(host);
+    let dialTarget: SshHostTarget = host;
     try {
-      const gatewayDial = Object.prototype.hasOwnProperty.call(host, 'gateway');
       if (gatewayDial) {
-        const gateway = normalizeGatewayTarget(host.gateway);
-        if (!gateway || Object.prototype.hasOwnProperty.call(host, 'link')
-          || gateway.serverUrl !== host.gateway?.serverUrl || gateway.deviceId !== host.gateway?.deviceId) {
-          throw new Error('The gateway target is malformed or conflicts with a link target.');
-        }
+        // The same refusal the platform boundary makes (#3059), so a marker
+        // that slipped past it still never degrades into an ordinary dial.
+        const decision = unsupportedTransport(
+          host,
+          { gateway: this.capability.gatewayTransport === true, link: false },
+          host.hostname,
+        );
+        if (decision.refused) throw new GatewayRefusal(decision.message);
+        dialTarget = { ...host, gateway: normalizeGatewayTarget(host.gateway)! };
       } else {
         expectedHostKey = (await this.trustStore.get(host.hostId))
           ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
       }
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const connected = await this.capability.connect({
-        ...host,
+        ...dialTarget,
         requestId,
         generationId,
         expectedHostKey,
@@ -988,7 +1008,7 @@ export class ConnectionController {
       }
       if (gatewayDial && connected.gatewayHostKeyVerified !== true) {
         await this.closeReturnedConnection(connected);
-        throw new Error('The gateway transport did not verify the paired SSH host key.');
+        throw new GatewayRefusal('The gateway connection did not prove the host key matched its pairing, so it was closed before use.');
       }
       const verdict = gatewayDial ? 'trusted' : verifyHostKeyTrustPin(expectedHostKey, presented);
       if (verdict !== 'trusted') {
@@ -1004,14 +1024,16 @@ export class ConnectionController {
         generationId,
         trustDecision: null,
         error: null,
+        gatewayFailure: null,
       });
       return { ok: true, value: this.connection };
     } catch (error) {
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+      if (gatewayDial) return this.failGatewayDial(error, generationId);
       const sshError = readSshCapabilityError(error);
       this.lastDialRetryable = isRetryableDialError(error);
       const presented = this.readPresentedKey(sshError.data);
-      if (!Object.prototype.hasOwnProperty.call(host, 'gateway') && sshError.code === 'HOST_KEY_REJECTED' && presented) {
+      if (sshError.code === 'HOST_KEY_REJECTED' && presented) {
         const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
         if (verdict !== 'trusted') {
           return this.presentHostKeyDecision(host, generationId, expectedHostKey, presented, verdict);
@@ -1021,6 +1043,23 @@ export class ConnectionController {
       this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null });
       return { ok: false, reason: 'failed', message };
     }
+  }
+
+  /**
+   * A failed gateway dial. Never a trust prompt: a pin mismatch, a missing
+   * pin-verification receipt and a refused marker all end as errors. Gateway
+   * close codes follow the {@link classifyGatewayDialFailure} matrix; every
+   * other failure keeps the ordinary retry default.
+   */
+  private failGatewayDial(error: unknown, generationId: string): ConnectionActionResult<SshConnectionRef> {
+    const sshError = readSshCapabilityError(error);
+    const gatewayFailure = classifyGatewayDialFailure(sshError.code, sshError.data);
+    this.lastDialRetryable = error instanceof GatewayRefusal
+      ? false
+      : gatewayFailure?.retryable ?? isRetryableDialError(error);
+    const message = gatewayFailure?.userMessage ?? sshError.message;
+    this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null, gatewayFailure });
+    return { ok: false, reason: 'failed', message };
   }
 
   private presentHostKeyDecision(
@@ -1312,7 +1351,7 @@ export class ConnectionController {
       // Name the dials actually made: a refused login (not retryable) ends
       // the ladder early, and says why.
       const attempts = this.snapshot.retryAttempt;
-      const refusal = !this.lastDialRetryable ? this.snapshot.error?.trim() : '';
+      const refusal = !this.lastDialRetryable || this.snapshot.gatewayFailure ? this.snapshot.error?.trim() : '';
       const cause = refusal ? ` ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}` : '';
       this.setSnapshot({
         phase: 'lost',

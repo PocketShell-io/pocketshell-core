@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GATEWAY_CLOSED_ERROR_CODE,
   GATEWAY_DEFAULT_SERVER_URL,
   GATEWAY_SSH_PATH_PREFIX,
   buildGatewayAuthFrame,
   classifyGatewayClose,
+  classifyGatewayDialFailure,
   gatewaySshUrl,
   hostKeyLineBlobB64,
   isValidGatewayDeviceId,
@@ -249,5 +251,27 @@ describe('the gateway field rides the sync payload', () => {
     const junk = { ...entry, gateway: { serverUrl: 42 } };
     const parsed = parseSyncPayload(serializeSyncPayload([junk as unknown as HostEntry]))[0]!;
     expect(normalizeGatewayTarget(parsed.gateway)).toBeNull();
+  });
+});
+
+describe('gateway dial failure matrix (pocketshell#3086)', () => {
+  it('classifies the documented close codes with retry and advice', () => {
+    const table = [
+      [4401, 'unauthorized', false], [4403, 'forbidden', false], [4404, 'not_found', false],
+      [4408, 'timeout', true], [4429, 'quota', true], [4503, 'host_offline', true],
+    ] as const;
+    for (const [closeCode, kind, retryable] of table) {
+      expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: closeCode })).toEqual({
+        closeCode, kind, retryable, userMessage: classifyGatewayClose(closeCode).userMessage,
+      });
+    }
+  });
+
+  it('returns null outside the matrix so the caller keeps its default', () => {
+    for (const data of [{ gatewayCloseCode: 4400 }, { gatewayCloseCode: 1006 }, { gatewayCloseCode: '4401' },
+      { gatewayCloseCode: 4401.5 }, {}]) {
+      expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, data)).toBeNull();
+    }
+    expect(classifyGatewayDialFailure('SSH_IO', { gatewayCloseCode: 4401 })).toBeNull();
   });
 });
