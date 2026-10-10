@@ -2560,6 +2560,124 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(trusted.store.get).not.toHaveBeenCalled();
   });
 
+  const REFUSED_WHILE_HELD = [
+    ['link and gateway', { ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['a null gateway marker', { ...host, gateway: null }, 'gateway-invalid'],
+  ] as const;
+
+  type HeldState = 'reconnecting' | 'background-past-grace' | 'released' | 'lost';
+
+  /**
+   * A gateway session with `alpha` attached, driven into a state where the
+   * controller holds the session but no transport. `recover` finishes the
+   * state's own way back (release the pending re-dial, return to foreground,
+   * or an explicit Retry).
+   */
+  async function heldGatewaySession(state: HeldState) {
+    const capability = new GatewayCapability();
+    let now = 1_000;
+    const trusted = trustStore(PIN);
+    const built = controllerFor(capability, trusted, { now: () => now, retryDelaysMs: state === 'lost' ? [0, 0] : [0] });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    const live = controller.getSnapshot();
+    let recover: () => Promise<void>;
+    let dialAttempts = () => capability.connectCalls.length;
+    if (state === 'reconnecting') {
+      const original = capability.connect;
+      const pending: Array<() => void> = [];
+      let wrapped = 0;
+      capability.connect = (options) => {
+        wrapped += 1;
+        return new Promise((resolve, reject) => { pending.push(() => { original(options).then(resolve, reject); }); });
+      };
+      dialAttempts = () => capability.connectCalls.length + pending.length;
+      capability.emitLost();
+      // The ladder's re-dial is on the wire (dial() reports it as `connecting`).
+      await waitFor(() => wrapped === 1);
+      expect(['reconnecting', 'connecting']).toContain(controller.getSnapshot().phase);
+      recover = async () => {
+        capability.connect = original;
+        for (const release of pending.splice(0)) release();
+        await waitFor(() => controller.getSnapshot().phase === 'live');
+      };
+    } else if (state === 'background-past-grace') {
+      await controller.enterBackground(10_000);
+      capability.emitGraceExpired({ connectionId: live.connectionId!, generationId: live.generationId! });
+      await waitFor(() => controller.getSnapshot().connectionId === null);
+      expect(controller.getSnapshot().phase).toBe('background');
+      recover = async () => {
+        now += 10_001;
+        await controller.returnToForeground();
+      };
+    } else if (state === 'released') {
+      await controller.enterBackground(10_000);
+      now += 10_001;
+      await controller.returnToForeground({ reconnect: false });
+      expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', error: RECONNECT_DECLINED_MESSAGE });
+      recover = async () => { expect((await controller.reconnect()).ok).toBe(true); };
+    } else {
+      capability.closeCode = 4503;
+      capability.emitLost();
+      await waitFor(() => controller.getSnapshot().phase === 'lost');
+      recover = async () => {
+        capability.closeCode = null;
+        expect((await controller.reconnect()).ok).toBe(true);
+      };
+    }
+    const held = controller.getSnapshot();
+    expect(held.connectionId).toBeNull();
+    expect(held.terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(held.selectedSession?.name).toBe('alpha');
+    return { capability, controller, trusted, held, recover, dialAttempts };
+  }
+
+  describe.each(['reconnecting', 'background-past-grace', 'released', 'lost'] as const)('held without a transport: %s', (state) => {
+    it.each(REFUSED_WHILE_HELD)('refuses %s with no effect, and the session still recovers alpha', async (_name, target, reason) => {
+      const { capability, controller, trusted, held, recover, dialAttempts } = await heldGatewaySession(state);
+      const attemptsBefore = dialAttempts();
+      const closedBefore = [...capability.closedConnectionIds];
+      const ptyClosesBefore = capability.closePtyCalls.length;
+      const ptyOpensBefore = capability.openPtyCalls.length;
+
+      const result = await controller.connect(target as unknown as SshHostTarget);
+      expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage(reason, '127.0.0.1') });
+
+      const after = controller.getSnapshot();
+      expect(after.phase).toBe(held.phase);
+      expect(after.error).toBe(held.error);
+      expect(after.connectionId).toBeNull();
+      expect(after.terminals.map((row) => row.name)).toEqual(['alpha']);
+      expect(after.selectedSession?.name).toBe('alpha');
+      expect(dialAttempts()).toBe(attemptsBefore);
+      expect(capability.closedConnectionIds).toEqual(closedBefore);
+      expect(capability.closePtyCalls).toHaveLength(ptyClosesBefore);
+      expect(trusted.store.get).not.toHaveBeenCalled();
+
+      // The held session's own recovery still runs and re-attaches alpha over the gateway.
+      await recover();
+      const recovered = controller.getSnapshot();
+      expect(recovered.phase).toBe('live');
+      expect(recovered.terminals.map((row) => row.name)).toEqual(['alpha']);
+      expect(recovered.selectedSession?.name).toBe('alpha');
+      expect(capability.openPtyCalls.length).toBeGreaterThan(ptyOpensBefore);
+      expect(capability.connectCalls.at(-1)).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    });
+  });
+
+  it('cold: a controller holding nothing still reports a refused gateway request in its snapshot', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    const message = transportRefusalMessage('link-and-gateway', '127.0.0.1');
+    const result = await controller.connect({ ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } });
+    expect(result).toEqual({ ok: false, reason: 'failed', message });
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', error: message, connectionId: null });
+    expect(capability.connectCalls).toHaveLength(0);
+  });
+
   it('ignores a GATEWAY_CLOSED shape from an ordinary SSH dial', async () => {
     const capability = new GatewayCapability();
     const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);

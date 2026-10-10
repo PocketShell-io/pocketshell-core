@@ -353,10 +353,13 @@ export class ConnectionController {
       };
     }
     // Admission before any effect (#3059, #3086): a gateway-marked request this
-    // platform must refuse never reuses, closes or supersedes the live
-    // connection or its terminals. With nothing live, the
-    // dial below makes the same refusal and reports it in the snapshot.
-    if (this.connection && hasGatewayMarker(host)) {
+    // platform must refuse never reuses, closes or supersedes what the
+    // controller holds — a live connection, or a session kept without one
+    // (reconnecting, background past grace, released, lost): its terminals,
+    // selection and any running reconnect stay exactly as they were. Only a
+    // controller holding nothing lets the dial below make the same refusal
+    // and report it in the snapshot.
+    if (hasGatewayMarker(host) && this.holdsSession()) {
       const admission = this.gatewayAdmission(host);
       if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
     }
@@ -1047,6 +1050,16 @@ export class ConnectionController {
       this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null });
       return { ok: false, reason: 'failed', message };
     }
+  }
+
+  /**
+   * Whether a refused request would have anything to disturb. `host` is set
+   * by the first connect and cleared only by `close()`, and it outlives the
+   * transport in every held state (reconnecting, background, released, lost),
+   * so it covers the connection, the terminals and a running reconnect.
+   */
+  private holdsSession(): boolean {
+    return this.host !== null;
   }
 
   /** The shared #3059 transport decision for a gateway-marked target on this platform. */

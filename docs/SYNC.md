@@ -82,10 +82,13 @@ Sync's job is to carry that property, not to understand it:
   pin was checked BEFORE userauth. A missing receipt closes the connection; a
   pin mismatch (`HOST_KEY_REJECTED`) is an error, never a trust prompt. Both
   end a reconnect ladder, and every re-dial needs the receipt again.
-  While a connection is live, `connect()` admits a gateway-marked request
-  through that same decision FIRST: a refused one (no capability, malformed,
-  `link` alongside) returns the shared message and leaves the live
-  connection and its terminals untouched. An admitted
+  Whenever the controller holds a session — a live connection, or one kept
+  without a transport while reconnecting, in background past grace, released
+  or lost — `connect()` admits a gateway-marked request through that same
+  decision FIRST: a refused one (no capability, malformed, `link` alongside)
+  returns the shared message and leaves the connection, terminals, selected
+  session and any running reconnect untouched. A controller holding nothing
+  refuses through the dial and reports it in the snapshot. An admitted
   request reuses the live connection only for the same transport: two
   ordinary targets, or two gateway targets with the same normalized route.
   Ordinary↔gateway or a different route
