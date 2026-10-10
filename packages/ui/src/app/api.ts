@@ -488,8 +488,15 @@ export interface PocketShellApi {
     // Every rejection carries the platform's error `code`
     // (classifyGatewayDirectoryFailure reads it).
     "gateway"?: {
-    /** The gateway the add flow starts from (core GATEWAY_DEFAULT_SERVER_URL). */
+    /** The gateway listed until `serverUrl` answers (core GATEWAY_DEFAULT_SERVER_URL). */
     "defaultServerUrl": string;
+    /**
+     * Optional: the gateway this platform actually lists and dials, from its
+     * own trusted configuration (Android: the native allowlist's build
+     * origin). The UI shows it and never lets anything widen it; a platform
+     * still refuses every other origin itself.
+     */
+    "serverUrl"?: () => Promise<string>;
     /**
      * The account's devices on `serverUrl`, from the gateway's own list:
      * presence is its last observation, never a probe of the device.

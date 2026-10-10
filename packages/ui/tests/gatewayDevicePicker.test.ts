@@ -206,6 +206,18 @@ describe('host picker — gateway device source', () => {
     expect(wrapper.find('[data-testid=gateway-add-device] input[inputmode=url]').exists()).toBe(false);
   });
 
+  it('lists the gateway the platform itself names (its trusted origin), not the default', async () => {
+    const api = platform();
+    const group = (await import('../src/app/ipc')).api.gateway as unknown as Record<string, unknown>;
+    group.serverUrl = vi.fn(async () => 'wss://localhost:3297');
+    const wrapper = await mountPicker();
+    expect(api.listDevices).toHaveBeenCalledWith('wss://localhost:3297');
+    expect(api.listDevices).not.toHaveBeenCalledWith(SERVER);
+    await wrapper.find('[data-testid=gateway-add-manual]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid=gateway-add-server]').text()).toContain('wss://localhost:3297');
+  });
+
   it('a device-list problem is not the picker\'s dial error line', async () => {
     platform({ devicesError: Object.assign(new Error('The gateway could not be reached.'), { code: 'GATEWAY_DEVICES_UNREACHABLE' }) });
     const wrapper = await mountPicker();

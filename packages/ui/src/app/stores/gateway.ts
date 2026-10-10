@@ -50,6 +50,13 @@ export const useGatewayStore = defineStore('gateway', () => {
     const mine = ++sequence;
     loading.value = true;
     try {
+      // The platform names its gateway; this tree only displays it.
+      if (typeof capability.serverUrl === 'function') {
+        const named = normalizeGatewayServerUrl(await capability.serverUrl());
+        if (mine !== sequence) return;
+        if (named === null) throw Object.assign(new Error('The platform named no usable gateway.'), { code: 'GATEWAY_DEVICES_INVALID_SERVER' });
+        serverUrl.value = named;
+      }
       const [listed, paired] = await Promise.all([capability.devices(serverUrl.value), capability.pairings()]);
       if (mine !== sequence) return;
       devices.value = listed;
