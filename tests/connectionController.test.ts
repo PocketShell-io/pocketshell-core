@@ -2331,6 +2331,7 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
   });
 
   it.each([
+    [4400, 'protocol', 'The gateway rejected the request — update PocketShell.'],
     [4401, 'unauthorized', 'Your sign-in expired — sign in again and retry.'],
     [4403, 'forbidden', 'This PocketShell account cannot reach that host.'],
     [4404, 'not_found', 'That host is not registered on the gateway.'],
@@ -2383,7 +2384,7 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(a.getSnapshot().error).not.toBe(b.getSnapshot().error);
   });
 
-  it.each([4400, 1006, 4999, '4401', undefined])('falls back to the ordinary retry default for unclassified gateway code %s', async (closeCode) => {
+  it.each([4000, 1006, 4999, '4401', undefined])('falls back to the ordinary retry default for unclassified gateway code %s', async (closeCode) => {
     const capability = new GatewayCapability();
     const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
     expect((await controller.connect(gatewayHost)).ok).toBe(true);

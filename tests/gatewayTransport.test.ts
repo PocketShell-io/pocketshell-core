@@ -257,7 +257,7 @@ describe('the gateway field rides the sync payload', () => {
 describe('gateway dial failure matrix (pocketshell#3086)', () => {
   it('classifies the documented close codes with retry and advice', () => {
     const table = [
-      [4401, 'unauthorized', false], [4403, 'forbidden', false], [4404, 'not_found', false],
+      [4400, 'protocol', false], [4401, 'unauthorized', false], [4403, 'forbidden', false], [4404, 'not_found', false],
       [4408, 'timeout', true], [4429, 'quota', true], [4503, 'host_offline', true],
     ] as const;
     for (const [closeCode, kind, retryable] of table) {
@@ -268,7 +268,7 @@ describe('gateway dial failure matrix (pocketshell#3086)', () => {
   });
 
   it('returns null outside the matrix so the caller keeps its default', () => {
-    for (const data of [{ gatewayCloseCode: 4400 }, { gatewayCloseCode: 1006 }, { gatewayCloseCode: '4401' },
+    for (const data of [{ gatewayCloseCode: 4000 }, { gatewayCloseCode: 1006 }, { gatewayCloseCode: '4401' },
       { gatewayCloseCode: 4401.5 }, {}]) {
       expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, data)).toBeNull();
     }

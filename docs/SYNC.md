@@ -85,7 +85,8 @@ Sync's job is to carry that property, not to understand it:
 - A platform reports a gateway refusal by rejecting `connect()` with code
   `GATEWAY_CLOSED` and `data.gatewayCloseCode` (the WS close code; an `error`
   frame is mapped to its documented code). `classifyGatewayDialFailure` in
-  `src/gatewayTransport.ts` is the retry matrix: 4401 (sign-in refused), 4403
+  `src/gatewayTransport.ts` is the retry matrix: 4400 (malformed request —
+  update PocketShell), 4401 (sign-in refused), 4403
   (not shared with this account) and 4404 (unknown device) end the ladder
   after that attempt; 4408 (timeout), 4429 (quota) and 4503 (host offline)
   back off within the ordinary retry bounds; any other code keeps the default.

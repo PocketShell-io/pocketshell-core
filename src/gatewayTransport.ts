@@ -234,7 +234,7 @@ export type GatewayCloseKind =
 export function classifyGatewayClose(code: number): { kind: GatewayCloseKind; userMessage: string } {
   switch (code) {
     case 4400:
-      return { kind: 'protocol', userMessage: 'The gateway rejected this connection as malformed.' };
+      return { kind: 'protocol', userMessage: 'The gateway rejected the request — update PocketShell.' };
     case 4401:
       return { kind: 'unauthorized', userMessage: 'Your sign-in expired — sign in again and retry.' };
     case 4403:
@@ -270,7 +270,7 @@ export function classifyGatewayClose(code: number): { kind: GatewayCloseKind; us
 export const GATEWAY_CLOSED_ERROR_CODE = 'GATEWAY_CLOSED';
 
 /** The gateway close codes ConnectionController classifies. */
-export type GatewayDialFailureKind = 'unauthorized' | 'forbidden' | 'not_found' | 'timeout' | 'quota' | 'host_offline';
+export type GatewayDialFailureKind = 'protocol' | 'unauthorized' | 'forbidden' | 'not_found' | 'timeout' | 'quota' | 'host_offline';
 
 /**
  * A classified gateway refusal. `retryable: false` ends the reconnect ladder
@@ -286,6 +286,7 @@ export interface GatewayDialFailure {
 }
 
 const GATEWAY_DIAL_RETRY: Readonly<Record<number, { kind: GatewayDialFailureKind; retryable: boolean }>> = {
+  4400: { kind: 'protocol', retryable: false },
   4401: { kind: 'unauthorized', retryable: false },
   4403: { kind: 'forbidden', retryable: false },
   4404: { kind: 'not_found', retryable: false },
@@ -296,7 +297,7 @@ const GATEWAY_DIAL_RETRY: Readonly<Record<number, { kind: GatewayDialFailureKind
 
 /**
  * Classify a rejected gateway dial. Null when the error is not a gateway
- * refusal, or carries a close code outside the matrix (4400, 1006, a future
+ * refusal, or carries a close code outside the matrix (1006, a future
  * code): the caller then applies its ordinary default for that error.
  */
 export function classifyGatewayDialFailure(code: string, data: Record<string, unknown>): GatewayDialFailure | null {
