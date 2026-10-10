@@ -261,52 +261,136 @@ export function classifyGatewayClose(code: number): { kind: GatewayCloseKind; us
 // refusal — a WS close during the handshake, or an `error` frame the platform
 // maps to its documented close code — by rejecting `connect()` with an
 // SshCapabilityError whose `code` is GATEWAY_CLOSED_ERROR_CODE and whose
-// `data.gatewayCloseCode` is the integer close code. ConnectionController
-// (the one dial/reconnect owner) reads it through classifyGatewayDialFailure
-// and decides retry and advice from the matrix below; no platform decides
-// either on its own.
+// `data.gatewayCloseCode` is the integer close code. Before any gateway
+// verdict the platform may also refuse the dial itself with one of the native
+// codes in GATEWAY_NATIVE_REFUSALS (signed out, sign-in rejected by the token
+// broker, no pairing, account switched mid-dial — core#47).
+// ConnectionController (the one dial/reconnect owner) reads both through
+// classifyGatewayDialFailure and decides retry and advice from the single
+// matrix below; no platform decides either on its own.
 
 /** The SshCapabilityError `code` a gateway refusal is reported with. */
 export const GATEWAY_CLOSED_ERROR_CODE = 'GATEWAY_CLOSED';
 
-/** The gateway close codes ConnectionController classifies. */
-export type GatewayDialFailureKind = 'protocol' | 'unauthorized' | 'forbidden' | 'not_found' | 'timeout' | 'quota' | 'host_offline';
+/** Only application close codes in this range are gateway verdicts; a remote
+ * 1000/1001/1011 close (or anything else) is not, and keeps the default. */
+export const GATEWAY_VERDICT_CLOSE_CODE_MIN = 4000;
+export const GATEWAY_VERDICT_CLOSE_CODE_MAX = 4999;
+
+/** Whether a WS close code can carry a gateway verdict (4000–4999). */
+export function isGatewayVerdictCloseCode(closeCode: number): boolean {
+  return Number.isInteger(closeCode)
+    && closeCode >= GATEWAY_VERDICT_CLOSE_CODE_MIN
+    && closeCode <= GATEWAY_VERDICT_CLOSE_CODE_MAX;
+}
 
 /**
- * A classified gateway refusal. `retryable: false` ends the reconnect ladder
- * after that attempt; `retryable: true` backs off within the controller's
- * ordinary retry bounds. `kind` is what a UI reads to say "offline" rather
- * than "sign-in failed".
+ * What a classified gateway dial failure means for the user. The close-code
+ * kinds come from the gateway; `sign_in_required`, `pairing_required` and
+ * `account_changed` come from the platform's own refusal before the gateway
+ * was asked, so a UI can prompt for sign-in or pairing instead of retrying.
+ */
+export type GatewayDialFailureKind =
+  | 'protocol'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'not_found'
+  | 'timeout'
+  | 'quota'
+  | 'host_offline'
+  | 'sign_in_required'
+  | 'pairing_required'
+  | 'account_changed';
+
+/**
+ * A classified gateway dial failure. `retryable: false` ends the reconnect
+ * ladder after that attempt; `retryable: true` backs off within the
+ * controller's ordinary retry bounds. `kind` is what a UI reads to say
+ * "offline" rather than "sign-in failed". `code` is the native error code;
+ * `closeCode` is the gateway close code, null for a native refusal.
  */
 export interface GatewayDialFailure {
-  closeCode: number;
+  code: string;
+  closeCode: number | null;
   kind: GatewayDialFailureKind;
   retryable: boolean;
   userMessage: string;
 }
 
-const GATEWAY_DIAL_RETRY: Readonly<Record<number, { kind: GatewayDialFailureKind; retryable: boolean }>> = {
-  4400: { kind: 'protocol', retryable: false },
-  4401: { kind: 'unauthorized', retryable: false },
-  4403: { kind: 'forbidden', retryable: false },
-  4404: { kind: 'not_found', retryable: false },
-  4408: { kind: 'timeout', retryable: true },
-  4429: { kind: 'quota', retryable: true },
-  4503: { kind: 'host_offline', retryable: true },
+interface GatewayDialMatrixEntry {
+  kind: GatewayDialFailureKind;
+  retryable: boolean;
+  /** Core-owned advice; close-code entries take theirs from classifyGatewayClose. */
+  userMessage?: string;
+}
+
+/** The one gateway dial retry matrix: gateway close codes and native refusals. */
+const GATEWAY_DIAL_MATRIX: {
+  readonly closeCodes: Readonly<Record<number, GatewayDialMatrixEntry>>;
+  readonly nativeCodes: Readonly<Record<string, Required<GatewayDialMatrixEntry>>>;
+} = {
+  closeCodes: {
+    4400: { kind: 'protocol', retryable: false },
+    4401: { kind: 'unauthorized', retryable: false },
+    4403: { kind: 'forbidden', retryable: false },
+    4404: { kind: 'not_found', retryable: false },
+    4408: { kind: 'timeout', retryable: true },
+    4429: { kind: 'quota', retryable: true },
+    4503: { kind: 'host_offline', retryable: true },
+  },
+  // Android SshCapabilityPlugin (pocketshell#3086 slice 2): SyncAuthException
+  // NOT_SIGNED_IN, GatewayTokenBroker SIGN_IN_REJECTED / ACCOUNT_CHANGED, and
+  // the plan-time GATEWAY_UNPAIRED. None heals by redialling.
+  nativeCodes: {
+    NOT_SIGNED_IN: {
+      kind: 'sign_in_required',
+      retryable: false,
+      userMessage: 'Sign in to your PocketShell account to connect through the gateway.',
+    },
+    GATEWAY_BROKER_SIGN_IN_REJECTED: {
+      kind: 'sign_in_required',
+      retryable: false,
+      userMessage: 'Your sign-in was not accepted for the gateway — sign out, sign in again, then reconnect.',
+    },
+    GATEWAY_UNPAIRED: {
+      kind: 'pairing_required',
+      retryable: false,
+      userMessage: 'This device is not paired with that host for this SSH key — pair it again, then reconnect.',
+    },
+    GATEWAY_ACCOUNT_CHANGED: {
+      kind: 'account_changed',
+      retryable: false,
+      userMessage: 'The signed-in account changed while connecting — reconnect as the account signed in now.',
+    },
+  },
 };
 
+/** The native codes a platform refuses a gateway dial with before any gateway verdict. */
+export const GATEWAY_NATIVE_REFUSAL_CODES: readonly string[] = Object.freeze(Object.keys(GATEWAY_DIAL_MATRIX.nativeCodes));
+
 /**
- * Classify a rejected gateway dial. Null when the error is not a gateway
- * refusal, or carries a close code outside the matrix (1006, a future
- * code): the caller then applies its ordinary default for that error.
+ * Classify a rejected gateway dial. Null when the error is neither a gateway
+ * verdict nor a known native refusal, or carries a close code outside the
+ * matrix (outside 4000–4999, or a future code): the caller then applies its
+ * ordinary default for that error.
  */
 export function classifyGatewayDialFailure(code: string, data: Record<string, unknown>): GatewayDialFailure | null {
+  if (Object.prototype.hasOwnProperty.call(GATEWAY_DIAL_MATRIX.nativeCodes, code)) {
+    const native = GATEWAY_DIAL_MATRIX.nativeCodes[code]!;
+    return { code, closeCode: null, kind: native.kind, retryable: native.retryable, userMessage: native.userMessage };
+  }
   if (code !== GATEWAY_CLOSED_ERROR_CODE) return null;
   const closeCode = data['gatewayCloseCode'];
-  if (typeof closeCode !== 'number' || !Number.isInteger(closeCode)) return null;
-  const entry = GATEWAY_DIAL_RETRY[closeCode];
+  if (typeof closeCode !== 'number' || !isGatewayVerdictCloseCode(closeCode)) return null;
+  const entry = GATEWAY_DIAL_MATRIX.closeCodes[closeCode];
   if (entry === undefined) return null;
-  return { closeCode, kind: entry.kind, retryable: entry.retryable, userMessage: classifyGatewayClose(closeCode).userMessage };
+  return {
+    code,
+    closeCode,
+    kind: entry.kind,
+    retryable: entry.retryable,
+    userMessage: entry.userMessage ?? classifyGatewayClose(closeCode).userMessage,
+  };
 }
 
 // --- fingerprint + host-key trust policy ---------------------------------------
