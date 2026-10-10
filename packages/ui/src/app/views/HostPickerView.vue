@@ -28,7 +28,7 @@
 //   - A FAILED AUTO-CONNECT LEAVES THE DEFAULT ALONE. The error is shown on the
 //     picker; the setting stays set, because a host being down is not a reason
 //     to forget which host the user wants.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
@@ -45,15 +45,29 @@ import {
 } from '../autoConnect';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
+import GatewayDevicesSection from '../components/GatewayDevicesSection.vue';
+import GatewayAddDevicePanel from '../components/GatewayAddDevicePanel.vue';
+import GatewayDialErrorActions from '../components/GatewayDialErrorActions.vue';
+import HostRowDetail from '../components/HostRowDetail.vue';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
-import { hostEntryId, type HostEntry } from '@pocketshell/core';
+import { useGatewayPickerSource } from '../useGatewayPickerSource';
+import { hostEntryId, type GatewayDialFailureKind, type HostEntry } from '@pocketshell/core';
 
 const router = useRouter();
 const connection = useConnectionStore();
 const hostList = useHostsStore();
 const sync = useSyncStore();
 const connectError = ref<string | null>(null);
+/**
+ * Why {@link connectError}'s dial failed, when it was a gateway dial core
+ * classified: the error line then carries the matching next step (sign in,
+ * pair the device, connect again as the current account) and an offline
+ * device reads as offline — never as a failed login.
+ */
+const connectErrorKind = ref<GatewayDialFailureKind | null>(null);
+/** The host whose dial produced {@link connectError}, for its follow-up action. */
+const failedHost = shallowRef<HostEntry | null>(null);
 /** The dialling host's display name, for the banner. */
 const connectingTo = ref<string | null>(null);
 /** The dialling host's identity ({@link hostEntryId}), for the row it marks. */
@@ -198,6 +212,28 @@ function onAccountAction(): void {
   void api.win.openAccount();
 }
 
+/**
+ * The gateway device source and the add/pair flow (useGatewayPickerSource):
+ * both follow the signed-in account; the picker only supplies its hosts and
+ * its one dialling path.
+ */
+const {
+  gateway,
+  addingDevice,
+  listedHosts,
+  hostPresence,
+  openAddDevice,
+  openRepair,
+  onDeviceSaved,
+  onConnectAdded,
+} = useGatewayPickerSource({
+  account: computed(() => (accountSignedIn.value ? sync.status?.email ?? '' : null)),
+  listedHosts: computed(() => [...connection.hosts, ...accountOnlyHosts.value]),
+  reloadHosts: () => connection.loadHosts(),
+  connect: (host) => onConnect(host),
+  hostByName: (name) => connection.hosts.find((candidate) => candidate.name === name),
+});
+
 /** Open another workspace window on this platform (see {@link canOpenNewWindow}). */
 function onNewWindow(): void {
   void api.win.openNewWindow?.();
@@ -287,6 +323,7 @@ async function onReloadHosts(): Promise<void> {
   hostReloadError.value = null;
   try {
     await connection.loadHosts();
+    if (gateway.available && accountSignedIn.value) void gateway.load();
   } catch (error) {
     const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
     hostReloadError.value = `Could not reload ${sourceName}${detail}`;
@@ -339,6 +376,8 @@ async function onDisconnect(): Promise<void> {
  */
 async function dial(host: HostEntry): Promise<boolean> {
   connectError.value = null;
+  connectErrorKind.value = null;
+  failedHost.value = null;
   connectingTo.value = host.name;
   connectingKey.value = hostEntryId(host);
   const token = { cancelled: false };
@@ -352,7 +391,11 @@ async function dial(host: HostEntry): Promise<boolean> {
     activeDial = null;
     connectingTo.value = null;
     connectingKey.value = null;
-    if (!ok && !token.cancelled) connectError.value = connection.error ?? 'Connection failed';
+    if (!ok && !token.cancelled) {
+      connectError.value = connection.error ?? 'Connection failed';
+      connectErrorKind.value = connection.errorKind;
+      failedHost.value = host;
+    }
   }
   if (token.cancelled) {
     // The dial won the race with the Cancel click. Hang up rather than leaving
@@ -532,12 +575,9 @@ function onClearDefault(): void {
                 }"
               />
               <span class="host-name">{{ host.name }}</span>
-              <!-- A local host dials nothing, so the user@host:port spelling
-                   would read as a bug ("self@self:0"). One honest line instead. -->
-              <span v-if="host.local" class="host-detail">This computer — local, no SSH</span>
-              <span v-else class="host-detail">
-                {{ host.user || '(default user)' }}@{{ host.hostname }}:{{ host.port }}
-              </span>
+              <!-- local / gateway / plain detail, then a gateway host's
+                   presence chip — one chain, in its own component. -->
+              <HostRowDetail :host="host" :presence="host.gateway ? hostPresence(host) : null" />
               <span v-if="connectingKey === hostEntryId(host)" class="muted">connecting…</span>
               <!-- A list row that goes somewhere gets a chevron, not an arrow
                    (VS Code / macOS convention). Kept on the connected row too:
@@ -592,7 +632,29 @@ function onClearDefault(): void {
           </button>
         </p>
       </template>
-      <p v-if="connectError" class="error">{{ connectError }}</p>
+      <!-- The gateway device source: only where the platform provides it,
+           and only for a signed-in account (the list is the account's). -->
+      <GatewayDevicesSection
+        v-if="gateway.available && accountSignedIn"
+        :hosts="listedHosts"
+        :busy="connectingTo !== null"
+        @add="openAddDevice"
+        @sign-in="onAccountAction"
+      />
+      <p v-if="connectError" class="error" :data-kind="connectErrorKind ?? undefined">{{ connectError }}</p>
+      <!-- The next step for a classified gateway refusal, beside (not inside)
+           the message: an offline host is offline, a missing pairing asks to
+           pair, a sign-in problem asks to sign in. -->
+      <GatewayDialErrorActions
+        v-if="connectError && connectErrorKind"
+        :kind="connectErrorKind"
+        :host="failedHost"
+        :gateway-available="gateway.available"
+        @sign-in="onAccountAction"
+        @repair="openRepair"
+        @connect-again="onConnect"
+        @reload-devices="gateway.load()"
+      />
     </main>
 
     <!-- Settings remains reachable here with no connection: default-host is
@@ -600,6 +662,23 @@ function onClearDefault(): void {
          SSH alias before editing its instance-specific roots. -->
     <OverlayPanel v-if="settingsOpen" title="Settings" size="md" @close="settingsOpen = false">
       <SettingsView />
+    </OverlayPanel>
+    <OverlayPanel
+      v-if="addingDevice"
+      :title="addingDevice.prefill ? 'Pair a gateway device' : 'Add a gateway device'"
+      size="md"
+      @close="addingDevice = null"
+    >
+      <GatewayAddDevicePanel
+        :device="addingDevice.device"
+        :prefill="addingDevice.prefill"
+        :account="addingDevice.account"
+        :server-url="gateway.serverUrl"
+        @saved="onDeviceSaved"
+        @connect="onConnectAdded"
+        @sign-in="onAccountAction"
+        @close="addingDevice = null"
+      />
     </OverlayPanel>
   </div>
 </template>
@@ -828,12 +907,6 @@ h1 {
   font-size: var(--fs-400);
   line-height: var(--lh-400);
   font-weight: var(--fw-semibold);
-}
-.host-detail {
-  color: var(--fg-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-200);
-  flex: 1;
 }
 /* A 2px nudge on row hover — the smallest possible "this row goes somewhere"
    cue. Colour and transform only; the row's own tint does the rest. */

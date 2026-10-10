@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { formatBytes } from '@pocketshell/core';
 import { computed, ref } from 'vue';
 import { api } from '../ipc';
+import { fileTransportCapabilities } from '../platformCapabilities';
 import type { ConnectionId } from '@pocketshell/core';
 import type { DirEntry } from '@pocketshell/core';
 // The token NAMES only. previewStyle.ts imports nothing, so this costs the
@@ -954,6 +955,12 @@ export const useFilesStore = defineStore('files', () => {
         showBinary(named, errorMessage(e));
         return;
       }
+      // The size was unknown and the platform stopped at its cap: the read
+      // may be cut short, and a cut file must not open as if complete.
+      if (size < 0 && fileTransportCapabilities().maxReadBytes !== null && bytes.length >= cap) {
+        showBinary(named, `${describeKind(named)} could not be confirmed under the ${formatBytes(cap)} limit for opening it here.`);
+        return;
+      }
       openSize.value = bytes.length;
 
       const cls = classifyBytes(named, bytes);
@@ -1050,7 +1057,18 @@ export const useFilesStore = defineStore('files', () => {
     dirty.value = false;
   }
 
+  /**
+   * The ceiling for one open: the kind's own, and never more than the
+   * platform reads in one go (`sftp.capabilities.maxReadBytes`) — a file
+   * over it is "over the limit", never opened as a silently cut copy.
+   */
   function capFor(kind: FileKind): number {
+    const platformMax = fileTransportCapabilities().maxReadBytes;
+    const own = kindCap(kind);
+    return platformMax === null ? own : Math.min(own, platformMax);
+  }
+
+  function kindCap(kind: FileKind): number {
     if (kind === 'audio') return MAX_MEDIA_BYTES;
     if (kind === 'image' || kind === 'pdf') return MAX_DOCUMENT_BYTES;
     // `html` and `markdown` share the EDITOR's ceiling, not a viewer's, and
@@ -1072,6 +1090,8 @@ export const useFilesStore = defineStore('files', () => {
    */
   async function save(connectionId: ConnectionId): Promise<boolean> {
     if (!openPath.value || !isEditable(openMode.value)) return false;
+    // A read-only platform has no Save to press; a chord must not reach it either.
+    if (!fileTransportCapabilities().write) return false;
     saving.value = true;
     // A new attempt retires the last attempt's verdict: leaving the old
     // message up while "Saving…" runs would show a failure that has not

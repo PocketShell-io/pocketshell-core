@@ -20,6 +20,7 @@ export * from './syncRound';
 export * from './sshConfigCore';
 export * from './knownHostsCore';
 export * from './gatewayTransport';
+export * from './gatewayDevices';
 export * from './osc52';
 export * from './sftpCore';
 export * from './hostProbeParsers';

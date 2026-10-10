@@ -6,6 +6,7 @@ import { normaliseTypedPath } from './remotePaths';
 import { listStep, type ListStepKey } from '@pocketshell/core/shared/listNavigation';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
+import { fileTransportCapabilities } from './platformCapabilities';
 import type { DirEntry } from '@pocketshell/core';
 import type { useFilesStore } from './stores/files';
 import type { useSettingsStore } from './stores/settings';
@@ -299,6 +300,8 @@ export function useFileTreeModel(deps: FileTreeModelDeps): {
    */
   function onListContextMenu(e: MouseEvent): void {
     if ((e.target as HTMLElement | null)?.closest?.('.entry')) return;
+    // Its only items create files: none on a platform that cannot write.
+    if (!fileTransportCapabilities().write) return;
     createMenu.value = { anchor: pointAnchor(e.clientX, e.clientY) };
   }
 

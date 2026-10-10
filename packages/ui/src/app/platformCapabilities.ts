@@ -74,3 +74,54 @@ export async function listDiagnosticReports(group: DiagnosticsGroup): Promise<Di
   if (!Array.isArray(answer)) return null;
   return answer.filter(isReport);
 }
+
+type GatewayGroup = NonNullable<PocketShellApi['gateway']>;
+
+/**
+ * The gateway-devices group (#3086) when the platform really provides it:
+ * every method callable and a usable default server. Absent on a platform
+ * that cannot dial through the gateway or does not keep the gateway
+ * credential and pins itself — the picker then shows no device source.
+ */
+export function gatewayCapability(): GatewayGroup | null {
+  try {
+    const group = api.gateway;
+    if (!group || typeof group.defaultServerUrl !== 'string' || group.defaultServerUrl === '') return null;
+    const methods: (keyof GatewayGroup)[] = ['devices', 'pairings', 'clientKeys', 'addDevice'];
+    return methods.every((name) => typeof group[name] === 'function') ? group : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Files pane's view of the platform's file transport (see `sftp.capabilities`). */
+export interface FileTransportCapabilities {
+  write: boolean;
+  download: boolean;
+  readOnlyReason: string | null;
+  /** The largest file the platform reads in one open, or null for no platform cap. */
+  maxReadBytes: number | null;
+}
+
+/**
+ * Read `sftp.capabilities` defensively: absent (or unreadable) means full
+ * read/write. A declared cap must be a positive integer to count.
+ */
+export function fileTransportCapabilities(): FileTransportCapabilities {
+  try {
+    const declared: unknown = api.sftp?.capabilities;
+    if (typeof declared !== 'object' || declared === null) {
+      return { write: true, download: true, readOnlyReason: null, maxReadBytes: null };
+    }
+    const d = declared as Record<string, unknown>;
+    const max = d.maxReadBytes;
+    return {
+      write: d.write !== false,
+      download: d.download !== false,
+      readOnlyReason: typeof d.readOnlyReason === 'string' && d.readOnlyReason.trim() !== '' ? d.readOnlyReason : null,
+      maxReadBytes: typeof max === 'number' && Number.isSafeInteger(max) && max > 0 ? max : null,
+    };
+  } catch {
+    return { write: true, download: true, readOnlyReason: null, maxReadBytes: null };
+  }
+}

@@ -13,6 +13,7 @@ import { useFilesStore } from '../stores/files';
 import { formatBytes } from '@pocketshell/core';
 import { useSettingsStore } from '../stores/settings';
 import { splitLabel } from '../sessionGrouping';
+import { fileTransportCapabilities } from '../platformCapabilities';
 import { buildCrumbs, type Crumb } from '../fileListView';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
 import type { DirEntry } from '@pocketshell/core';
@@ -59,6 +60,8 @@ const props = defineProps<{
 
 const connection = useConnectionStore();
 const files = useFilesStore();
+/** What the platform's file transport can do: create, delete and download only where wired. */
+const transport = fileTransportCapabilities();
 const settings = useSettingsStore();
 const connId = computed(() => connection.connectionId);
 
@@ -552,7 +555,7 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
           >
             <AppIcon name="search" :size="14" />
           </button>
-          <button ref="plusBtn" class="icon-btn sm" title="New file or folder" @click="toggleCreateMenu">
+          <button v-if="transport.write" ref="plusBtn" class="icon-btn sm" title="New file or folder" @click="toggleCreateMenu">
             <AppIcon name="plus" :size="14" />
           </button>
           <!-- The one-jump way back out of a deep tree, which walking `..`
@@ -717,7 +720,7 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
         <!-- Download is a FILE action. A directory would need a recursive
              transfer the SFTP layer does not offer, and an item that silently
              does nothing is worse than one that is not there. -->
-        <li v-if="menu.entry.type !== 'dir'">
+        <li v-if="menu.entry.type !== 'dir' && transport.download">
           <button class="menu-item" @click="downloadEntry(menu.entry)">
             <AppIcon name="download" :size="14" />
             Save to this computer…
@@ -727,8 +730,8 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
              seat the folder row's Stop takes in the session panel. The `…`
              is the app's convention for "this asks first", and the question
              is armed here and asked in the sheet below, never skipped. -->
-        <li class="menu-sep" />
-        <li>
+        <li v-if="transport.write" class="menu-sep" />
+        <li v-if="transport.write">
           <button class="menu-item danger" @click="askDelete(menu.entry)">
             <AppIcon name="trash-2" :size="14" />
             Delete…
