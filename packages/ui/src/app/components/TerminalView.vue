@@ -59,7 +59,8 @@ import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks'
 import { PathHighlighter } from '../terminalPathHighlights';
 import { decodeOsc52SetClipboard } from '@pocketshell/core';
 import { forceLocalMouseSelection } from '../terminalMouseSelection';
-import { captureChord } from '../terminalCapture';
+import { captureChord, captureTerminalText, type CaptureScope } from '../terminalCapture';
+import { copyToClipboard, pasteFromClipboard } from '../terminalClipboard';
 import { useSettingsStore } from '../stores/settings';
 import { resolveMonoStack } from '@ui/fonts';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
@@ -288,38 +289,11 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
 };
 
 // ---------------------------------------------------------------------------
-// Clipboard
+// Clipboard — the ROUTES live in terminalClipboard.ts (a design-gate payment,
+// the way useQuickActions left HostWorkspaceView); what fires each one —
+// mouse-up copy, right-click paste, the chords, the capture button — stays
+// here, because the when is a pane decision and the how is not.
 // ---------------------------------------------------------------------------
-
-/** Copy `text` to the system clipboard. Silent on failure — never throws. */
-async function copyToClipboard(text: string): Promise<void> {
-  if (!text) return; // a bare click clears the selection; don't blank the clipboard
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Clipboard permission denied / API unavailable. Nothing useful to do
-    // from the renderer; the selection is still there for a manual Ctrl-C.
-  }
-}
-
-/**
- * Read the system clipboard and feed it to the shell as pasted input.
- *
- * One caller left: the right-click (`onTerminalContextMenu`). Both paste CHORDS
- * go to the composer now, so this is the whole of the shell's paste — see the
- * chord branch in `onCustomKey` for why that is the split.
- */
-async function pasteFromClipboard(): Promise<void> {
-  clearPrefix();
-  if (!term) return;
-  try {
-    const text = await navigator.clipboard.readText();
-    if (text) term.paste(text);
-  } catch {
-    // Same as above: degrade quietly. Ctrl-V still works via xterm's own
-    // handling of the browser `paste` event.
-  }
-}
 
 /**
  * Arms the mouse-up copy. Bound in the CAPTURE phase (see the addEventListener
@@ -374,7 +348,11 @@ function onDocumentMouseUp(): void {
 
 function onTerminalContextMenu(e: MouseEvent): void {
   e.preventDefault();
-  void pasteFromClipboard();
+  // The prefix fence clears BEFORE the read, exactly as the pre-extraction
+  // helper ordered it — the receipt must be gone before the paste's bytes land.
+  clearPrefix();
+  const t = term;
+  if (t) void pasteFromClipboard((text) => t.paste(text));
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +852,15 @@ function resyncDisplay(): void {
   pane.resyncDisplay();
 }
 
-defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput });
+/**
+ * The tab bar's capture button (WorkspaceTabBar's `copyScreen`): this pane's
+ * text, the scope chosen there — the screen; the buffer stays the chord's.
+ */
+function capture(scope: CaptureScope): void {
+  if (term) void copyToClipboard(captureTerminalText(term, scope));
+}
+
+defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, capture });
 </script>
 
 <template>

@@ -1,9 +1,12 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { agentMark } from '@pocketshell/core/shared/agentBadge';
 import { applyTabOrder, buildWorkspaceTabs, pushMru, tabAfterClose, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
+import { chordsFor, formatChord } from '@pocketshell/core/shared/shortcuts';
 import type { SessionSummary } from '@pocketshell/core';
 import type { useFilesStore } from './stores/files';
 import type { useSessionsStore } from './stores/sessions';
+import { useSettingsStore } from './stores/settings';
+import type { CaptureScope } from './terminalCapture';
 import { upsertPane, type SessionPaneRecord } from './sessionPanes';
 import { sessionIdentityKey } from './sessionIdentity';
 import {
@@ -28,6 +31,8 @@ export interface TerminalPane {
   resyncDisplay: () => void;
   /** Bytes into this pane's shell, exactly as typed — see TerminalView's `sendInput`. */
   sendInput: (data: string) => void;
+  /** The pane's text as text — see TerminalView's `capture`. */
+  capture: (scope: CaptureScope) => void;
 }
 
 export interface WorkspaceTabsDeps {
@@ -79,6 +84,12 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
   identityFor: (name: string, like?: string) => string;
   terminalRefs: Map<string, TerminalPane>;
   setTerminalRef: (identity: string, el: unknown) => void;
+  /** Whether the bar's capture button shows: the front tab has a pane under it. */
+  captureable: ComputedRef<boolean>;
+  /** The capture button's tooltip — the registry's chord, so a rebind moves it too. */
+  captureTitle: ComputedRef<string>;
+  /** The capture button's verb: the pane in front, onto the clipboard as text. */
+  captureActivePane: () => void;
   /** What a `terminal.dock` contribution sees; null with no session pane showing. */
   terminalDockContext: ComputedRef<TerminalDockContext | null>;
   selectTab: (tab: WorkspaceTab) => void;
@@ -638,6 +649,32 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     else terminalRefs.delete(identity);
   }
 
+  /**
+   * The tab bar's capture button shows while the pane it acts on is in front
+   * — a session or a tool tab. A Files tab has no pane under the bar, and a
+   * button aimed at nothing is noise, so there it is absent, not disabled.
+   */
+  const captureable = computed(
+    () => activeTab.value?.kind === 'session' || activeTab.value?.kind === 'tool',
+  );
+
+  /**
+   * The button's tooltip — the one place the bar touches the keyboard. The
+   * chord is read from the shortcut registry at draw time, so a rebind moves
+   * the tooltip with it and hovering the button always teaches the key that
+   * actually fires, no Settings detour needed.
+   */
+  const captureTitle = computed(() => {
+    const chord = chordsFor(useSettingsStore().shortcutBindings, 'terminal.copyScreen')[0];
+    return chord ? `Copy the screen as text (${formatChord(chord)})` : 'Copy the screen as text';
+  });
+
+  /** The capture button's verb: the pane in front, onto the clipboard as text. */
+  function captureActivePane(): void {
+    const identity = terminalIdentity.value;
+    if (identity) terminalRefs.get(identity)?.capture('screen');
+  }
+
   const terminalDockContext = computed(() =>
     dockContextFor(activeTab.value?.kind === 'session', terminalIdentity.value, terminalSession.value, terminalRefs),
   );
@@ -663,6 +700,9 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
     identityFor,
     terminalRefs,
     setTerminalRef,
+    captureable,
+    captureTitle,
+    captureActivePane,
     selectTab,
     goToTab,
     selectAfterClose,

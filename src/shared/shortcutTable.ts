@@ -291,7 +291,7 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     defaults: ['Ctrl+Shift+Y'],
     owner: 'app',
     rebindable: true,
-    note: 'The whole pane, on the clipboard as plain text — one buffer row per line, xterm’s own soft wraps rejoined, nothing else moved. Written for bug reports: a picture of a wrapped URL carries neither its exact characters nor the row breaks the repair code is arithmetic about, and this is the way to send the real thing. Y is the yank the gesture answers to; the SHIFT is what makes it free — shifted letters encode nothing at the shell (bare Ctrl+Y is readline’s yank, and stays). A mouse selection already copies on release; this is the route for text too long or too fiddly to drag, and it is FAITHFUL rather than repaired: no link-provider joins, so what lands in the report is what is on the grid.',
+    note: 'The whole pane, on the clipboard as plain text — one buffer row per line, xterm’s own soft wraps rejoined, nothing else moved. Written for bug reports: a picture of a wrapped URL carries neither its exact characters nor the row breaks the repair code is arithmetic about, and this is the way to send the real thing. The folder workspace’s tab-bar copy button fires the same capture, and its tooltip shows this chord. Y is the yank the gesture answers to; the SHIFT is what makes it free — shifted letters encode nothing at the shell (bare Ctrl+Y is readline’s yank, and stays). A mouse selection already copies on release; this is the route for text too long or too fiddly to drag, and it is FAITHFUL rather than repaired: no link-provider joins, so what lands in the report is what is on the grid.',
   },
   {
     id: 'terminal.copyBuffer',

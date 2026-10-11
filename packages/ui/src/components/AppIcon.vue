@@ -45,6 +45,7 @@ export type AppIconName =
   | 'circle'
   | 'close'
   | 'code'
+  | 'copy'
   | 'download'
   | 'dot'
   | 'edit-2'
@@ -246,6 +247,19 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
   // what tells it apart from `terminal` below at 12px: the mass sits at both
   // edges rather than on the left.
   code: { paths: ['M16 18l6-6-6-6', 'M8 6l-6 6 6 6'] },
+  // Feather's `copy`, its <rect> rewritten as one path (the template draws
+  // path data only; the radius arcs carry the 2px corner Feather's rect
+  // asks for). The two sheets of the copy verb — the original and the
+  // duplicate beside it. The TAB BAR's capture button
+  // (FolderWorkspaceView/WorkspaceTabBar): "take what this pane shows, as
+  // text", which is not `download` (bytes to disk) and not `file` (a
+  // document to open).
+  copy: {
+    paths: [
+      'M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',
+      'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+    ],
+  },
   // A circle expressed as two semicircular arcs, so the template stays one
   // path loop. Painted, not stroked: this is a pip, not an outline.
   dot: { paths: ['M12 7a5 5 0 1 0 0 10a5 5 0 1 0 0-10'], filled: true },

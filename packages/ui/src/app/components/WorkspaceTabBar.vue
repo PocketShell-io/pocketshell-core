@@ -60,6 +60,18 @@ const props = defineProps<{
    * on this bar, and a Files tab has no directory to open.
    */
   addable?: boolean;
+  /**
+   * Whether the capture button shows at all: the front tab must have a
+   * terminal pane under it (a session or a tool tab — a Files tab has no
+   * pane), and the pane in front is the one the verb acts on.
+   */
+  captureable?: boolean;
+  /**
+   * The capture button's tooltip, read by the view out of the shortcut
+   * registry — so a rebind cannot leave the title teaching a stale key,
+   * and the bar stays as ignorant of the keyboard as it is of the pane.
+   */
+  captureTitle?: string;
 }>();
 
 /**
@@ -87,6 +99,8 @@ const emit = defineEmits<{
   copyAddress: [address: string];
   reorder: [next: string[]];
   openVsCode: [];
+  /** The capture button: the pane in front, onto the clipboard as text. */
+  copyScreen: [];
 }>();
 
 // ---------------------------------------------------------------------------
@@ -484,8 +498,25 @@ function onRenameInput(event: Event): void {
       </PopupMenu>
     </div>
 
-    <!-- The VS Code button sits alone at the bar's far-right corner, moved
-         there at the user's request from the `+`'s side. It used to travel
+    <!-- The capture button, on the VS Code button's seat at the bar's right
+         corner and in its register (muted icon, full-height tab box): the
+         pane-scoped actions' corner. It copies the FRONT pane's visible text
+         onto the clipboard — the no-selection, no-chord route to "send
+         someone what this pane shows", where a screenshot loses both the
+         exact characters and the row breaks a reader needs. Absent where no
+         pane is in front (a Files tab) rather than disabled — the same
+         absent-not-greyed rule the tab menu's Copy address follows — and the
+         tooltip the view hands over names the chord, so hovering the button
+         teaches its keyboard twin without the Settings detour. -->
+    <div v-if="captureable" class="capture-wrap">
+      <button class="tab capture-open" :title="captureTitle" @click="emit('copyScreen')">
+        <AppIcon name="copy" :size="14" />
+      </button>
+    </div>
+
+    <!-- The VS Code button sits at the bar's far-right corner — now with the
+         capture button beside it, its `margin-left: auto` still what pins the
+         pair right — moved there at the user's request from the `+`'s side. It used to travel
          with the tab cluster, so its address on screen drifted whenever the
          strip grew; pinned here it has one fixed place, the same corner
          treatment VS Code gives its own title-bar actions. It stays OUTSIDE
@@ -744,9 +775,19 @@ function onRenameInput(event: Event): void {
   flex: 0 0 auto;
   margin-left: auto;
 }
-/* The VS Code button keeps the `+`'s register (muted at rest, full-height
+/* The capture button's seat, immediately left of the VS Code button's. No
+   `margin-left: auto` here — two autos would split the free space into two
+   drifting gaps — so it rides the VS Code button's pull and the pair sits as
+   one cluster in the corner. */
+.capture-wrap {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+/* Both corner buttons keep the `+`'s register (muted at rest, full-height
    tab box) without sharing its class or its seat — see the template note. */
-.tab.vscode-open {
+.tab.vscode-open,
+.tab.capture-open {
   color: var(--fg-muted);
 }
 /* The menu itself is PopupMenu.vue — teleported to <body>, so it has no styles

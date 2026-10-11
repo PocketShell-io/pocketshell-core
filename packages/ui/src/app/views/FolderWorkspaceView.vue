@@ -180,6 +180,9 @@ const {
   identityFor,
   terminalRefs,
   setTerminalRef,
+  captureable,
+  captureTitle,
+  captureActivePane,
   terminalDockContext,
   selectTab,
   goToTab,
@@ -722,6 +725,8 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       :address-for="sessionAddressFor"
       :vs-code="folderPath !== null && api.editors !== undefined"
       :addable="!isMaintenance"
+      :captureable="captureable"
+      :capture-title="captureTitle"
       @select="selectTab"
       @begin-rename="beginRename"
       @commit-rename="commitRename"
@@ -739,6 +744,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
       @copy-address="copySessionAddress"
       @reorder="writeTabOrder"
       @open-vs-code="openInVsCode"
+      @copy-screen="captureActivePane"
     />
 
     <!-- Create and rename refusals share this one strip — components/
