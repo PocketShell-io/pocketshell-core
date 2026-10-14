@@ -737,12 +737,12 @@ h1 {
     color var(--dur-fast) var(--ease);
 }
 .account-action:not(.signed-in) {
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   background: var(--accent-soft);
   color: var(--accent);
 }
 .account-action:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   background: var(--state-hover);
   color: var(--fg);
 }

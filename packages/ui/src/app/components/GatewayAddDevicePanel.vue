@@ -414,9 +414,9 @@ input[data-testid='gateway-add-device-id'],
 input[data-testid='gateway-add-server'] {
   font-family: var(--font-mono);
 }
-input:focus,
-select:focus,
-textarea:focus {
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
   outline: 2px solid var(--accent-dim);
   outline-offset: 1px;
 }
@@ -424,7 +424,8 @@ input[readonly] {
   color: var(--fg-secondary);
 }
 textarea[aria-invalid='true'] {
-  border-color: var(--error);
+  border-color: var(--border-strong);
+  background-color: color-mix(in srgb, var(--error) 10%, transparent);
 }
 code {
   font-family: var(--font-mono);
@@ -467,7 +468,7 @@ code {
 .primary {
   min-height: 44px;
   padding: 0 var(--sp-4);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--accent);
   color: var(--on-accent);

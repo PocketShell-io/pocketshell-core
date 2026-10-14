@@ -60,7 +60,7 @@ const dismiss = () => {
   z-index: 45;
   width: min(560px, calc(100vw - var(--sp-6)));
   background: var(--surface-3);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-overlay);
 }
@@ -95,8 +95,9 @@ const dismiss = () => {
   cursor: pointer;
 }
 .btn.primary {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .btn.primary:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);

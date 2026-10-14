@@ -665,15 +665,17 @@ function onRenameInput(event: Event): void {
   opacity: var(--disabled-opacity);
 }
 .tab.drop-before {
-  box-shadow: inset 2px 0 0 0 var(--accent);
+  box-shadow: inset 1px 0 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .tab.drop-after {
-  box-shadow: inset -2px 0 0 0 var(--accent);
+  box-shadow: inset -1px 0 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .tab.active {
   color: var(--fg);
   font-weight: var(--fw-semibold);
-  border-bottom-color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 /* Files tabs are the same control at a lower tone, so the eye can find the
    session half of the bar without reading it. */
@@ -732,8 +734,8 @@ function onRenameInput(event: Event): void {
   display: inline-flex;
   align-items: center;
   padding: 0 var(--sp-2);
-  border-bottom: 2px solid var(--accent);
   margin-bottom: -1px;
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .rename-input {
   width: 10ch;
@@ -747,7 +749,8 @@ function onRenameInput(event: Event): void {
   padding: 0 var(--sp-1);
 }
 .rename-input.invalid {
-  border-color: var(--error);
+  border-color: var(--border-strong);
+  background-color: color-mix(in srgb, var(--error) 10%, transparent);
 }
 /* A sibling of the scrolling strip, not a child of it, so the `+` stays put
    while the tabs scroll under it. `position: relative` is deliberately NOT set:
