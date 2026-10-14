@@ -39,8 +39,13 @@ export function accentBorderViolations(css, inheritedTokens = new Map()) {
     const selector = d.parent.selector ?? '';
     const focus = postcss.list.comma(selector).every(s => /:focus-visible\b/.test(s));
     if (focus && /^(outline|box-shadow)/.test(d.prop)) return;
-    if (colored(d.value, tokens)) {
-      violations.push({ line: d.source.start.line, selector, property: d.prop, value: d.value, reason: 'accent/status color on a border, outline, or shadow' });
+    const currentColor = d.parent.nodes.find(n => n.prop === 'color')?.value ?? '';
+    const value = d.value.replace(/currentcolor/gi, currentColor);
+    const sideStripe = /^border-(?:left|right|top|bottom|inline|block)(?:-(?:start|end))?$/.test(d.prop)
+      && !/\b(?:transparent|none)\b/.test(value)
+      && /(?:^|\s)(?:[2-9]\d*|1\d+)(?:px)\b/.test(value);
+    if (colored(value, tokens) || sideStripe) {
+      violations.push({ line: d.source.start.line, selector, property: d.prop, value: d.value, reason: sideStripe ? 'side accent thicker than a neutral hairline' : 'accent/status color on a border, outline, or shadow' });
     } else if (/^border-(?:width|color|style)$/.test(d.prop)) {
       const sides = postcss.list.space(d.value);
       if (sides.length > 1 && new Set(sides).size > 1) {

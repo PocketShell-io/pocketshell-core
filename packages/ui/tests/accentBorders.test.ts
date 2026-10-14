@@ -6,6 +6,8 @@ describe('no accent borders design contract', () => {
   it.each([
     'border-left: 3px solid var(--accent)',
     'border-inline-start: 2px solid cyan',
+    'border-left: 3px solid var(--border)',
+    'border-block-end: 2px solid #23272e',
     'border-block-end: 1px solid var(--warning)',
     'border: 1px solid var(--danger)',
     'border-color: #ff0000',
@@ -30,6 +32,10 @@ describe('no accent borders design contract', () => {
 
   it('does not exempt non-focus selectors in a selector list', () => {
     expect(accentBorderViolations('.card, button:focus-visible { outline: 1px solid red; }')).toHaveLength(1);
+  });
+
+  it('catches status color through currentColor', () => {
+    expect(accentBorderViolations('.card { color: var(--error); border: 1px solid currentColor; }')).toHaveLength(1);
   });
 
   it('follows color token aliases', () => {
