@@ -167,7 +167,7 @@ const linkLostText = computed(() => {
   font-size: var(--fs-200);
   font-weight: var(--fw-semibold);
   background: var(--error);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   color: var(--on-accent);
   transition: opacity var(--dur-fast) var(--ease);
 }

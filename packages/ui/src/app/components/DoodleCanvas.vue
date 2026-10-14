@@ -825,7 +825,7 @@ onBeforeUnmount(() => {
 .tool-btn.active,
 .width-btn.active {
   background: var(--state-selected);
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   color: var(--accent);
 }
 .tool-btn:disabled {
@@ -917,7 +917,7 @@ onBeforeUnmount(() => {
   overflow-wrap: break-word;
   caret-color: currentColor;
 }
-.text-editor:focus {
+.text-editor:focus-visible {
   /* No focus ring: the caret is the focus indicator, and a ring drawn around
      the block would sit over the picture being annotated. */
   outline: none;
@@ -949,7 +949,7 @@ onBeforeUnmount(() => {
 .actions.confirm {
   padding: var(--sp-2);
   background: var(--error-soft);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
 }
 .hint.warn {
@@ -970,7 +970,7 @@ onBeforeUnmount(() => {
 }
 .btn.primary {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   color: var(--on-accent);
   font-weight: var(--fw-semibold);
 }
@@ -983,7 +983,7 @@ onBeforeUnmount(() => {
    treatment as the composer's own `.discard`. */
 .btn.danger {
   background: transparent;
-  border-color: var(--error);
+  border-color: var(--border-strong);
   color: var(--error);
   font-weight: var(--fw-medium);
 }

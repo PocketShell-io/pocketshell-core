@@ -1035,7 +1035,6 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
 }
 .entry.active {
   background: var(--state-selected);
-  border-left-color: var(--accent);
 }
 /* Entry icons. The folder carries the most weight so
    the dir/file hierarchy reads at a glance; files sit quietest (decorative —
@@ -1201,7 +1200,7 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
 }
 .delete-confirm .btn-danger {
   background: var(--error);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   color: var(--on-accent);
 }
 .delete-confirm .btn-danger:disabled {

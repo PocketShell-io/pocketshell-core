@@ -706,19 +706,23 @@ function onFolderClick(dir: SessionDirectory): void {
   opacity: var(--disabled-opacity);
 }
 .folder.drop-above {
-  box-shadow: inset 0 2px 0 0 var(--accent);
+  box-shadow: inset 0 1px 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .folder.drop-below {
-  box-shadow: inset 0 -2px 0 0 var(--accent);
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .dir-header.dragging {
   opacity: var(--disabled-opacity);
 }
 .dir-list li.drop-above {
-  box-shadow: inset 0 2px 0 0 var(--accent);
+  box-shadow: inset 0 1px 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .dir-list li.drop-below {
-  box-shadow: inset 0 -2px 0 0 var(--accent);
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 /* ── The indent budget, in one place ───────────────────────────────────────
    TWO levels, and no chevron column on either of them now that a root row is a
@@ -779,7 +783,6 @@ function onFolderClick(dir: SessionDirectory): void {
    to be the same cyan at two alphas, which read as one state. */
 .dir-header.current {
   background: var(--state-selected);
-  border-left-color: var(--accent);
 }
 /* A folder that is only a session — no reported cwd — is labelled by that
    session's NAME, so it is set in the mono face the name deserves and toned
@@ -900,7 +903,6 @@ function onFolderClick(dir: SessionDirectory): void {
 }
 .session-leaf.current {
   background: var(--state-selected);
-  border-left-color: var(--accent);
 }
 /* With leaves drawn, a folder row is a header over them: it keeps its click
    (opening the folder), but reads one step quieter than the sessions. */

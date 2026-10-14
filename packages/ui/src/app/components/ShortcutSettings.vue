@@ -468,7 +468,6 @@ function shellCostNote(spec: ShortcutSpec): { text: string; safe: boolean } | nu
 .rail-item.active {
   color: var(--fg);
   background: var(--state-hover);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 .rail-label {
   min-width: 0;
@@ -569,7 +568,7 @@ kbd {
 }
 .add-btn:hover:not(:disabled) {
   color: var(--accent);
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   background: var(--accent-soft);
 }
 .add-btn:disabled {
@@ -734,7 +733,7 @@ kbd {
   height: var(--control-h);
   padding: 0 var(--sp-3);
   background: var(--accent-soft);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   color: var(--accent);
   cursor: pointer;

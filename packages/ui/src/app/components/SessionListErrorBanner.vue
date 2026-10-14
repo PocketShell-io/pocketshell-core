@@ -32,7 +32,7 @@ const notice = computed(() => sessionListErrorNotice(sessions.listErrors));
 <style scoped>
 .list-errors {
   margin: 0 var(--sp-2) var(--sp-2);
-  border: 1px solid var(--warning);
+  border: 1px solid var(--border-strong);
   background: var(--warning-soft);
   border-radius: var(--r-md);
   padding: var(--sp-1) var(--sp-2);

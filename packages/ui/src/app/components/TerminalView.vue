@@ -954,8 +954,9 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
    every refit, and any border/padding borrowed to draw a frame would cost the
    pane a row. Same dashed treatment the composer's card lights up with. */
 .terminal.drop-target {
-  outline: 2px dashed var(--accent);
+  outline: 1px dashed var(--border-strong);
   outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .terminal :deep(.xterm) {
   height: 100%;

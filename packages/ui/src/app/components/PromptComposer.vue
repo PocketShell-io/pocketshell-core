@@ -553,8 +553,9 @@ defineExpose({
    the rail is the only target there is. */
 .composer-root.drag-over .composer,
 .composer-root.drag-over .rail {
-  outline: 2px dashed var(--accent);
+  outline: 1px dashed var(--border-strong);
   outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 /* ---- the fixed toggle ---------------------------------------------------
@@ -835,7 +836,7 @@ defineExpose({
   margin: 0 var(--sp-3) var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
   background: var(--error-soft);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   color: var(--fg);
   font-size: var(--fs-200);
@@ -916,8 +917,9 @@ defineExpose({
   cursor: pointer;
 }
 .parked-include {
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent-dim) 10%, transparent);
 }
 .parked-include:hover,
 .parked-include:focus-visible {

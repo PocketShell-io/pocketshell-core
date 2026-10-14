@@ -200,7 +200,7 @@ const projects = useProjectsStore();
 .btn-primary {
   background: var(--accent);
   color: var(--on-accent);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-dim);
