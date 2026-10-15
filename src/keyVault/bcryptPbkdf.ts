@@ -163,6 +163,8 @@ export async function bcryptPbkdf(
     let tmp = bcryptHash(sha2pass, await sha512(countsalt));
     const out = Uint8Array.from(tmp);
     for (let i = 1; i < rounds; i += 1) {
+      // Each round is ~64 Blowfish key schedules: yield so a UI thread keeps painting.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       tmp = bcryptHash(sha2pass, await sha512(tmp));
       for (let j = 0; j < 32; j += 1) out[j] = (out[j] as number) ^ (tmp[j] as number);
     }
