@@ -12,9 +12,11 @@ depend on it. A contract change is one commit in this repo.
 ## What's inside
 
 Pure TypeScript only — no Node APIs, no DOM, no I/O. The platform surface is
-exactly `setTimeout`, `clearTimeout`, `atob`, and `TextDecoder`
-(`types/globals.d.ts`), all provided by browsers, Electron, Node 16+, and the
-Android WebView.
+`setTimeout`, `clearTimeout`, `atob`, `TextDecoder`, and, for the key vault
+only, WebCrypto (`crypto.subtle`, `crypto.getRandomValues`)
+(`types/globals.d.ts`), all provided by browsers (secure contexts), Electron,
+Node 19+, and the Android WebView. The one runtime dependency is `hash-wasm`
+(Argon2id for the key vault; WASM, no transitive dependencies).
 
 | Module | Contract |
 | --- | --- |
@@ -30,6 +32,7 @@ Android WebView.
 | `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
 | `composerSend` | UTF-8 framing, serialized insert/submit, submit timing, draft retention and uncertain-send outcomes |
 | `savedHosts` | client-owned host list: stable host IDs, CRUD/order/default/import with validate-before-write, opaque key references, `hostEntryId` |
+| `keyVault/` | the account key vault: vault v1 format and crypto (Argon2id via `hash-wasm`, HKDF, AES-256-GCM), SSH private-key parsing and decryption, the `KeyVaultStore` over an injected slot transport and optional phase-2 server verifier, legacy `keys` slot migration |
 | `sshCapability`, `connectionController` | runtime-neutral SSH effect contract and shared trust, session, PTY, retry, and grace policy |
 | `sshExec` | the checked exec: request/connection/generation echo verification, stderr summary, request ids |
 | `usageSource`, `remotePortScan`, `portForwardController` | provider usage, listener scan + cwd labels, and the port-forward reconcile controller, all over `SshCapability` |
