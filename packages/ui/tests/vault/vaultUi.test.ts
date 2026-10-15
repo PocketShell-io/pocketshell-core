@@ -160,6 +160,7 @@ describe('VaultSetupCard', () => {
   it('needs the unrecoverable acknowledgement, then creates the vault with the sync passphrase', async () => {
     const { controller, store } = await vaultWith({}, false);
     const card = mount(VaultSetupCard, { props: { syncPassphrase: 'sync-1' } });
+    expect(card.find('[data-testid="vault-setup-reuse"]').exists()).toBe(false);
     expect(card.find('[data-testid="vault-setup-warning"]').text()).toContain(
       "If you forget it, your keys cannot be recovered. You'll reset the vault and upload them again.",
     );
@@ -177,6 +178,68 @@ describe('VaultSetupCard', () => {
   it('rejects mismatched entries and rates strength', () => {
     expect(passphraseStrength('short').label).toBe('too short');
     expect(passphraseStrength('aaaaaaaa').score).toBeLessThan(passphraseStrength('correct horse battery staple').score);
+  });
+});
+
+describe('decision #7: vault and sync passphrases stay apart', () => {
+  async function fillSetup(card: ReturnType<typeof mount>, passphrase: string) {
+    await card.find('[data-testid="vault-setup-new"]').setValue(passphrase);
+    await card.find('[data-testid="vault-setup-again"]').setValue(passphrase);
+    await card.find('[data-testid="vault-setup-understood"]').setValue(true);
+    await card.find('form').trigger('submit');
+    await settle();
+  }
+
+  it('setup offers no "keep using my sync passphrase" and gives a new account a random sync passphrase', async () => {
+    const { controller, store } = await vaultWith({}, false);
+    const card = mount(VaultSetupCard);
+    expect(card.find('[data-testid="vault-setup-reuse"]').exists()).toBe(false);
+    await fillSetup(card, 'a long new passphrase');
+    expect(controller.view.state).toBe('unlocked');
+    expect(store.getSyncPassphrase()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('setup refuses a vault passphrase that opens the host list or equals the sync passphrase', async () => {
+    const hostList = { exists: vi.fn(async () => true), verifyPassphrase: vi.fn(async (p: string) => p === 'the host list pass'), remove: vi.fn(async () => undefined) };
+    const { controller } = await vaultWith({ hostList }, false);
+    const card = mount(VaultSetupCard, { props: { syncPassphrase: 'the sync passphrase' } });
+    await fillSetup(card, 'the host list pass');
+    expect(card.text()).toContain('different from your sync passphrase');
+    expect(controller.view.state).toBe('locked');
+    const again = mount(VaultSetupCard, { props: { syncPassphrase: 'the sync passphrase' } });
+    await fillSetup(again, 'the sync passphrase');
+    expect(again.text()).toContain('different from your sync passphrase');
+    expect(controller.view.state).toBe('locked');
+  });
+
+  it('change refuses the sync passphrase as the new vault passphrase', async () => {
+    const { controller } = await vaultWith();
+    await controller.unlock(PASS, false);
+    const form = mount(VaultChangePassphrase);
+    await form.find('[data-testid="vault-change-current"]').setValue(PASS);
+    await form.find('[data-testid="vault-change-new"]').setValue('sync-pass');
+    await form.find('[data-testid="vault-change-again"]').setValue('sync-pass');
+    await form.find('form').trigger('submit');
+    await settle();
+    expect(form.text()).toContain('different from your sync passphrase');
+    expect(form.emitted('changed')).toBeUndefined();
+  });
+
+  it('reset with "I forgot that too" seals a new random sync passphrase, never the vault passphrase', async () => {
+    const hostList = { exists: vi.fn(async () => true), verifyPassphrase: vi.fn(async () => false), remove: vi.fn(async () => undefined) };
+    const { controller } = await vaultWith({ hostList });
+    const flow = mount(VaultResetFlow);
+    await settle();
+    await flow.find('[data-testid="vault-reset-new"]').setValue('brand new passphrase');
+    await flow.find('[data-testid="vault-reset-again"]').setValue('brand new passphrase');
+    await flow.find('[data-testid="vault-reset-forgot-sync"]').setValue(true);
+    await flow.find('[data-testid="vault-reset-confirm"]').setValue('RESET');
+    await flow.find('form').trigger('submit');
+    await settle();
+    expect(flow.find('[data-testid="vault-reset-done"]').exists()).toBe(true);
+    const sync = controller.store.getSyncPassphrase();
+    expect(sync).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(sync).not.toBe('brand new passphrase');
   });
 });
 

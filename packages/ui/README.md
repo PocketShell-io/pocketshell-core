@@ -93,7 +93,8 @@ provideKeyVault({
   resetUrl, openUrl,                       // "Forgot it?" goes to the web reset (Android, psc) …
   onForgot,                                // … or opens an in-app reset (web)
   reauth,                                  // fresh account sign-in before a reset
-  hostList: { exists, verifyPassphrase, remove }, // reset while locked: the synced host list
+  hostList: { exists, verifyPassphrase, remove }, // the synced host list: reset while locked, and refusing a
+                                           // vault passphrase that opens it (decision #7)
   canUpload: true,                         // web: add / rotate keys
 });
 ```
@@ -108,3 +109,9 @@ mount where a client wants them: `VaultSetupCard`, `VaultResetFlow` (its
 gatewayAuth}` binding, saved with `controller.bindHost(alias, binding)`), and
 `VaultSettingsSection` for a `settings.sections` contribution. Missing
 capabilities hide their controls; nothing branches on the platform.
+
+The vault passphrase never doubles as the sync passphrase (decision #7): setup,
+change and reset refuse one that equals it or opens the host list
+(`vaultPassphraseReusesSync`), and an account without a host list gets a random
+one (`generateSyncPassphrase`) in the vault index. After a reset that deleted
+the host list, the platform seals its next one with `store.getSyncPassphrase()`.

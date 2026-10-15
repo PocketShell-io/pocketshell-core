@@ -6,7 +6,8 @@
 // new empty vault created. Host bindings and the sync passphrase carry over
 // when this device still knows them (unlocked); otherwise the sync passphrase
 // is asked for and proved against the host list — or, "I forgot that too",
-// the host list is deleted as well.
+// the host list is deleted as well and a random sync passphrase replaces it.
+// The new vault passphrase must differ from the sync passphrase.
 import { computed, onMounted, ref } from 'vue';
 import { useKeyVault, vaultWriteMessage } from '../../keyVault';
 import VaultPassphraseFields from './VaultPassphraseFields.vue';
@@ -67,13 +68,15 @@ async function runReset(): Promise<void> {
   busy.value = true;
   error.value = '';
   try {
-    let syncPassphrase: string;
+    let syncPassphrase: string | 'generate';
     let deleteHostList = false;
     if (syncMode.value === 'known' && knownSync) {
       syncPassphrase = knownSync;
     } else if (syncMode.value === 'forgot' || !hostListExists.value) {
-      // No usable host list: the new vault passphrase seals a fresh one.
-      syncPassphrase = newPassphrase.value;
+      // No usable host list: a fresh random sync passphrase seals the next
+      // one — never the vault passphrase (decision #7). The platform re-seals
+      // its host list with store.getSyncPassphrase() after the reset.
+      syncPassphrase = 'generate';
       deleteHostList = hostListExists.value;
     } else {
       if (vault.platform.hostList && !(await vault.platform.hostList.verifyPassphrase(syncInput.value))) {

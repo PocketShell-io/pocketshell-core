@@ -18,6 +18,7 @@
  * With nothing provided, every vault component renders nothing.
  */
 import { reactive, shallowRef } from 'vue';
+import { generateSyncPassphrase, vaultPassphraseReusesSync } from '@pocketshell/core';
 import type {
   GatewayAuthPolicy,
   HostKeyBinding,
@@ -77,6 +78,9 @@ export const VAULT_TEXT = {
   unrecoverable:
     "If you forget it, your keys cannot be recovered. You'll reset the vault and upload them again.",
   unsupportedVersion: 'Your vault was saved by a newer version of PocketShell. Update this app to open it.',
+  reusesSync:
+    'Choose a vault passphrase different from your sync passphrase: the host list is protected more cheaply, so ' +
+    'sharing one passphrase would weaken your keys.',
   rememberHint:
     'Remembering keeps an encrypted vault key on this device, locked to a key only this device holds. The ' +
     'passphrase itself is never saved, and never sent to the server.',
@@ -121,6 +125,10 @@ export function vaultWriteMessage(result: { kind: string; message?: string }): s
       return 'This account already has a vault.';
     case 'freshAuthRequired':
       return 'Sign in again (within the last 5 minutes) to reset your vault.';
+    case 'unsupportedVersion':
+      return VAULT_TEXT.unsupportedVersion;
+    case 'reusesSync':
+      return VAULT_TEXT.reusesSync;
     case 'wrongPassphrase':
       return "That isn't your current vault passphrase.";
     case 'passphraseChangedElsewhere':
@@ -221,6 +229,15 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     for (const resolve of pending) resolve(unlocked);
   }
 
+  /** Decision #7: does a would-be vault passphrase reuse the sync passphrase? */
+  function reusesSync(passphrase: string, syncPassphrase: string | null): Promise<boolean> {
+    const opens = platform.hostList?.verifyPassphrase;
+    return vaultPassphraseReusesSync(passphrase, {
+      syncPassphrase,
+      ...(opens ? { opensHostList: (candidate: string) => opens(candidate).catch(() => false) } : {}),
+    });
+  }
+
   return {
     platform,
     store,
@@ -244,14 +261,21 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       return result;
     },
 
-    async create(passphrase: string, remember: boolean, syncPassphrase?: string | null): Promise<VaultCreateResult> {
-      const result = await store.createVault(passphrase, { syncPassphrase: syncPassphrase ?? null });
+    /**
+     * Create the vault. `syncPassphrase` is the account's existing sync
+     * passphrase when it already has a host list; without one, the account
+     * gets a fresh random sync passphrase (decision #7: never the vault's).
+     */
+    async create(passphrase: string, remember: boolean, syncPassphrase?: string | null): Promise<VaultCreateResult | { kind: 'reusesSync' }> {
+      if (await reusesSync(passphrase, syncPassphrase ?? null)) return { kind: 'reusesSync' };
+      const result = await store.createVault(passphrase, { syncPassphrase: syncPassphrase || generateSyncPassphrase() });
       refresh();
       if (result.kind === 'ok' && remember) await saveRemember().catch(() => undefined);
       return result;
     },
 
-    async changePassphrase(current: string, next: string): Promise<VaultChangePassphraseResult> {
+    async changePassphrase(current: string, next: string): Promise<VaultChangePassphraseResult | { kind: 'reusesSync' }> {
+      if (await reusesSync(next, store.getSyncPassphrase())) return { kind: 'reusesSync' };
       const result = await store.changePassphrase(current, next);
       refresh();
       // A remembered record keeps working (same DEK) but carries the old AUTH: refresh it.
@@ -260,15 +284,19 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     },
 
     /**
-     * Reset (the caller has re-authenticated): `syncPassphrase` null when the
-     * host list is being deleted too, undefined to carry the current one.
+     * Reset (the caller has re-authenticated). `syncPassphrase`: the one to
+     * keep, or 'generate' for a fresh random one (no host list, or it is
+     * being deleted); undefined carries the current one.
      */
-    async reset(newPassphrase: string, options: { syncPassphrase?: string | null; remember: boolean }): Promise<VaultCreateResult> {
+    async reset(
+      newPassphrase: string,
+      options: { syncPassphrase?: string | 'generate'; remember: boolean },
+    ): Promise<VaultCreateResult | { kind: 'reusesSync' }> {
+      const sync = options.syncPassphrase === 'generate' ? generateSyncPassphrase() : options.syncPassphrase;
+      if (await reusesSync(newPassphrase, sync ?? store.getSyncPassphrase())) return { kind: 'reusesSync' };
       await platform.remember?.forget().catch(() => undefined);
       view.remembered = false;
-      const result = await store.resetVault(newPassphrase, {
-        ...(options.syncPassphrase !== undefined ? { syncPassphrase: options.syncPassphrase } : {}),
-      });
+      const result = await store.resetVault(newPassphrase, { ...(sync !== undefined ? { syncPassphrase: sync } : {}) });
       refresh();
       if (result.kind === 'ok' && options.remember) await saveRemember().catch(() => undefined);
       return result;

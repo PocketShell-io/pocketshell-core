@@ -2,37 +2,33 @@
 // First setup (design section 5, web): create the account's vault passphrase,
 // entered twice with a strength meter, behind the plain "cannot be recovered"
 // warning. One passphrase from then on: the vault also carries the sync
-// passphrase (`syncPassphrase`), and an account that already has one may keep
-// using it as the vault passphrase (`reusablePassphrase`).
-import { computed, ref } from 'vue';
+// passphrase (`syncPassphrase`, or a fresh random one for an account with no
+// host list). The vault passphrase must differ from the sync passphrase
+// (decision #7); one that equals it or opens the host list is refused.
+import { ref } from 'vue';
 import { useKeyVault, VAULT_TEXT, vaultWriteMessage } from '../../keyVault';
 import VaultPassphraseFields from './VaultPassphraseFields.vue';
 import './vault.css';
 
 const props = defineProps<{
-  /** The account's sync passphrase, stored in the vault index so one unlock opens the host list. */
+  /** The account's existing sync passphrase (when it has a host list), stored in the vault index. */
   syncPassphrase?: string | null;
-  /** Offer "keep using my sync passphrase" when the client knows it. */
-  reusablePassphrase?: string | null;
 }>();
 const emit = defineEmits<{ created: [] }>();
 
 const vault = useKeyVault();
-const reuse = ref<'new' | 'sync'>('new');
 const fresh = ref('');
 const remember = ref(false);
 const understood = ref(false);
 const busy = ref(false);
 const error = ref('');
-const canReuse = computed(() => !!props.reusablePassphrase);
-const chosen = computed(() => (canReuse.value && reuse.value === 'sync' ? (props.reusablePassphrase as string) : fresh.value));
 
 async function create(): Promise<void> {
-  if (!vault || chosen.value === '' || !understood.value) return;
+  if (!vault || fresh.value === '' || !understood.value) return;
   busy.value = true;
   error.value = '';
   try {
-    const result = await vault.create(chosen.value, remember.value, props.syncPassphrase ?? null);
+    const result = await vault.create(fresh.value, remember.value, props.syncPassphrase ?? null);
     if (result.kind === 'ok') emit('created');
     else error.value = vaultWriteMessage(result);
   } finally {
@@ -49,18 +45,7 @@ async function create(): Promise<void> {
       account. One passphrase unlocks your keys and your host list on every device.
     </p>
     <form class="vault-form" @submit.prevent="create">
-      <fieldset v-if="canReuse" class="vault-choice">
-        <legend>Passphrase</legend>
-        <label class="vault-radio">
-          <input v-model="reuse" type="radio" value="new" name="vault-setup-reuse" />
-          <span>Choose a new vault passphrase</span>
-        </label>
-        <label class="vault-radio">
-          <input v-model="reuse" type="radio" value="sync" name="vault-setup-reuse" data-testid="vault-setup-reuse" />
-          <span>Keep using my sync passphrase</span>
-        </label>
-      </fieldset>
-      <VaultPassphraseFields v-if="!canReuse || reuse === 'new'" id-prefix="vault-setup" @update:valid="fresh = $event" />
+      <VaultPassphraseFields id-prefix="vault-setup" @update:valid="fresh = $event" />
       <p class="vault-note" data-testid="vault-setup-warning">
         <strong>{{ VAULT_TEXT.unrecoverable }}</strong>
         PocketShell never sees this passphrase and cannot reset it for you.
@@ -86,7 +71,7 @@ async function create(): Promise<void> {
           class="vault-btn primary"
           type="submit"
           data-testid="vault-setup-create"
-          :disabled="busy || chosen === '' || !understood"
+          :disabled="busy || fresh === '' || !understood"
         >
           {{ busy ? 'Creating the vault…' : 'Create vault' }}
         </button>
