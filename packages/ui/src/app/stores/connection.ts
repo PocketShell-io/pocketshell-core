@@ -405,6 +405,9 @@ export const useConnectionStore = defineStore('connection', () => {
         host: host.hostname,
         port: host.port,
         user: host.user || '',
+        // The account host alias: the platform resolves the host's vault key
+        // binding by it, never by address (two hosts may share host:port).
+        ...(host.name ? { hostAlias: host.name } : {}),
         privateKeyPath: privateKeyPath ?? host.identityFile ?? undefined,
         // Transport intent rides to the platform boundary verbatim (issue
         // #3059): the store decides nothing about support, it only refuses to
