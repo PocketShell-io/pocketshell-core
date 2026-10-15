@@ -1,5 +1,6 @@
 import { createMD5 } from 'hash-wasm';
 import { bcryptPbkdf } from './bcryptPbkdf';
+import { ed25519PublicFromSeed } from './ed25519';
 import { bytesEqual, concatBytes, fromB64, fromB64url, randomBytes, sha256, subtle, toB64, toB64url, utf8, wipe, type VaultCryptoKey } from './bytes';
 import { VAULT_SSH_KEY_TYPES, type VaultSshKeyType } from './types';
 
@@ -187,11 +188,81 @@ function need(node: Der | undefined, tag: number): Der {
 const OID_RSA = '1.2.840.113549.1.1.1';
 const OID_EC = '1.2.840.10045.2.1';
 const OID_ED25519 = '1.3.101.112';
-const CURVES: Record<string, { type: VaultSshKeyType; ident: string }> = {
-  '1.2.840.10045.3.1.7': { type: 'ecdsa-sha2-nistp256', ident: 'nistp256' },
-  '1.3.132.0.34': { type: 'ecdsa-sha2-nistp384', ident: 'nistp384' },
-  '1.3.132.0.35': { type: 'ecdsa-sha2-nistp521', ident: 'nistp521' },
+const CURVES: Record<string, { type: VaultSshKeyType; ident: string; jwk: string; size: number; oidDer: Uint8Array }> = {
+  '1.2.840.10045.3.1.7': {
+    type: 'ecdsa-sha2-nistp256',
+    ident: 'nistp256',
+    jwk: 'P-256',
+    size: 32,
+    oidDer: Uint8Array.of(0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07),
+  },
+  '1.3.132.0.34': { type: 'ecdsa-sha2-nistp384', ident: 'nistp384', jwk: 'P-384', size: 48, oidDer: Uint8Array.of(0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22) },
+  '1.3.132.0.35': { type: 'ecdsa-sha2-nistp521', ident: 'nistp521', jwk: 'P-521', size: 66, oidDer: Uint8Array.of(0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23) },
 };
+const OID_EC_DER = Uint8Array.of(0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01);
+
+function curveByIdent(ident: string): string {
+  const oid = Object.keys(CURVES).find((key) => CURVES[key]?.ident === ident);
+  return oid ?? unsupported(`unsupported EC curve ${ident}`);
+}
+
+// ── private/public consistency ───────────────────────────────────────────
+//
+// An uploaded key's public half must belong to its private half: the keyId,
+// fingerprint and host bindings all come from the public half, so a spliced
+// file (someone else's public key, our private key) must never get in.
+
+const mismatch = (): never => invalid('the private key does not match its public key');
+
+function bigUnsigned(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+function checkRsa(n: Uint8Array, e: Uint8Array, d: Uint8Array, p: Uint8Array, q: Uint8Array): void {
+  const [N, E, D, P, Q] = [n, e, d, p, q].map(bigUnsigned) as [bigint, bigint, bigint, bigint, bigint];
+  if (P < 2n || Q < 2n || N !== P * Q) mismatch();
+  if ((E * D) % (P - 1n) !== 1n || (E * D) % (Q - 1n) !== 1n) mismatch();
+}
+
+function derTlv(tag: number, content: Uint8Array): Uint8Array {
+  const n = content.length;
+  const length = n < 0x80 ? Uint8Array.of(n) : n < 0x100 ? Uint8Array.of(0x81, n) : Uint8Array.of(0x82, n >> 8, n & 0xff);
+  return concatBytes(Uint8Array.of(tag), length, content);
+}
+
+/** The uncompressed public point for EC private scalar `d`, derived by WebCrypto (never trusted from the file). */
+async function ecPointFromPrivate(curveOid: string, d: Uint8Array): Promise<Uint8Array> {
+  const curve = CURVES[curveOid] ?? unsupported(`unsupported EC curve ${curveOid}`);
+  let start = 0;
+  while (start < d.length - 1 && d[start] === 0) start += 1;
+  const scalar = d.subarray(start);
+  if (scalar.length > curve.size) mismatch();
+  const fixed = new Uint8Array(curve.size);
+  fixed.set(scalar, curve.size - scalar.length);
+  // PKCS#8 without the optional public key, so the platform must compute it.
+  const sec1 = derTlv(0x30, concatBytes(Uint8Array.of(0x02, 0x01, 0x01), derTlv(0x04, fixed)));
+  const pkcs8 = derTlv(
+    0x30,
+    concatBytes(Uint8Array.of(0x02, 0x01, 0x00), derTlv(0x30, concatBytes(OID_EC_DER, curve.oidDer)), derTlv(0x04, sec1)),
+  );
+  wipe(fixed);
+  let jwk: { x?: string; y?: string };
+  try {
+    const key = await subtle().importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: curve.jwk }, true, ['sign']);
+    jwk = (await subtle().exportKey('jwk', key)) as { x?: string; y?: string };
+  } catch {
+    return mismatch();
+  } finally {
+    wipe(pkcs8);
+    wipe(sec1);
+  }
+  const x = typeof jwk.x === 'string' ? fromB64url(jwk.x) : null;
+  const y = typeof jwk.y === 'string' ? fromB64url(jwk.y) : null;
+  if (!x || !y || x.length !== curve.size || y.length !== curve.size) return mismatch();
+  return concatBytes(Uint8Array.of(0x04), x, y);
+}
 
 // ── PEM ──────────────────────────────────────────────────────────────────
 
@@ -281,7 +352,9 @@ function ed25519Blob(pub: Uint8Array): Uint8Array {
 function pkcs1Blob(der: Uint8Array): Uint8Array {
   const items = derChildren(derRoot(der, 0x30));
   if (items.length < 9) invalid('malformed RSA private key');
-  return rsaBlob(need(items[2], 0x02).content, need(items[1], 0x02).content);
+  const [n, e, d, p, q] = [1, 2, 3, 4, 5].map((i) => need(items[i], 0x02).content) as [Uint8Array, Uint8Array, Uint8Array, Uint8Array, Uint8Array];
+  checkRsa(n, e, d, p, q);
+  return rsaBlob(e, n);
 }
 
 function bitStringBytes(node: Der): Uint8Array {
@@ -289,9 +362,9 @@ function bitStringBytes(node: Der): Uint8Array {
   return node.content.subarray(1);
 }
 
-function sec1Blob(der: Uint8Array, outerCurve: string | null): Uint8Array {
+async function sec1Blob(der: Uint8Array, outerCurve: string | null): Promise<Uint8Array> {
   const items = derChildren(derRoot(der, 0x30));
-  need(items[1], 0x04);
+  const d = need(items[1], 0x04).content;
   let curve = outerCurve;
   let point: Uint8Array | null = null;
   for (const item of items.slice(2)) {
@@ -299,8 +372,9 @@ function sec1Blob(der: Uint8Array, outerCurve: string | null): Uint8Array {
     if (item.tag === 0xa1) point = bitStringBytes(need(derChildren(item)[0], 0x03));
   }
   if (!curve) return invalid('EC private key names no curve');
-  if (!point) return unsupported('EC private key without an embedded public key');
-  return ecBlob(curve, point);
+  const derived = await ecPointFromPrivate(curve, d);
+  if (point && !bytesEqual(point, derived)) mismatch();
+  return ecBlob(curve, derived);
 }
 
 async function pkcs8Blob(der: Uint8Array): Promise<Uint8Array> {
@@ -311,18 +385,12 @@ async function pkcs8Blob(der: Uint8Array): Promise<Uint8Array> {
   if (oid === OID_RSA) return pkcs1Blob(inner);
   if (oid === OID_EC) return sec1Blob(inner, alg[1] ? derOid(alg[1]) : null);
   if (oid === OID_ED25519) {
+    const seed = derRoot(inner, 0x04).content;
+    if (seed.length !== 32) invalid('bad ed25519 private key');
+    const derived = await ed25519PublicFromSeed(seed);
     const embedded = items.slice(3).find((item) => item.tag === 0x81);
-    if (embedded) return ed25519Blob(bitStringBytes({ tag: 0x03, content: embedded.content }));
-    // No embedded public key: let WebCrypto derive it (Ed25519 support).
-    try {
-      const key = await subtle().importKey('pkcs8', der, { name: 'Ed25519' }, true, ['sign']);
-      const jwk = (await subtle().exportKey('jwk', key)) as { x?: string };
-      const x = typeof jwk.x === 'string' ? fromB64url(jwk.x) : null;
-      if (x) return ed25519Blob(x);
-    } catch {
-      // fall through
-    }
-    return unsupported('this device cannot derive the public key of a PKCS#8 ed25519 key; convert it with ssh-keygen -p');
+    if (embedded && !bytesEqual(bitStringBytes({ tag: 0x03, content: embedded.content }), derived)) mismatch();
+    return ed25519Blob(derived);
   }
   return unsupported(`unsupported PKCS#8 key algorithm ${oid}`);
 }
@@ -409,14 +477,44 @@ async function decryptOpenSshSection(container: OpenSshContainer, passphrase: st
   }
 }
 
-/** Check the decrypted private section (checkints, key type) and return it. */
-function checkOpenSshSection(section: Uint8Array, publicBlob: Uint8Array): void {
+/**
+ * Check the decrypted private section: the checkints (a wrong passphrase),
+ * then that its key IS the header's public key — the public fields match and
+ * the public half derives from the private half.
+ */
+async function checkOpenSshSection(section: Uint8Array, publicBlob: Uint8Array): Promise<void> {
   const reader = new WireReader(section);
   const check1 = reader.u32();
   const check2 = reader.u32();
   if (check1 !== check2) throw new KeyError('wrongPassphrase', 'wrong key passphrase');
   const type = reader.text();
-  if (type !== new WireReader(publicBlob).text()) invalid('private and public key types differ');
+  const pub = new WireReader(publicBlob);
+  if (type !== pub.text()) invalid('private and public key types differ');
+  if (type === 'ssh-ed25519') {
+    const blobKey = pub.string();
+    const key = reader.string();
+    const priv = reader.string();
+    if (priv.length !== 64 || !bytesEqual(key, blobKey) || !bytesEqual(priv.subarray(32), key)) mismatch();
+    if (!bytesEqual(await ed25519PublicFromSeed(priv.subarray(0, 32)), key)) mismatch();
+  } else if (type.startsWith('ecdsa-sha2-')) {
+    const blobIdent = pub.text();
+    const blobPoint = pub.string();
+    const ident = reader.text();
+    const point = reader.string();
+    const d = reader.string();
+    if (ident !== blobIdent || !bytesEqual(point, blobPoint)) mismatch();
+    if (!bytesEqual(await ecPointFromPrivate(curveByIdent(ident), d), point)) mismatch();
+  } else if (type === 'ssh-rsa') {
+    const blobE = pub.string();
+    const blobN = pub.string();
+    const [n, e, d] = [reader.string(), reader.string(), reader.string()];
+    reader.string(); // iqmp
+    const [p, q] = [reader.string(), reader.string()];
+    if (bigUnsigned(n) !== bigUnsigned(blobN) || bigUnsigned(e) !== bigUnsigned(blobE)) mismatch();
+    checkRsa(n, e, d, p, q);
+  } else {
+    unsupported(`unsupported key type ${type}`);
+  }
 }
 
 function buildUnencryptedOpenSsh(publicBlob: Uint8Array, section: Uint8Array): string {
@@ -507,7 +605,7 @@ const PEM_FORMATS: Record<string, SshKeyFormat> = {
 
 async function derBlob(format: SshKeyFormat, der: Uint8Array): Promise<Uint8Array> {
   if (format === 'pkcs1') return pkcs1Blob(der);
-  if (format === 'sec1') return sec1Blob(der, null);
+  if (format === 'sec1') return await sec1Blob(der, null);
   return pkcs8Blob(der);
 }
 
@@ -532,12 +630,12 @@ export async function prepareSshPrivateKey(text: string, keyPassphrase?: string 
       const info = await sshPublicKeyInfo(container.publicBlob);
       if (container.cipher === 'none') {
         if (container.kdf !== 'none') invalid('unencrypted OpenSSH key with a KDF');
-        checkOpenSshSection(container.privateSection, container.publicBlob);
+        await checkOpenSshSection(container.privateSection, container.publicBlob);
         return { kind: 'ok', key: { ...info, format, pem: emitPem(pem.label, pem.body), wasEncrypted: false } };
       }
       if (passphrase === '') return { kind: 'needsPassphrase', format };
       const section = await decryptOpenSshSection(container, passphrase);
-      checkOpenSshSection(section, container.publicBlob);
+      await checkOpenSshSection(section, container.publicBlob);
       const plain = buildUnencryptedOpenSsh(container.publicBlob, section);
       wipe(section);
       return { kind: 'ok', key: { ...info, format, pem: plain, wasEncrypted: true } };
