@@ -51,5 +51,8 @@
     "ssh2": "1.16.0",
     "@types/ssh2": "^1.5.8",
     "testcontainers": "10.17.2"
+  },
+  "dependencies": {
+    "hash-wasm": "4.12.0"
   }
 }
