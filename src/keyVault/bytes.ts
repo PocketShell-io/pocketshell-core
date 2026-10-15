@@ -76,7 +76,7 @@ export function wipe(bytes: Uint8Array | null | undefined): void {
 }
 
 export function randomBytes(length: number): Uint8Array {
-  return crypto.getRandomValues(new Uint8Array(length));
+  return webCrypto().getRandomValues(new Uint8Array(length));
 }
 
 /** Thrown when the platform has no WebCrypto (e.g. an insecure http origin). */
@@ -87,8 +87,45 @@ export class VaultCryptoUnavailableError extends Error {
   }
 }
 
-export function subtle(): CoreSubtleCrypto {
-  const api = typeof crypto === 'undefined' ? undefined : crypto.subtle;
+/**
+ * An opaque WebCrypto key handle. Declared here rather than borrowed from the
+ * DOM lib so core's sources typecheck the same in every consumer (DOM or not);
+ * a DOM `CryptoKey` satisfies it.
+ */
+export interface VaultCryptoKey {
+  readonly type: string;
+  readonly extractable: boolean;
+}
+
+/** The slice of `crypto.subtle` the vault uses (browsers in secure contexts, Electron, Node 19+, WebView). */
+export interface VaultSubtleCrypto {
+  digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
+  importKey(
+    format: string,
+    keyData: Uint8Array | Record<string, unknown>,
+    algorithm: string | Record<string, unknown>,
+    extractable: boolean,
+    keyUsages: string[],
+  ): Promise<VaultCryptoKey>;
+  exportKey(format: string, key: VaultCryptoKey): Promise<ArrayBuffer | Record<string, unknown>>;
+  deriveBits(algorithm: Record<string, unknown>, baseKey: VaultCryptoKey, length: number): Promise<ArrayBuffer>;
+  encrypt(algorithm: Record<string, unknown>, key: VaultCryptoKey, data: Uint8Array): Promise<ArrayBuffer>;
+  decrypt(algorithm: Record<string, unknown>, key: VaultCryptoKey, data: Uint8Array): Promise<ArrayBuffer>;
+}
+
+interface VaultCrypto {
+  readonly subtle?: VaultSubtleCrypto;
+  getRandomValues<T extends Uint8Array>(array: T): T;
+}
+
+function webCrypto(): VaultCrypto {
+  const api = (globalThis as unknown as { crypto?: VaultCrypto }).crypto;
+  if (!api) throw new VaultCryptoUnavailableError();
+  return api;
+}
+
+export function subtle(): VaultSubtleCrypto {
+  const api = webCrypto().subtle;
   if (!api) throw new VaultCryptoUnavailableError();
   return api;
 }

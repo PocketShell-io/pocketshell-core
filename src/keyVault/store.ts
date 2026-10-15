@@ -1,4 +1,4 @@
-import { fromUtf8, randomBytes, toB64url, utf8, wipe } from './bytes';
+import { fromUtf8, randomBytes, toB64url, utf8, wipe, type VaultCryptoKey } from './bytes';
 import {
   VAULT_HEADER_SLOT,
   VAULT_SLOT_LIMIT_BYTES,
@@ -280,7 +280,7 @@ interface Unlocked {
   dek: Uint8Array;
   /** HKDF(MK, ".../auth") for the remember record; null when unlocked from a record without one. */
   auth: Uint8Array | null;
-  dekKey: CoreCryptoKey;
+  dekKey: VaultCryptoKey;
   index: VaultIndex;
 }
 

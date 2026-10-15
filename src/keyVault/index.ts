@@ -29,4 +29,4 @@ export { bcryptPbkdf } from './bcryptPbkdf';
 export * from './sshKeys';
 export * from './store';
 export * from './migration';
-export { VaultCryptoUnavailableError } from './bytes';
+export { VaultCryptoUnavailableError, type VaultCryptoKey, type VaultSubtleCrypto } from './bytes';

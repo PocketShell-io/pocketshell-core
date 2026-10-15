@@ -1,6 +1,6 @@
 import { createMD5 } from 'hash-wasm';
 import { bcryptPbkdf } from './bcryptPbkdf';
-import { bytesEqual, concatBytes, fromB64, fromB64url, randomBytes, sha256, subtle, toB64, toB64url, utf8, wipe } from './bytes';
+import { bytesEqual, concatBytes, fromB64, fromB64url, randomBytes, sha256, subtle, toB64, toB64url, utf8, wipe, type VaultCryptoKey } from './bytes';
 import { VAULT_SSH_KEY_TYPES, type VaultSshKeyType } from './types';
 
 /**
@@ -363,7 +363,7 @@ const OPENSSH_CIPHERS: Record<string, { mode: 'ctr' | 'cbc' | 'gcm'; keyLen: num
 };
 
 /** AES-CBC decrypt WITHOUT padding removal (WebCrypto only does PKCS#7). */
-async function aesCbcDecryptRaw(key: CoreCryptoKey, iv: Uint8Array, ct: Uint8Array): Promise<Uint8Array> {
+async function aesCbcDecryptRaw(key: VaultCryptoKey, iv: Uint8Array, ct: Uint8Array): Promise<Uint8Array> {
   if (ct.length === 0 || ct.length % 16 !== 0) return invalid('bad CBC ciphertext length');
   // Append one block that decrypts to a full PKCS#7 pad block: E(0x10…0x10 ⊕ C_last).
   const last = ct.subarray(ct.length - 16);

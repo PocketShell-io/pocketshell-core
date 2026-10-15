@@ -1,5 +1,5 @@
 import { argon2id } from 'hash-wasm';
-import { fromB64url, fromUtf8, randomBytes, subtle, toB64url, utf8, wipe } from './bytes';
+import { fromB64url, fromUtf8, randomBytes, subtle, toB64url, utf8, wipe, type VaultCryptoKey } from './bytes';
 import {
   VAULT_AAD_CHECK,
   VAULT_AAD_DEK,
@@ -80,14 +80,14 @@ export async function hkdf32(mk: Uint8Array, info: string): Promise<Uint8Array> 
 }
 
 /** Import 32 raw bytes as a non-extractable AES-256-GCM key. */
-export async function importAesKey(raw: Uint8Array): Promise<CoreCryptoKey> {
+export async function importAesKey(raw: Uint8Array): Promise<VaultCryptoKey> {
   if (raw.length !== 32) throw new Error('vault AES keys are 32 bytes');
   return subtle().importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 
 /** The keys one passphrase derives: the KEK (as a key) and AUTH (raw, for the server verifier). */
 export interface VaultPassphraseKeys {
-  kek: CoreCryptoKey;
+  kek: VaultCryptoKey;
   /** HKDF(MK, ".../auth"): what phase 2 sends to `/vault/verify`. Never decrypts anything. */
   auth: Uint8Array;
 }
@@ -107,7 +107,7 @@ export async function derivePassphraseKeys(passphrase: string, kdf: VaultKdfPara
 }
 
 export async function seal(
-  key: CoreCryptoKey,
+  key: VaultCryptoKey,
   plaintext: Uint8Array,
   aad: string,
   nonce: Uint8Array = randomBytes(12),
@@ -122,7 +122,7 @@ export async function seal(
 }
 
 /** Open a sealed value; null when the tag (key, nonce, ciphertext or AAD) does not verify. */
-export async function open(key: CoreCryptoKey, sealed: VaultSealed, aad: string): Promise<Uint8Array | null> {
+export async function open(key: VaultCryptoKey, sealed: VaultSealed, aad: string): Promise<Uint8Array | null> {
   const nonce = fromB64url(sealed.n);
   const ct = fromB64url(sealed.ct);
   if (!nonce || nonce.length !== 12 || !ct || ct.length < 16) return null;
@@ -146,7 +146,7 @@ export function newKdfParams(params: { m: number; t: number; p: number } = VAULT
 
 /** Seal the key-check value and the DEK under a KEK. */
 export async function wrapDek(
-  kek: CoreCryptoKey,
+  kek: VaultCryptoKey,
   dek: Uint8Array,
   vaultId: string,
 ): Promise<Pick<VaultHeader, 'wrappedDek' | 'check'>> {
@@ -157,13 +157,13 @@ export async function wrapDek(
 }
 
 /** Is this KEK the vault's? The check value's tag answers without touching the DEK. */
-export async function verifyCheck(kek: CoreCryptoKey, header: VaultHeader): Promise<boolean> {
+export async function verifyCheck(kek: VaultCryptoKey, header: VaultHeader): Promise<boolean> {
   const pt = await open(kek, header.check, VAULT_AAD_CHECK + header.vaultId);
   return pt !== null && fromUtf8(pt) === VAULT_CHECK_PLAINTEXT;
 }
 
 /** Unwrap the DEK; null when the wrap is tampered or the KEK is wrong. */
-export async function unwrapDek(kek: CoreCryptoKey, header: VaultHeader): Promise<Uint8Array | null> {
+export async function unwrapDek(kek: VaultCryptoKey, header: VaultHeader): Promise<Uint8Array | null> {
   const dek = await open(kek, header.wrappedDek, VAULT_AAD_DEK + header.vaultId);
   if (dek && dek.length !== 32) {
     wipe(dek);
@@ -172,11 +172,11 @@ export async function unwrapDek(kek: CoreCryptoKey, header: VaultHeader): Promis
   return dek;
 }
 
-export async function sealIndex(dek: CoreCryptoKey, vaultId: string, index: VaultIndex): Promise<VaultSealed> {
+export async function sealIndex(dek: VaultCryptoKey, vaultId: string, index: VaultIndex): Promise<VaultSealed> {
   return seal(dek, utf8(serializeVaultIndex(index)), VAULT_AAD_INDEX + vaultId);
 }
 
-export async function openIndex(dek: CoreCryptoKey, header: VaultHeader): Promise<VaultIndex | null> {
+export async function openIndex(dek: VaultCryptoKey, header: VaultHeader): Promise<VaultIndex | null> {
   const pt = await open(dek, header.index, VAULT_AAD_INDEX + header.vaultId);
   if (!pt) return null;
   try {
@@ -190,7 +190,7 @@ export async function openIndex(dek: CoreCryptoKey, header: VaultHeader): Promis
 
 /** Seal a `vk-` blob: the secret, plus the public key line for SSH keys. */
 export async function sealKeyBlob(
-  dek: CoreCryptoKey,
+  dek: VaultCryptoKey,
   vaultId: string,
   keyId: string,
   plaintext: Uint8Array,
@@ -203,7 +203,7 @@ export async function sealKeyBlob(
 }
 
 /** Open a blob's public key line; null when absent or tampered. */
-export async function openKeyBlobPublicKey(dek: CoreCryptoKey, blob: VaultKeyBlob): Promise<string | null> {
+export async function openKeyBlobPublicKey(dek: VaultCryptoKey, blob: VaultKeyBlob): Promise<string | null> {
   if (!blob.pub) return null;
   const pt = await open(dek, blob.pub, `${VAULT_AAD_PUB}${blob.vaultId}|${blob.keyId}`);
   if (!pt) return null;
@@ -215,7 +215,7 @@ export async function openKeyBlobPublicKey(dek: CoreCryptoKey, blob: VaultKeyBlo
 }
 
 /** Open a key blob; the AAD binds it to its vault and keyId, so a swapped blob fails. */
-export async function openKeyBlob(dek: CoreCryptoKey, blob: VaultKeyBlob): Promise<Uint8Array | null> {
+export async function openKeyBlob(dek: VaultCryptoKey, blob: VaultKeyBlob): Promise<Uint8Array | null> {
   return open(dek, { n: blob.n, ct: blob.ct }, `${VAULT_AAD_KEY}${blob.vaultId}|${blob.keyId}`);
 }
 

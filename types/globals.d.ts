@@ -47,31 +47,3 @@ declare const WebSocket: {
   };
 };
 
-/**
- * WebCrypto, the slice the key vault uses (browsers in secure contexts,
- * Electron, Node 19+, the Android WebView). Key handles stay opaque.
- */
-interface CoreCryptoKey {
-  readonly type: string;
-  readonly extractable: boolean;
-}
-
-interface CoreSubtleCrypto {
-  digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
-  importKey(
-    format: string,
-    keyData: Uint8Array | Record<string, unknown>,
-    algorithm: string | Record<string, unknown>,
-    extractable: boolean,
-    keyUsages: string[],
-  ): Promise<CoreCryptoKey>;
-  exportKey(format: string, key: CoreCryptoKey): Promise<ArrayBuffer | Record<string, unknown>>;
-  deriveBits(algorithm: Record<string, unknown>, baseKey: CoreCryptoKey, length: number): Promise<ArrayBuffer>;
-  encrypt(algorithm: Record<string, unknown>, key: CoreCryptoKey, data: Uint8Array): Promise<ArrayBuffer>;
-  decrypt(algorithm: Record<string, unknown>, key: CoreCryptoKey, data: Uint8Array): Promise<ArrayBuffer>;
-}
-
-declare const crypto: {
-  readonly subtle?: CoreSubtleCrypto;
-  getRandomValues<T extends Uint8Array>(array: T): T;
-};
