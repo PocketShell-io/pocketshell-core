@@ -42,6 +42,16 @@ non-empty string `name` and `hostname`. It preserves all other fields without
 coercion, including nested arrays and objects, so a client that does not
 understand a field can still carry it forward.
 
+## The gateway auth flag
+
+A host entry may carry `gatewayAuth: 'host' | 'managed' | 'both'`, the key
+vault's per-host gateway policy (key-vault design s7). It is a MIRROR: the
+encrypted vault index is the source of truth, and a client with the vault
+unlocked writes the flag with `mirrorGatewayAuth(hosts, bindings)` before it
+uploads. For sync it is an ordinary host field: a local value wins, an absent
+local value carries the account's, and any value is preserved verbatim.
+Readers check it with `isGatewayAuthPolicy`.
+
 ## The gateway transport marker
 
 A host added from the gateway device list (pocketshell#3086 slice 4: the
