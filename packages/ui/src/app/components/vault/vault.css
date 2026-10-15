@@ -15,6 +15,10 @@
   color: var(--fg);
   box-shadow: var(--shadow-card);
 }
+.vault-card,
+.vault-form {
+  font-family: var(--font-ui);
+}
 .vault-form {
   display: flex;
   flex-direction: column;
