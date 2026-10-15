@@ -256,6 +256,8 @@ export type VaultCreateResult =
   | { kind: 'exists' }
   /** Reset only: the server wants a Google sign-in from the last 5 minutes. */
   | { kind: 'freshAuthRequired' }
+  /** Reset only: the vault is a newer format than this build; nothing was wiped. Update the app. */
+  | { kind: 'unsupportedVersion' }
   | { kind: 'indexFull' }
   | { kind: 'error'; message: string };
 
@@ -265,6 +267,11 @@ export interface VaultResetCarry {
   hosts?: Record<string, HostKeyBinding>;
   /** The account sync passphrase to keep. Default: the current one when unlocked. */
   syncPassphrase?: string | null;
+  /**
+   * Reset even a vault written by a NEWER format than this build reads.
+   * Never set by a UI: an older client must not wipe a newer vault.
+   */
+  forceUnsupported?: boolean;
 }
 
 export type VaultState = 'locked' | 'unlocked';
@@ -1203,6 +1210,11 @@ export class KeyVaultStore {
         if (typeof sync === 'string' && sync !== '') index.sync = { passphrase: sync };
         // Refuse before anything is wiped: a fresh vault other devices cannot read is worse than none.
         if (!indexRoundTrips(index)) return { kind: 'error', message: 'the host bindings to carry over are not valid' };
+        // An older client must never wipe a vault written by a newer format.
+        if (carry.forceUnsupported !== true) {
+          const existing = await this.pullHeader();
+          if (existing.kind === 'unsupportedVersion') return { kind: 'unsupportedVersion' };
+        }
 
         let serverEpoch: number | null = null;
         if (this.verifier?.reset) {
