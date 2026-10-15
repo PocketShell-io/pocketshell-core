@@ -323,7 +323,20 @@ export class KeyVaultStore {
    * always wins over in-flight work.
    */
   private generation = 0;
-  /** A verifier update the server has not accepted yet (new AUTH, proof = old AUTH). */
+  /**
+   * A verifier update the server has not accepted yet (new AUTH, proof = old
+   * AUTH), retried by retryVerifierPublish() and wiped by lock().
+   *
+   * Known gaps, to close BEFORE the server's gated mode is turned on:
+   *  - it lives only in memory: if the app dies (or locks) before the retry
+   *    succeeds, the server keeps the old verifier and other devices in gated
+   *    mode are refused with the new passphrase;
+   *  - gated unlock answers wrongPassphrase from the server's verdict before
+   *    the repair below can run (the header is hidden, so there is no local
+   *    check to prove the new passphrase);
+   *  - a durable fix needs the server to accept the new verifier atomically
+   *    with the header write (or a persisted, wrapped pending proof).
+   */
   private pendingVerifier: { auth: Uint8Array; currentAuth: Uint8Array; epoch: number } | null = null;
   private failures = 0;
   private blockedUntil = 0;
@@ -369,6 +382,8 @@ export class KeyVaultStore {
   /** Forget the DEK and index (sign-out, idle lock). Wins over any operation in flight. */
   lock(): void {
     this.generation += 1;
+    // A pending verifier proof (old + new AUTH) must not outlive the session.
+    this.setPendingVerifier(null);
     if (!this.unlocked) return;
     this.drop();
     this.emit();
@@ -461,8 +476,9 @@ export class KeyVaultStore {
    * vault header already exists. The new vault is left unlocked.
    */
   createVault(passphrase: string, carry: { syncPassphrase?: string | null } = {}): Promise<VaultCreateResult> {
+    // Read at CALL time: a lock() in the same tick must win over the queued task.
+    const generation = this.generation;
     return this.exclusive(async () => {
-      const generation = this.generation;
       try {
         const existing = await this.pullHeader();
         if (existing.kind !== 'noVault') return { kind: 'exists' };
@@ -550,8 +566,9 @@ export class KeyVaultStore {
    * passphrase is a result, never a throw.
    */
   unlock(passphrase: string): Promise<VaultUnlockResult> {
+    // Read at CALL time: a lock() in the same tick must win over the queued task.
+    const generation = this.generation;
     return this.exclusive(async () => {
-      const generation = this.generation;
       const wait = this.backoffRemainingMs();
       if (wait > 0) return { kind: 'backoff', retryAfterMs: wait };
       try {
@@ -665,8 +682,9 @@ export class KeyVaultStore {
 
   /** Unlock from a remembered DEK (no passphrase, no Argon2id). */
   unlockWithRememberedDek(record: VaultRememberRecord): Promise<VaultRememberUnlockResult> {
+    // Read at CALL time: a lock() in the same tick must win over the queued task.
+    const generation = this.generation;
     return this.exclusive(async () => {
-      const generation = this.generation;
       try {
         if (!record || !(record.dek instanceof Uint8Array) || record.dek.length !== 32) return { kind: 'stale' };
         const hasAuth = record.auth instanceof Uint8Array && record.auth.length === 32;
@@ -1070,10 +1088,10 @@ export class KeyVaultStore {
    * other devices' remembered DEKs keep working.
    */
   changePassphrase(current: string, next: string): Promise<VaultChangePassphraseResult> {
+    const generation = this.generation;
     return this.exclusive(async () => {
       const state = this.unlocked;
-      const generation = this.generation;
-      if (!state) return { kind: 'locked' };
+      if (!state || generation !== this.generation) return { kind: 'locked' };
       const wait = this.backoffRemainingMs();
       if (wait > 0) return { kind: 'backoff', retryAfterMs: wait };
       // Our own copy: lock() wipes state.dek in place, and a wrap of a wiped
@@ -1172,8 +1190,9 @@ export class KeyVaultStore {
    * DEKs on every device become stale by epoch.
    */
   resetVault(newPassphrase: string, carry: VaultResetCarry = {}): Promise<VaultCreateResult> {
+    // Read at CALL time: a lock() in the same tick must win over the queued task.
+    const generation = this.generation;
     return this.exclusive(async () => {
-      const generation = this.generation;
       try {
         const current = this.unlocked;
         const index: VaultIndex = {

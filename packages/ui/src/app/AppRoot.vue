@@ -24,6 +24,7 @@ import { useSettingsStore } from './stores/settings';
 import DiagBanner from './components/DiagBanner.vue';
 import UpdateBanner from './components/UpdateBanner.vue';
 import HostKeyTrustGate from './components/HostKeyTrustGate.vue';
+import VaultUnlockGate from './components/vault/VaultUnlockGate.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -137,6 +138,7 @@ onBeforeUnmount(() => {
     <RouterView />
   </slot>
   <HostKeyTrustGate />
+  <VaultUnlockGate />
 </template>
 
 <style>

@@ -79,3 +79,32 @@ default host through it. Identity-bearing decisions compare
 Pinia store ids: every client mounts this UI into an app with its own stores,
 and Pinia merges two stores that share an id. Shared store ids must not reuse a
 client's ids; `tests/storeIds.test.ts` lists the clients' ids and enforces it.
+
+## Key vault
+
+The account key vault's UI is shared (`src/app/keyVault.ts`,
+`src/app/components/vault/`). A platform installs it once, next to
+`provideApi()`, with core's `KeyVaultStore` and only what differs per client:
+
+```ts
+provideKeyVault({
+  store,                                   // KeyVaultStore over the platform's slot transport (+ verifier)
+  remember: { save, forget, isRemembered }, // wrap the DEK+AUTH record with a device key; omit = no "remember"
+  resetUrl, openUrl,                       // "Forgot it?" goes to the web reset (Android, psc) …
+  onForgot,                                // … or opens an in-app reset (web)
+  reauth,                                  // fresh account sign-in before a reset
+  hostList: { exists, verifyPassphrase, remove }, // reset while locked: the synced host list
+  canUpload: true,                         // web: add / rotate keys
+});
+```
+
+`AppRoot` mounts `VaultUnlockGate`, which stays inert until a dial calls
+`requestVaultUnlock(reason, hostLabel)`: concurrent dials share one sheet, and
+a locked vault never falls back to a "pick a key" prompt. The other pieces
+mount where a client wants them: `VaultSetupCard`, `VaultResetFlow` (its
+`#reauth` slot can host a platform's own sign-in button),
+`VaultChangePassphrase`, `VaultKeyList` (with `VaultKeyUpload` when
+`canUpload`), `HostVaultKeyPicker` (v-model is the host's `{keyId,
+gatewayAuth}` binding, saved with `controller.bindHost(alias, binding)`), and
+`VaultSettingsSection` for a `settings.sections` contribution. Missing
+capabilities hide their controls; nothing branches on the platform.

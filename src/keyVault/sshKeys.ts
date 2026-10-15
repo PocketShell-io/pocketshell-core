@@ -253,7 +253,9 @@ async function ecPointFromPrivate(curveOid: string, d: Uint8Array): Promise<Uint
     const key = await subtle().importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: curve.jwk }, true, ['sign']);
     jwk = (await subtle().exportKey('jwk', key)) as { x?: string; y?: string };
   } catch {
-    return mismatch();
+    // The platform could not import the key (curve not offered): we cannot
+    // check it here, which is not the same as a mismatch.
+    return unsupported(`this device cannot check ${curve.ident} keys; upload it from another device`);
   } finally {
     wipe(pkcs8);
     wipe(sec1);

@@ -123,6 +123,37 @@ describe('review #3: lock() wins over in-flight operations', () => {
   });
 });
 
+describe('review 2 (A): a lock() in the same tick as the call wins', () => {
+  it('unlock() then lock() synchronously stays locked', async () => {
+    const { make } = await fresh();
+    const device = make();
+    const pending = device.unlock(PASS);
+    device.lock();
+    await pending;
+    expect(device.state).toBe('locked');
+  });
+
+  it('unlockWithRememberedDek() then lock() synchronously stays locked', async () => {
+    const { store, make } = await fresh();
+    const record = store.exportRememberRecord()!;
+    const device = make();
+    const pending = device.unlockWithRememberedDek(record);
+    device.lock();
+    await pending;
+    expect(device.state).toBe('locked');
+  });
+
+  it('createVault() then lock() synchronously leaves it locked (the vault is still created)', async () => {
+    const transport = new MemoryTransport();
+    const device = new KeyVaultStore({ transport, kdf: KDF });
+    const pending = device.createVault(PASS);
+    device.lock();
+    expect((await pending).kind).toBe('ok');
+    expect(device.state).toBe('locked');
+    expect(await new KeyVaultStore({ transport }).unlock(PASS)).toEqual({ kind: 'ok' });
+  });
+});
+
 describe('review #4: verifier drift after a passphrase change', () => {
   class Server implements VaultServerVerifier {
     auth: string | null = null;
@@ -141,7 +172,7 @@ describe('review #4: verifier drift after a passphrase change', () => {
     }
   }
 
-  it('a failed verifier publish is reported and repaired on the next unlock', async () => {
+  it('a failed verifier publish is reported, retried on demand, and wiped by lock()', async () => {
     const server = new Server();
     const transport = new MemoryTransport();
     const store = new KeyVaultStore({ transport, kdf: KDF, verifier: server });
@@ -150,13 +181,20 @@ describe('review #4: verifier drift after a passphrase change', () => {
     server.refuse = true;
     const result = await store.changePassphrase(PASS, NEXT);
     expect(result).toEqual({ kind: 'ok', verifierPending: true });
+    expect(store.verifierPending).toBe(true);
     expect(server.auth).toBe(before);
     server.refuse = false;
-    store.lock();
-    // The new passphrase opens the vault locally; the store replaces the stale verifier with the kept old AUTH.
-    expect(await store.unlock(NEXT)).toEqual({ kind: 'ok' });
+    expect((await store.retryVerifierPublish()).kind).toBe('ok');
+    expect(store.verifierPending).toBe(false);
     expect(server.auth).not.toBe(before);
     expect(await new KeyVaultStore({ transport, verifier: server }).unlock(NEXT)).toEqual({ kind: 'ok' });
+
+    // lock() and sign-out must not keep the old/new AUTH proof around.
+    server.refuse = true;
+    expect((await store.changePassphrase(NEXT, 'third passphrase')).kind).toBe('ok');
+    expect(store.verifierPending).toBe(true);
+    store.lock();
+    expect(store.verifierPending).toBe(false);
   });
 
   it('a concurrent change on another device aborts this one instead of overwriting it', async () => {

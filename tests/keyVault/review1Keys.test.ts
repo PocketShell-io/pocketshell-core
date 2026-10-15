@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { prepareSshPrivateKey } from '../../src/index';
 
 /**
@@ -89,3 +89,22 @@ describe('review #5: the public key must match the private key', () => {
 
 });
 
+
+describe('review 2 (B): an EC key this platform cannot import is unsupported, not a mismatch', () => {
+  it('reports unsupported when WebCrypto refuses the curve', async () => {
+    const pem = String(generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'sec1', format: 'pem' }));
+    const subtle = globalThis.crypto.subtle;
+    const original = subtle.importKey.bind(subtle);
+    const spy = vi.spyOn(subtle, 'importKey').mockImplementation(((format: string, data: unknown, alg: unknown, ...rest: unknown[]) => {
+      if (typeof alg === 'object' && alg !== null && (alg as { name?: string }).name === 'ECDSA') {
+        return Promise.reject(new Error('NotSupportedError'));
+      }
+      return (original as (...args: unknown[]) => Promise<CryptoKey>)(format, data, alg, ...rest);
+    }) as typeof subtle.importKey);
+    try {
+      expect((await prepareSshPrivateKey(pem)).kind).toBe('unsupported');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
