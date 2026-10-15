@@ -13,8 +13,8 @@ import {
 } from '../../src/index';
 import { MemoryTransport } from './memoryTransport';
 
-/** The parser floor (32 MiB) with one pass: real Argon2id, fast enough for a suite. */
-const KDF = { m: 32768, t: 1, p: 1 };
+/** The parser floor (32 MiB, 3 passes): real Argon2id, fast enough for a suite. */
+const KDF = { m: 32768, t: 3, p: 1 };
 const PASS = 'correct horse battery staple';
 
 const ed25519Pem = () => String(generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }));
@@ -77,7 +77,7 @@ describe('KeyVaultStore: create and unlock', () => {
     const { store, make, transport } = setup();
     await store.createVault(PASS);
     const raw = JSON.parse(transport.slots.get('vault')!.data);
-    transport.put('vault', '{"v":9}');
+    transport.put('vault', '{"v":1}');
     expect(await make().unlock(PASS)).toEqual({ kind: 'corrupt' });
     expect(await make().probe()).toEqual({ kind: 'corrupt' });
     // Valid shape, tampered index: the check passes, the index does not open.

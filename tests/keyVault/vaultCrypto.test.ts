@@ -127,7 +127,7 @@ describe('vault v1 tamper resistance', () => {
 
   it('changing the KDF salt or params changes MK, so the check fails', async () => {
     const raw = JSON.parse(V.headerSlotData);
-    raw.kdf.t = 2;
+    raw.kdf.t = 4;
     const header = parseVaultHeader(JSON.stringify(raw)) as VaultHeader;
     const { kek } = await derivePassphraseKeys(V.passphrase, header.kdf);
     expect(await verifyVaultCheck(kek, header)).toBe(false);

@@ -49,10 +49,17 @@ export interface VaultKdfParams {
 export const VAULT_KDF_DEFAULT = { m: 65536, t: 3, p: 1 } as const;
 /** The slow-device fallback, allowed only when CREATING a vault. */
 export const VAULT_KDF_FALLBACK = { m: 32768, t: 3, p: 1 } as const;
-/** Parse bounds: below the floor is refused, above the cap would be a DoS. */
+/**
+ * Parse bounds. Unlock always runs the header's parameters, so these bound
+ * what a malicious server can ask for: the floor (32 MiB, 3 passes — the
+ * slow-device fallback) caps a downgrade at 2x the default's cost; the
+ * ceiling (256 MiB, 10 passes) keeps a phone's WebView from running out of
+ * memory or time.
+ */
 export const VAULT_KDF_MIN_M = 32768;
-export const VAULT_KDF_MAX_M = 1048576;
-export const VAULT_KDF_MAX_T = 16;
+export const VAULT_KDF_MAX_M = 262144;
+export const VAULT_KDF_MIN_T = 3;
+export const VAULT_KDF_MAX_T = 10;
 export const VAULT_KDF_MAX_P = 8;
 
 /** An AES-GCM box: 12-byte nonce + ciphertext with tag, both base64url. */
@@ -128,10 +135,41 @@ function isBoundedInt(value: unknown, min: number, max: number): value is number
 export function parseKdfParams(value: unknown): VaultKdfParams | null {
   if (!isRecord(value) || value.alg !== 'argon2id') return null;
   if (!isBoundedInt(value.m, VAULT_KDF_MIN_M, VAULT_KDF_MAX_M)) return null;
-  if (!isBoundedInt(value.t, 1, VAULT_KDF_MAX_T)) return null;
+  if (!isBoundedInt(value.t, VAULT_KDF_MIN_T, VAULT_KDF_MAX_T)) return null;
   if (!isBoundedInt(value.p, 1, VAULT_KDF_MAX_P)) return null;
   if (!isId16(value.salt)) return null;
   return { alg: 'argon2id', m: value.m, t: value.t, p: value.p, salt: value.salt };
+}
+
+/**
+ * The numeric `v` of a header or blob JSON, or null when there is none. Lets a
+ * client tell a NEWER format (update the app) from a corrupt slot (reset).
+ */
+export function vaultFormatVersionOf(text: string): number | null {
+  try {
+    const raw: unknown = JSON.parse(text);
+    return isRecord(raw) && typeof raw.v === 'number' && Number.isSafeInteger(raw.v) ? raw.v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Longest entry name the index accepts (UTF-16 code units). */
+export const VAULT_NAME_MAX = 256;
+
+/**
+ * Trim and cap an entry name so the index stays parseable on every device;
+ * never splits a surrogate pair. Empty becomes `fallback`.
+ */
+export function clampVaultName(name: string, fallback: string): string {
+  let out = (typeof name === 'string' ? name : '').trim();
+  if (out.length > VAULT_NAME_MAX) {
+    out = out.slice(0, VAULT_NAME_MAX);
+    const last = out.charCodeAt(out.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1);
+    out = out.trimEnd();
+  }
+  return out === '' ? fallback : out;
 }
 
 /** Parse the `vault` slot JSON; null on any unknown version or malformed field. */
@@ -205,7 +243,7 @@ const ENTRY_TYPES: readonly VaultEntryType[] = [...VAULT_SSH_KEY_TYPES, 'passwor
 
 function parseKeyEntry(value: unknown): VaultKeyEntry | null {
   if (!isRecord(value) || !isId16(value.keyId)) return null;
-  if (typeof value.name !== 'string' || value.name.length > 256) return null;
+  if (typeof value.name !== 'string' || value.name.length > VAULT_NAME_MAX) return null;
   if (!ENTRY_TYPES.includes(value.type as VaultEntryType)) return null;
   if (!isIsoTime(value.createdAt)) return null;
   const entry: VaultKeyEntry = {

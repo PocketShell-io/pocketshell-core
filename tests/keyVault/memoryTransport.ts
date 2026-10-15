@@ -11,8 +11,11 @@ export class MemoryTransport implements VaultSlotTransport {
   readonly writes: string[] = [];
   readOnly = false;
   beforePush: ((slot: string) => void) | null = null;
+  /** Delay every pull (ms), to land a lock() while an operation is in flight. */
+  pullDelayMs = 0;
 
   async pull(slot: string): Promise<VaultSlotPullResult> {
+    if (this.pullDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.pullDelayMs));
     const stored = this.slots.get(slot);
     return stored ? { kind: 'ok', version: stored.version, data: stored.data } : { kind: 'absent' };
   }
