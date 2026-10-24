@@ -1,5 +1,7 @@
 # @pocketshell/core
 
+See [SCOPE.md](SCOPE.md) for ownership and product boundaries.
+
 PocketShell's contract layer as ONE TypeScript implementation, shared by every
 client: the desktop (Electron), the web SPA, and the JS-first Android app
 (a Capacitor WebView).
