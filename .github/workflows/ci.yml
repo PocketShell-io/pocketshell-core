@@ -12,11 +12,14 @@ jobs:
   # Docker needed — this is the every-push floor.
   gate:
     runs-on: ubuntu-latest
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-fund --no-audit
       - run: npm run build
       - run: npm run test:unit
@@ -52,6 +55,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-fund --no-audit
       - run: bash scripts/build-docker.sh
       - run: npm run test:integration
