@@ -131,9 +131,14 @@ export const HELPER_BASELINE_KINDS = ['claude', 'codex', 'opencode'] as const;
  */
 export const HELPER_VERSION_WITHOUT_GROK = '0.4.44';
 
-/** Display names for the picker. Title-case; the phone uses lowercase CLI names. */
+/**
+ * Display names for the picker. Title-case; the phone uses lowercase CLI names.
+ * Claude is the one word, not "Claude Code": the picker renders each name on
+ * one segment, and the two-word form is the only one that wraps to a second
+ * line at the dialog's width.
+ */
 export const KIND_LABELS: Record<LaunchableKind, string> = {
-  claude: 'Claude Code',
+  claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
   grok: 'Grok',
