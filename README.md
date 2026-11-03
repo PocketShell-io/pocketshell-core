@@ -31,7 +31,7 @@ Node 19+, and the Android WebView. The one runtime dependency is `hash-wasm`
 | `aplexer`, `aplexerCommands`, `aplexerParsers` | the session manager's types, CLI commands, and output parsers |
 | `aplexerClientCore` | the whole aplexer client brain over a one-method `exec` transport |
 | `hostCliCore`, `hostCliSessions`, `hostCliWorkspaces`, `hostCliCatalog` | the versioned `pocketshell` host CLI contract, output parsers, and typed failures |
-| `agentCommands`, `agentLaunch` | what `pocketshell agent …` launches per agent, and the launch line builder |
+| `agentCommands`, `agentLaunch` | launch-line builder, host engine IDs from `a engines --json`, and the offline-only picker fallback |
 | `composerSend` | UTF-8 framing, serialized insert/submit, submit timing, draft retention and uncertain-send outcomes |
 | `savedHosts` | client-owned host list: stable host IDs, CRUD/order/default/import with validate-before-write, opaque key references, `hostEntryId` |
 | `keyVault/` | the account key vault: vault v1 format and crypto (Argon2id via `hash-wasm`, HKDF, AES-256-GCM), SSH private-key parsing and decryption, the `KeyVaultStore` over an injected slot transport and optional phase-2 server verifier, legacy `keys` slot migration |

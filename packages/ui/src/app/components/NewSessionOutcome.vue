@@ -18,7 +18,7 @@
 // because it was separable: it reads one result and offers two buttons, and
 // shares nothing with the browsing around it.
 import AppIcon from '@ui/components/AppIcon.vue';
-import { KIND_LABELS } from '@pocketshell/core';
+import { kindLabel } from '@pocketshell/core';
 import type { LaunchChoice, StartSessionResult } from '@pocketshell/core';
 import { displayPath, useProjectsStore } from '../stores/projects';
 
@@ -84,7 +84,7 @@ const projects = useProjectsStore();
          give. -->
     <p v-if="outcome.ok && parkedKind" class="launch-note">
       <AppIcon name="terminal" :size="12" />
-      {{ KIND_LABELS[parkedKind] }} starts when this session's terminal opens — press
+      {{ kindLabel(parkedKind) }} starts when this session's terminal opens — press
       <strong>Open session</strong>.
     </p>
 

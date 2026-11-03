@@ -3,7 +3,7 @@ import { useRoute } from 'vue-router';
 import type { Box } from '@pocketshell/core/shared/popupPlacement';
 import {
   buildLaunchCommand,
-  KIND_LABELS,
+  kindLabel,
   launchBlocker,
   type LaunchChoice,
 } from '@pocketshell/core';
@@ -77,15 +77,9 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
    * creates nothing on the host and has nothing to configure. Putting a free
    * action behind a dialog would make it feel expensive.
    *
-   * The menu also used to offer Grok, which at the time could not have worked:
-   * 0.4.44's `pocketshell agent` has no `grok` subcommand. That fact still
-   * holds, but it is no longer a reason to leave Grok out — the dialog now asks
-   * the HOST which subcommands its helper actually has and offers Grok only
-   * where the answer says yes, explaining itself where it says no (see
-   * `kindUnavailableReason` in shared/agentLaunch.ts). Which is the deeper
-   * reason the engines belong behind the dialog rather than in this menu: the
-   * answer is per-host and has to be fetched, and a menu row cannot wait for a
-   * round trip or carry the sentence that comes back when it is no.
+   * The engine list is per-host: the dialog reads `a engines --json`, then
+   * explains unavailable selections before creating a session. A menu row
+   * cannot wait for that round trip or carry its result.
    */
   const launching = ref(false);
 
@@ -203,7 +197,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
       // it rather than reconstruct which flags their choices implied.
       createError.value =
         `Started "${session}", but its terminal did not come up in time, so ` +
-        `${KIND_LABELS[choice.kind]} was not launched. The session is a plain shell - run ` +
+        `${kindLabel(choice.kind)} was not launched. The session is a plain shell - run ` +
         `\`${buildLaunchCommand(choice)}\` in it to start the agent.`;
     }, LAUNCH_TIMEOUT_MS);
   }
@@ -383,7 +377,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
       createError.value =
         `The host answered with "${created}", which is already open in this folder, so no ` +
         `new session was started` +
-        (choice ? ` and ${KIND_LABELS[choice.kind]} was not launched.` : '.');
+        (choice ? ` and ${kindLabel(choice.kind)} was not launched.` : '.');
       return;
     }
     // The row is filed as a pending session (`sessions.addPending`) rather than
@@ -405,7 +399,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
       createError.value =
         `Started "${created}" on the host, but it did not appear in this folder, so there ` +
         `is no tab for it here` +
-        (choice ? ` and ${KIND_LABELS[choice.kind]} was not launched.` : '.');
+        (choice ? ` and ${kindLabel(choice.kind)} was not launched.` : '.');
       return;
     }
     deps.selected.value = created;
