@@ -17,11 +17,11 @@ describe('Antigravity integration', () => {
     expect(agentMark('antigravity')).toEqual({ icon: 'brand-antigravity', label: 'Antigravity' });
   });
 
-  it('requires an advertised remote helper capability before creating a session', () => {
+  it('uses the host engine catalog before creating a session', () => {
     const choice = { kind: 'antigravity' as const, dir: '/work/project', skipPermissions: true, profile: null };
-    expect(launchBlocker(choice, { subcommands: ['claude', 'codex'] })).toContain('Antigravity');
-    expect(kindUnavailableReason('antigravity', { subcommands: null })).toContain('Antigravity');
-    expect(launchBlocker(choice, { subcommands: ['antigravity'] })).toBeNull();
+    expect(launchBlocker(choice, { engineIds: ['claude', 'codex'] })).toContain('Antigravity');
+    expect(kindUnavailableReason('antigravity', { engineIds: null, probing: true })).toContain('Antigravity');
+    expect(launchBlocker(choice, { engineIds: ['antigravity'] })).toBeNull();
     expect(buildLaunchCommand(choice)).toBe("pocketshell agent antigravity --dir '/work/project'");
     expect(buildLaunchCommand({ ...choice, dir: '/work/with spaces', skipPermissions: false, profile: 'ignored' })).toBe("pocketshell agent antigravity --dir '/work/with spaces' --no-skip-permissions");
     expect(supportsSkipPermissions('antigravity')).toBe(true);

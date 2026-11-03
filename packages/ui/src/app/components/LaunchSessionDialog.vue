@@ -33,12 +33,8 @@
 // picker (shown only when the host lists a real choice). Diverged:
 //   - no name / start-folder fields — the workspace already fixes both, and
 //     the name is derived host-side;
-//   - Grok is offered, but PER HOST. The phone lists it unconditionally; the
-//     pinned 0.4.44 helper has no `grok` subcommand at all, and typing one at
-//     a host that lacks it exits 2 and leaves a plain shell behind. So this
-//     dialog asks the host what it can launch (`agents.loadAgentKinds`) and
-//     turns a "no" into a sentence rather than into a missing button — see
-//     `hostSupport` below and the header of shared/agentLaunch.ts;
+//   - The host engine catalog comes from `a engines --json`. A small static
+//     list appears only if that query fails; shell remains a separate choice.
 //   - the answers PERSIST (the phone resets every open) — see
 //     `AppSettings.agentLaunchDefaults`;
 //   - an empty or failed profile fetch says so in a line, where the phone
@@ -51,10 +47,10 @@ import { useConnectionStore } from '../stores/connection';
 import { useSettingsStore } from '../stores/settings';
 import { displayPath, useProjectsStore } from '../stores/projects';
 import {
-  KIND_LABELS,
-  LAUNCHABLE_KINDS,
   buildLaunchCommand,
+  kindLabel,
   kindUnavailableReason,
+  launchableKindsFor,
   launchBlocker,
   profileFlagName,
   profilesFor,
@@ -90,6 +86,10 @@ const settings = useSettingsStore();
 const wantsAgent = ref(true);
 const kind = ref<LaunchableKind>(settings.agentLaunchDefaults.kind);
 const skipPermissions = ref(settings.agentLaunchDefaults.skipPermissions);
+/** Wait for the host catalog before showing its offline fallback. */
+const launchableKinds = computed(() =>
+  agents.agentKindsResolved ? launchableKindsFor(agents.agentKinds) : [],
+);
 /**
  * The picked profile NAME, per engine, seeded from last time.
  *
@@ -130,20 +130,10 @@ const choice = computed<LaunchChoice | null>(() => {
   };
 });
 
-/**
- * What this host's `pocketshell agent` said it can launch, plus the helper
- * version bootstrap already read.
- *
- * The version is passed for the MESSAGE only — the decision comes from the
- * probed subcommand list, never from comparing numbers (agentLaunch.ts says
- * why). It costs nothing to include and turns "your helper is too old" into
- * "your helper is 0.4.44, which is too old", which is the difference between a
- * complaint and an instruction.
- */
+/** The available engine IDs and the independent executable-path probe. */
 const hostSupport = computed<HostAgentSupport>(() => ({
-  subcommands: agents.agentKinds,
+  engineIds: agents.agentKinds,
   binaries: agents.agentBinaries,
-  helperVersion: connection.bootstrap?.pocketshell.version ?? null,
   probing: agents.agentKindsProbing,
 }));
 
@@ -159,8 +149,8 @@ function unavailable(k: LaunchableKind): string | null {
  * satisfy the shape.
  *
  * `hostSupport` is passed only on the AGENT branch: a plain shell needs no
- * `pocketshell agent` subcommand at all, and a host whose probe failed must
- * not lose the ability to open a terminal over it.
+ * agent engine, and a host whose catalog query failed still gets the static
+ * fallback.
  */
 const blocker = computed(() =>
   choice.value
@@ -174,11 +164,14 @@ const preview = computed(() => (choice.value ? buildLaunchCommand(choice.value) 
 onMounted(() => {
   if (!connection.connectionId) return;
   void agents.loadProfiles(connection.connectionId);
-  // Re-asked on every open rather than cached: the helper is upgraded out from
-  // under this app, and a user who just installed a newer one should see the
-  // engine it added in the very next dialog.
+  // Re-asked on every open so current host configuration and availability are
+  // reflected immediately.
   void agents.loadAgentKinds(connection.connectionId);
 });
+
+watch(launchableKinds, (kinds) => {
+  if (kinds.length > 0 && !kinds.includes(kind.value)) kind.value = kinds[0];
+}, { immediate: true });
 
 // Switching to an engine that cannot take one drops a stale profile from the
 // preview immediately, rather than at confirm time.
@@ -239,19 +232,13 @@ function onConfirm(): void {
       </section>
 
       <template v-if="wantsAgent">
-        <!-- ---- which harness ----
-             An engine this host cannot launch is DIMMED but still clickable,
-             which is the deliberate part. Removing it would leave the user
-             unable to tell "this app dropped Grok" from "my host's helper is
-             old"; disabling it would show that something is wrong without
-             saying what. Clicking it selects it, `blocker` names the reason in
-             full, and Create stays dead — so the explanation is one click away
-             and the broken launch is still impossible. -->
+        <!-- A cataloged engine stays visible, with its availability reason in
+             the segment tooltip when this selection cannot launch. -->
         <section class="field">
           <span class="field-label">Agent</span>
           <div class="segmented" role="tablist">
             <button
-              v-for="k in LAUNCHABLE_KINDS"
+              v-for="k in launchableKinds"
               :key="k"
               class="segment"
               :class="{ on: kind === k, unavailable: unavailable(k) !== null }"
@@ -260,10 +247,12 @@ function onConfirm(): void {
               :title="unavailable(k) ?? ''"
               @click="kind = k"
             >
-              {{ KIND_LABELS[k] }}
+              {{ kindLabel(k) }}
             </button>
           </div>
         </section>
+        <p v-if="!agents.agentKindsResolved" class="hint muted">Checking this host’s engine catalog…</p>
+        <p v-else-if="!launchableKinds.length" class="hint muted">No available agent engines on this host.</p>
 
         <!-- ---- skip permissions ----
              Absent, not disabled, for opencode: the helper's own help calls
@@ -306,14 +295,14 @@ function onConfirm(): void {
              knows the picker is not simply missing. -->
         <p v-else-if="agents.profilesError" class="hint muted">
           <AppIcon name="alert-triangle" :size="12" />
-          Could not list this host’s agent profiles, so {{ KIND_LABELS[kind] }} will start
+          Could not list this host’s agent profiles, so {{ kindLabel(kind) }} will start
           on its default configuration.
         </p>
         <p
           v-else-if="supportsProfiles(kind) && !agents.profilesLoading && !engineProfiles.length"
           class="hint muted"
         >
-          This host has no {{ KIND_LABELS[kind] }} profiles configured, so it will start on
+          This host has no {{ kindLabel(kind) }} profiles configured, so it will start on
           its default configuration.
         </p>
 

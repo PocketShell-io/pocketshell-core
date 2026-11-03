@@ -419,11 +419,12 @@ export interface PocketShellApi {
     };
 
     "agent": {
+    /** Available engine IDs parsed from the host's `a engines --json`; null means offline/query failure. */
     "kinds": (connectionId: string) => Promise<string[] | null>;
     /**
-     * The launch binaries on the host's PATH (`pocketshell` + the engine
-     * CLIs, from one `command -v` batch), or null when the probe failed —
-     * null reads as "unknown" and refuses nothing, exactly like `kinds`' null.
+     * The names found on the host's PATH from an independent probe. The UI
+     * always uses this for the `pocketshell` launcher and uses engine names
+     * only when the live aplexer catalog was unavailable.
      */
     "binaries": (connectionId: string) => Promise<string[] | null>;
     "profiles": (connectionId: string) => Promise<unknown[]>;
