@@ -243,6 +243,23 @@ export const ipc = {
     applyHosts: 'sync:applyHosts', // HostEntry[] -> append missing to ~/.ssh/config
   },
   /**
+   * The gateway directory (PocketShellApi['gateway'], core #3086): the
+   * account's enrolled gateway devices, this client's pairings, and the SSH
+   * client keys a pairing can pin. A platform that cannot dial through the
+   * gateway or keep the gateway credential itself omits the whole preload
+   * group; the shared tree probes it defensively (gatewayCapability) and
+   * hides the device source when it is absent. Routing tokens and host-key
+   * pins never cross this surface — main keeps them behind the enrollment
+   * file, and a pairing's summary is all the renderer sees.
+   */
+  gateway: {
+    devices: 'gateway:devices', // (serverUrl) -> GatewayDevice[] — the gateway's own last list
+    pairings: 'gateway:pairings', // () -> GatewayPairingSummary[] — this client's saved pairings
+    clientKeys: 'gateway:clientKeys', // () -> GatewayClientKey[] — public halves only
+    createClientKey: 'gateway:createClientKey', // (label) -> GatewayClientKey — generate + keep the private half local
+    addDevice: 'gateway:addDevice', // GatewayAddDeviceRequest -> GatewayAddDeviceResult — write the local enrollment
+  },
+  /**
    * Update check — the desktop port of the phone's ReleaseChecker: main polls
    * the repo's `releases/latest`, compares against the running version, and
    * hands the renderer a three-way answer (available / up-to-date / failed).
