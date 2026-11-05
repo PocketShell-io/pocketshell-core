@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
 // @ts-expect-error The shared policy scanner is native JavaScript.
 import { accentBorderViolations, scanAccentBorders } from '../scripts/accent-borders.mjs';
 
@@ -43,6 +44,6 @@ describe('no accent borders design contract', () => {
   });
 
   it('shared UI styles contain no accent borders', () => {
-    expect(scanAccentBorders(new URL('../src', import.meta.url).pathname)).toEqual([]);
+    expect(scanAccentBorders(fileURLToPath(new URL('../src', import.meta.url)))).toEqual([]);
   });
 });

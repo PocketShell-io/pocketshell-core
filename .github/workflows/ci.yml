@@ -22,6 +22,7 @@ jobs:
           cache: npm
       - run: npm ci --no-fund --no-audit
       - run: npm run build
+      - run: npm run test:exports
       - run: npm run test:unit
       - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
@@ -39,6 +40,21 @@ jobs:
           npm run build
           npm run typecheck
           npm test
+
+  # npm's script shell differs on Windows: TypeScript succeeding does not
+  # prove the emitted CommonJS package metadata can actually be loaded.
+  windows-exports:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-fund --no-audit
+      - run: npm run build
+      - run: npm run test:exports
 
   # The Docker-backed tier: build the same fleet images the desktop and
   # Android projects build (tests-docker/ is a byte-identical copy of the
