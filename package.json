@@ -34,7 +34,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/fix-esm-extensions.mjs && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "tsc -p tsconfig.json && node scripts/fix-esm-extensions.mjs && tsc -p tsconfig.cjs.json && node -e \"require('node:fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}) + '\\n')\"",
+    "test:exports": "node scripts/verify-build-exports.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:unit && npm run test:integration",
     "test:browser": "node scripts/verify-browser-policy.mjs",
