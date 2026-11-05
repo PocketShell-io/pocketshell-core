@@ -738,10 +738,46 @@ export class KeyVaultStore {
    */
   async getTrustedHost(accountId: string, target: TrustedHostTarget, minimumRevision = 0): Promise<TrustedHostRead> {
     const state = this.unlocked;
-    if (!state) return { kind: 'locked' };
-    const slot = await trustedHostSlot(target);
-    const pulled = await this.pull(slot);
-    return this.decodeTrustedHost(accountId,target,pulled,minimumRevision,state);
+    return this.exclusive(async () => {
+      if (!state || this.unlocked !== state) return { kind: 'locked' };
+      const refreshed = await this.refreshTrustedHostIndex(state);
+      if (refreshed.kind !== 'ok') return refreshed;
+      const slot = await trustedHostSlot(target);
+      const pulled = await this.pull(slot,state.auth);
+      return this.decodeTrustedHost(accountId,target,pulled,minimumRevision,state);
+    });
+  }
+
+  /** Refresh authorization once per trust operation using the held DEK, never
+   * a second passphrase. Call only within exclusive(): index writes cannot
+   * interleave. lock()/account replacement still wins across every await. */
+  private async refreshTrustedHostIndex(state: Unlocked, active: () => boolean = () => true): Promise<{kind:'ok'} | {kind:'locked'|'invalid'|'rollback'|'gated'}> {
+    const owns = () => this.unlocked === state && active();
+    if (!owns()) return {kind:'locked'};
+    const pulled = await this.pullHeader(state.auth);
+    if (!owns()) return {kind:'locked'};
+    if (pulled.kind === 'gated') return pulled;
+    if (pulled.kind !== 'ok' || pulled.header.vaultId !== state.header.vaultId || pulled.header.epoch !== state.header.epoch
+      || !Number.isSafeInteger(pulled.version) || pulled.version < 1) {
+      this.lock();
+      return {kind:'invalid'};
+    }
+    if (pulled.version < state.version) {
+      this.lock();
+      return {kind:'rollback'};
+    }
+    if (pulled.version === state.version && serializeVaultHeader(pulled.header) !== serializeVaultHeader(state.header)) {
+      this.lock();
+      return {kind:'invalid'};
+    }
+    const index = await openIndex(state.dekKey,pulled.header);
+    if (!owns()) return {kind:'locked'};
+    if (!index) {this.lock();return {kind:'invalid'};}
+    state.header = pulled.header;
+    state.version = pulled.version;
+    state.index = index;
+    this.emit();
+    return {kind:this.unlocked === state ? 'ok' : 'locked'};
   }
 
   private async decodeTrustedHost(accountId: string, target: TrustedHostTarget, pulled: VaultSlotPullResult, minimumRevision: number, state: Unlocked): Promise<TrustedHostRead> {
@@ -780,13 +816,19 @@ export class KeyVaultStore {
 
   async listTrustedHosts(accountId: string, floors: Readonly<Record<string, number>> = {}): Promise<TrustedHostRecord[]> {
     const generation = this.unlocked;
+    return this.exclusive(async () => {
     if (!generation) return [];
+    if (this.unlocked !== generation) throw new Error('Vault changed while loading servers.');
+    let active = true;
     const deadline = Date.now() + 15000;
     const timed = async <T>(p: Promise<T>): Promise<T> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {return await Promise.race([p,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Loading servers timed out.')),Math.max(0,deadline-Date.now()));})]);}
       finally {if(timer !== undefined) clearTimeout(timer);}
     };
+    try {
+    const refreshed = await timed(this.refreshTrustedHostIndex(generation,() => active));
+    if (refreshed.kind !== 'ok') throw new Error(`Vault authorization could not be refreshed (${refreshed.kind}).`);
     const slots = await timed(this.transport.list());
     if (this.unlocked !== generation) throw new Error('Vault changed while loading servers.');
     if (slots.length > 4096) throw new Error('Too many account slots.');
@@ -814,6 +856,8 @@ export class KeyVaultStore {
     try { await Promise.all(Array.from({length:Math.min(4,trustedSlots.length)},worker)); }
     catch(e) {halted = true;throw e;}
     return result;
+    } finally {active = false;}
+    });
   }
 
   // ── reading the index ──────────────────────────────────────────────────
