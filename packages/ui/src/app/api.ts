@@ -33,7 +33,6 @@ import type {
   FileStat,
   ForwardSpec,
   GatewayDevice,
-  GatewayTransportTarget,
   ForwardState,
   GeometryProbe,
   HomeResult,
@@ -77,54 +76,23 @@ export interface InstalledAppInfo {
 }
 
 /**
- * A key this device can authenticate to a gateway host with: public data
- * only. `publicKey` is the OpenSSH line the user puts in the host's
- * `~/.ssh/authorized_keys`; the private half never leaves the platform's
- * key store.
+ * The gateway pairing contract's payloads live in core
+ * (src/gatewayDevices.ts) so a platform's capability implementation and this
+ * shared tree share one typed shape; re-exported here for the
+ * PocketShellApi contract below.
  */
-export interface GatewayClientKey {
-  /** The platform's opaque key reference (Android: the key-vault handle). */
-  id: string;
-  label: string;
-  /** `SHA256:…`, for the user to compare on the host. */
-  fingerprint: string;
-  publicKey: string;
-}
-
-/** One saved gateway pairing, as the platform reports it: public data only. */
-export interface GatewayPairingSummary {
-  serverUrl: string;
-  deviceId: string;
-  /** The pinned host key's `SHA256:…` fingerprint. */
-  fingerprint: string;
-  /** Whether the exact key line or only its fingerprint was pinned. */
-  pinKind: 'host-key' | 'fingerprint';
-  /** The client key this pairing authenticates with ({@link GatewayClientKey.id}). */
-  keyId: string;
-}
-
-/**
- * "Add this gateway device": save a host carrying the gateway marker and
- * pair it with the host-key pin the user PASTED (never the device list's
- * advisory key) and the client key the user chose.
- */
-export interface GatewayAddDeviceRequest {
-  /** The saved host's display name. */
-  name: string;
-  /** The SSH user on the device. */
-  username: string;
-  gateway: GatewayTransportTarget;
-  /** What the user pasted: a `gateway show --host-key` line, the
-   *  `pocketshell-link show` line, or a `SHA256:` fingerprint. */
-  pin: string;
-  keyId: string;
-}
-
-export interface GatewayAddDeviceResult {
-  /** The saved host's name, to select or dial it. */
-  hostName: string;
-  pairing: GatewayPairingSummary;
-}
+import type {
+  GatewayAddDeviceRequest,
+  GatewayAddDeviceResult,
+  GatewayClientKey,
+  GatewayPairingSummary,
+} from '@pocketshell/core';
+export type {
+  GatewayAddDeviceRequest,
+  GatewayAddDeviceResult,
+  GatewayClientKey,
+  GatewayPairingSummary,
+};
 
 /** How a share request ended: handed to a share target, saved locally, or dismissed. */
 export type DiagnosticsShareOutcome = 'shared' | 'saved' | 'cancelled';

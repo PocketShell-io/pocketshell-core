@@ -26,7 +26,7 @@
  * The routing token never reaches this module: a platform fetches the list
  * where its token lives (Android: natively) and hands over the JSON body.
  */
-import { isValidGatewayDeviceId, normalizeGatewayServerUrl, normalizeSha256Fingerprint } from './gatewayTransport';
+import { isValidGatewayDeviceId, normalizeGatewayServerUrl, normalizeSha256Fingerprint, type GatewayTransportTarget } from './gatewayTransport';
 
 /** The device-list path on the gateway's HTTPS origin. */
 export const GATEWAY_DEVICES_PATH = '/identity/v1/devices';
@@ -368,4 +368,56 @@ export function classifyGatewayDirectoryFailure(error: unknown): GatewayDirector
     }
   }
   return { kind: 'unavailable', message: message || 'The gateway device list could not be loaded.' };
+}
+
+// --- the platform pairing contract (PocketShellApi['gateway'] payloads) ---------
+
+/**
+ * A key this device can authenticate to a gateway host with: public data
+ * only. `publicKey` is the OpenSSH line the user puts in the host's
+ * `~/.ssh/authorized_keys`; the private half never leaves the platform's
+ * key store.
+ */
+export interface GatewayClientKey {
+  /** The platform's opaque key reference (Android: the key-vault handle). */
+  id: string;
+  label: string;
+  /** `SHA256:…`, for the user to compare on the host. */
+  fingerprint: string;
+  publicKey: string;
+}
+
+/** One saved gateway pairing, as the platform reports it: public data only. */
+export interface GatewayPairingSummary {
+  serverUrl: string;
+  deviceId: string;
+  /** The pinned host key's `SHA256:…` fingerprint. */
+  fingerprint: string;
+  /** Whether the exact key line or only its fingerprint was pinned. */
+  pinKind: 'host-key' | 'fingerprint';
+  /** The client key this pairing authenticates with ({@link GatewayClientKey.id}). */
+  keyId: string;
+}
+
+/**
+ * "Add this gateway device": save a host carrying the gateway marker and
+ * pair it with the host-key pin the user PASTED (never the device list's
+ * advisory key) and the client key the user chose.
+ */
+export interface GatewayAddDeviceRequest {
+  /** The saved host's display name. */
+  name: string;
+  /** The SSH user on the device. */
+  username: string;
+  gateway: GatewayTransportTarget;
+  /** What the user pasted: a `gateway show --host-key` line, the
+   *  `pocketshell-link show` line, or a `SHA256:` fingerprint. */
+  pin: string;
+  keyId: string;
+}
+
+export interface GatewayAddDeviceResult {
+  /** The saved host's name, to select or dial it. */
+  hostName: string;
+  pairing: GatewayPairingSummary;
 }
