@@ -49,6 +49,10 @@ import GatewayDevicesSection from '../components/GatewayDevicesSection.vue';
 import GatewayAddDevicePanel from '../components/GatewayAddDevicePanel.vue';
 import GatewayDialErrorActions from '../components/GatewayDialErrorActions.vue';
 import HostRowDetail from '../components/HostRowDetail.vue';
+import TrustedServersSection from '../components/TrustedServersSection.vue';
+import { useKeyVault } from '../keyVault';
+import { openTrustedServerWorkspace } from '../trustedServerWorkspace';
+import { useSessionsStore } from '../stores/sessions';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
 import { useGatewayPickerSource } from '../useGatewayPickerSource';
@@ -58,6 +62,8 @@ const router = useRouter();
 const connection = useConnectionStore();
 const hostList = useHostsStore();
 const sync = useSyncStore();
+const keyVault = useKeyVault();
+const trustedAccountMode = Boolean(keyVault?.platform.accountId && keyVault.platform.installTrustedHost && keyVault.platform.trustedHostRevisions);
 const connectError = ref<string | null>(null);
 /**
  * Why {@link connectError}'s dial failed, when it was a gateway dial core
@@ -289,6 +295,7 @@ onMounted(async () => {
     attempted: autoConnectAttempted(),
     connected: connection.connectionId !== null,
   });
+  if (trustedAccountMode) return;
   if (decision.action === 'connect') await runAutoConnect(decision.host);
 });
 
@@ -350,10 +357,10 @@ async function onConnect(host: HostEntry): Promise<void> {
   // dial would open a second connection and orphan the first — the session
   // panel, terminal pool and forwards all key off the old id.
   if (hostEntryId(host) === connectedKey.value) {
-    enterWorkspace(host);
+    await enterWorkspace(host);
     return;
   }
-  if (await dial(host)) enterWorkspace(host);
+  if (await dial(host)) await enterWorkspace(host);
 }
 
 /** Hang up. Stays on the picker — the row's dot going grey is the feedback. */
@@ -413,7 +420,33 @@ async function dial(host: HostEntry): Promise<boolean> {
   return ok;
 }
 
-function enterWorkspace(host: HostEntry): void {
+async function enterWorkspace(host: HostEntry): Promise<void> {
+  if (trustedAccountMode && keyVault?.platform.accountId) {
+    const id = connection.connectionId;
+    const account = await keyVault.platform.accountId();
+    const sessions = useSessionsStore();
+    if (!id || !account) return;
+    const current = async () => connection.connectionId === id
+      && connection.activeHost !== null && hostEntryId(connection.activeHost) === hostEntryId(host)
+      && keyVault.store.state === 'unlocked' && await keyVault.platform.accountId!() === account;
+    connectingTo.value = host.name;
+    try {
+      const route = await openTrustedServerWorkspace({
+        current,
+        lastFolder:readLastFolder(host.name),
+        list:async () => typeof api.helper.sessionsListing === 'function'
+          ? api.helper.sessionsListing(id,'activity') : {sessions:await api.helper.sessionsList(id,'activity'),errors:[]},
+        home:() => api.sftp.realPath(id,'.'),
+        start:folder => api.projects.startSession(id,{folder,namePolicy:'reuse'}),
+        pending:(result,folder) => {const summary = sessions.summaryFromStartResult(result,folder); if(summary) sessions.addPending(summary);},
+      });
+      if (!await current()) return;
+      await router.push({name:'folder',params:{name:host.name,folder:route.folder},
+        ...(route.session ? {query:{tab:route.session}} : {})});
+    } catch(e) { connectError.value = (e as Error).message; }
+    finally { connectingTo.value = null; }
+    return;
+  }
   // Land in the folder this host was last open on, when there is one — the
   // whole point of relaunching into the same tabs. The workspace restores the
   // rest of its own state (Files tabs, selection) from the same store, so the
@@ -541,7 +574,8 @@ function onClearDefault(): void {
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:
            say how to reveal it rather than reading as an empty account. -->
-      <p v-if="accountSignedIn && !accountUnlocked" class="muted locked-note">
+      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onConnect" />
+      <p v-if="!trustedAccountMode && accountSignedIn && !accountUnlocked" class="muted locked-note">
         Your account's hosts show up here once Account &amp; sync has checked the account.
         <!-- The unlock lives behind the account action; a note alone would
              send a first-run reader hunting through chrome for it. -->
@@ -550,7 +584,7 @@ function onClearDefault(): void {
       <!-- The two host sources. Each group is a labelled list; the config
            group keeps the empty state, the account group only exists when it
            has something the config group does not. -->
-      <template v-for="group in hostGroups" :key="group.kind">
+      <template v-for="group in trustedAccountMode ? [] : hostGroups" :key="group.kind">
         <h2 v-if="group.label" class="group-label">{{ group.label }}</h2>
         <ul class="host-list">
           <!-- The card is the <li>, not the row button: the "make this the
@@ -635,7 +669,7 @@ function onClearDefault(): void {
       <!-- The gateway device source: only where the platform provides it,
            and only for a signed-in account (the list is the account's). -->
       <GatewayDevicesSection
-        v-if="gateway.available && accountSignedIn"
+        v-if="!trustedAccountMode && gateway.available && accountSignedIn"
         :hosts="listedHosts"
         :busy="connectingTo !== null"
         @add="openAddDevice"
@@ -646,7 +680,7 @@ function onClearDefault(): void {
            the message: an offline host is offline, a missing pairing asks to
            pair, a sign-in problem asks to sign in. -->
       <GatewayDialErrorActions
-        v-if="connectError && connectErrorKind"
+        v-if="!trustedAccountMode && connectError && connectErrorKind"
         :kind="connectErrorKind"
         :host="failedHost"
         :gateway-available="gateway.available"

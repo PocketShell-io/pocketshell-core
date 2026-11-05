@@ -18,6 +18,7 @@ import {
   type VaultKdfParams,
 } from './format';
 import { prepareSshPrivateKey, type PrepareSshKeyResult } from './sshKeys';
+import { trustedHostSlot, parseTrustedHostEnvelope, openTrustedHost, sealTrustedHost, type TrustedHostTarget, type TrustedHostData, type TrustedHostRecord } from './trustedHosts';
 import {
   isGatewayAuthPolicy,
   type GatewayAuthPolicy,
@@ -317,6 +318,7 @@ interface Unlocked {
   dekKey: VaultCryptoKey;
   index: VaultIndex;
 }
+type TrustedHostRead = { kind: 'ok'; host: TrustedHostRecord } | { kind: 'locked' | 'absent' | 'gated' | 'invalid' | 'rollback' };
 
 export class KeyVaultStore {
   private readonly transport: VaultSlotTransport;
@@ -727,6 +729,91 @@ export class KeyVaultStore {
         return { kind: 'error', message: describe(error) };
       }
     });
+  }
+
+  /**
+   * Read independently authenticated host trust. Callers persist the accepted
+   * version floor account+vault+route scoped; absence is never permission to
+   * reset a pin. Directory-advertised SSH keys are never inputs here.
+   */
+  async getTrustedHost(accountId: string, target: TrustedHostTarget, minimumRevision = 0): Promise<TrustedHostRead> {
+    const state = this.unlocked;
+    if (!state) return { kind: 'locked' };
+    const slot = await trustedHostSlot(target);
+    const pulled = await this.pull(slot);
+    return this.decodeTrustedHost(accountId,target,pulled,minimumRevision,state);
+  }
+
+  private async decodeTrustedHost(accountId: string, target: TrustedHostTarget, pulled: VaultSlotPullResult, minimumRevision: number, state: Unlocked): Promise<TrustedHostRead> {
+    if (pulled.kind !== 'ok') return pulled.kind === 'absent' && minimumRevision > 0 ? { kind: 'rollback' } : pulled;
+    if (this.unlocked !== state) return { kind: 'locked' };
+    const e = parseTrustedHostEnvelope(pulled.data);
+    if (!e || e.accountId !== accountId || e.vaultId !== state.header.vaultId || e.epoch !== state.header.epoch
+      || e.serverUrl !== target.serverUrl || e.deviceId !== target.deviceId || e.revision !== pulled.version) return { kind: 'invalid' };
+    if (e.revision < minimumRevision) return { kind: 'rollback' };
+    const data = await openTrustedHost(state.dekKey, e);
+    if (this.unlocked !== state) return { kind: 'locked' };
+    if (!data) return { kind: 'invalid' };
+    const binding = this.getHostBinding(data.hostAlias);
+    if (data.status === 'active' && (!binding || binding.gatewayAuth !== 'managed' || binding.keyId !== data.keyId || !this.getKey(data.keyId))) return { kind: 'invalid' };
+    const { v: _v, n: _n, ct: _ct, ...identity } = e;
+    return { kind: 'ok', host: { ...identity, ...data, version: pulled.version } };
+  }
+
+  /** Version-CAS write; revoked descriptors remain authenticated tombstones. */
+  putTrustedHost(accountId: string, target: TrustedHostTarget, data: TrustedHostData, baseVersion: number): Promise<VaultSlotPushResult | { kind: 'locked' }> {
+    return this.exclusive(async () => {
+      const state = this.unlocked;
+      if (!state) return { kind: 'locked' };
+      if (!Number.isSafeInteger(baseVersion) || baseVersion < 0 || baseVersion >= 1_000_000) return { kind: 'error', message: 'invalid trusted host version' };
+      const binding = this.getHostBinding(data.hostAlias);
+      if (data.status === 'active' && (!binding || binding.gatewayAuth !== 'managed' || binding.keyId !== data.keyId || !this.getKey(data.keyId))) return { kind: 'error', message: 'trusted host requires a managed vault key binding' };
+      const envelope = await sealTrustedHost(state.dekKey, {
+        ...target, accountId, vaultId: state.header.vaultId, epoch: state.header.epoch, revision: baseVersion + 1,
+      }, data);
+      if (this.unlocked !== state) return { kind: 'locked' };
+      const serialized = JSON.stringify(envelope);
+      if (serialized.length > VAULT_SLOT_LIMIT_BYTES) return { kind: 'error', message: 'trusted host descriptor too large' };
+      return this.push(await trustedHostSlot(target), serialized, baseVersion);
+    });
+  }
+
+  async listTrustedHosts(accountId: string, floors: Readonly<Record<string, number>> = {}): Promise<TrustedHostRecord[]> {
+    const generation = this.unlocked;
+    if (!generation) return [];
+    const deadline = Date.now() + 15000;
+    const timed = async <T>(p: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {return await Promise.race([p,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Loading servers timed out.')),Math.max(0,deadline-Date.now()));})]);}
+      finally {if(timer !== undefined) clearTimeout(timer);}
+    };
+    const slots = await timed(this.transport.list());
+    if (this.unlocked !== generation) throw new Error('Vault changed while loading servers.');
+    if (slots.length > 4096) throw new Error('Too many account slots.');
+    const trustedSlots = slots.filter(({slot}) => /^th-[A-Za-z0-9_-]{22}$/.test(slot));
+    if (trustedSlots.length > 128 || new Set(trustedSlots.map(s=>s.slot)).size !== trustedSlots.length) throw new Error('Too many or duplicate trusted servers.');
+    for (const slot of Object.keys(floors)) {
+      if (floors[slot]! > 0 && !trustedSlots.some(row => row.slot === slot)) throw new Error('A previously trusted server descriptor is missing.');
+    }
+    const result: TrustedHostRecord[] = [];
+    let cursor = 0;
+    let halted = false;
+    const worker = async () => {
+      while(cursor < trustedSlots.length && !halted) {
+        const {slot} = trustedSlots[cursor++]!;
+        const pulled = await timed(this.pull(slot));
+        if (pulled.kind !== 'ok') throw new Error('Server descriptor became unavailable.');
+        const e = parseTrustedHostEnvelope(pulled.data);
+        if (!e || await trustedHostSlot(e) !== slot) throw new Error('Invalid trusted server descriptor.');
+        const trusted = await timed(this.decodeTrustedHost(accountId,e,pulled,floors[slot] ?? 0,generation));
+        if (this.unlocked !== generation) throw new Error('Vault changed while loading servers.');
+        if (trusted.kind !== 'ok') throw new Error(`Server trust could not be verified (${trusted.kind}).`);
+        result.push(trusted.host);
+      }
+    };
+    try { await Promise.all(Array.from({length:Math.min(4,trustedSlots.length)},worker)); }
+    catch(e) {halted = true;throw e;}
+    return result;
   }
 
   // ── reading the index ──────────────────────────────────────────────────

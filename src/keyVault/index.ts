@@ -31,4 +31,5 @@ export * from './store';
 export * from './migration';
 export * from './mirror';
 export * from './syncPassphrase';
+export * from './trustedHosts';
 export { VaultCryptoUnavailableError, type VaultCryptoKey, type VaultSubtleCrypto } from './bytes';

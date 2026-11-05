@@ -51,6 +51,15 @@ export interface KeyVaultHostListApi {
 
 export interface KeyVaultPlatform {
   store: KeyVaultStore;
+  /** Stable verified issuer+subject, never an email or route-supplied identity. */
+  accountId?(): Promise<string | null>;
+  /** Native account-bound trust/credential installation; no network-provided pins. */
+  installTrustedHost?(host: import('@pocketshell/core').TrustedHostRecord): Promise<void>;
+  /** Required with trusted-host onboarding: persisted outside untrusted sync. */
+  trustedHostRevisions?: {
+    load(accountId: string, vaultId: string): Promise<Record<string, number>>;
+    save(accountId: string, vaultId: string, slot: string, revision: number): Promise<void>;
+  };
   remember?: KeyVaultRememberApi;
   /** Adding and rotating keys (the web). Elsewhere the list is read-only. */
   canUpload?: boolean;
