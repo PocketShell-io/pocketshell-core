@@ -156,6 +156,26 @@ const autoConnecting = ref(false);
  * Cancel press can only ever mean the dial whose banner was on screen.
  */
 let activeDial: { cancelled: boolean } | null = null;
+interface WorkspaceBootstrap { cancelled: boolean; navigating: boolean; connectionId: string; hostKey: string; request: number }
+let activeBootstrap: WorkspaceBootstrap | null = null;
+let pendingBootstrapClose: Promise<void> | null = null;
+let pickerRequest = 0;
+let pickerAlive = true;
+
+function cancelWorkspaceBootstrap(): void {
+  const token = activeBootstrap;
+  if (!token) return;
+  token.cancelled = true;
+  activeBootstrap = null;
+  if (!token.navigating && connection.connectionId === token.connectionId
+    && connection.activeHost && hostEntryId(connection.activeHost) === token.hostKey) {
+    // Finish closing this owned connection before a new picker dial starts:
+    // disconnect's final state reset must not erase a subsequent connection.
+    const closing = connection.disconnect().catch(() => undefined);
+    pendingBootstrapClose = closing;
+    void closing.finally(() => {if(pendingBootstrapClose === closing) pendingBootstrapClose = null;});
+  }
+}
 
 const defaultMissing = computed(
   () => defaultHostStatus(hostList.defaultHostKey, connection.hosts) === 'missing',
@@ -300,6 +320,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  pickerAlive = false;
+  pickerRequest++;
+  if (activeDial) activeDial.cancelled = true;
+  cancelWorkspaceBootstrap();
   window.removeEventListener('focus', refreshAccountStatus);
 });
 
@@ -346,13 +370,18 @@ async function onReloadHosts(): Promise<void> {
  * attempt finally resolves and clean up whatever it produced.
  */
 function onCancelConnect(): void {
+  pickerRequest++;
   if (activeDial) activeDial.cancelled = true;
+  cancelWorkspaceBootstrap();
   autoConnecting.value = false;
   connectingTo.value = null;
   connectingKey.value = null;
 }
 
 async function onConnect(host: HostEntry): Promise<void> {
+  const request = ++pickerRequest;
+  if (pendingBootstrapClose) await pendingBootstrapClose;
+  if (!pickerAlive || request !== pickerRequest) return;
   // Already connected to this host: go back in, don't dial again. A second
   // dial would open a second connection and orphan the first — the session
   // panel, terminal pool and forwards all key off the old id.
@@ -360,7 +389,7 @@ async function onConnect(host: HostEntry): Promise<void> {
     await enterWorkspace(host);
     return;
   }
-  if (await dial(host)) await enterWorkspace(host);
+  if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host);
 }
 
 /** Hang up. Stays on the picker — the row's dot going grey is the feedback. */
@@ -382,6 +411,7 @@ async function onDisconnect(): Promise<void> {
  * callers act on — neither can navigate to a workspace the user walked out of.
  */
 async function dial(host: HostEntry): Promise<boolean> {
+  if (activeBootstrap) {activeBootstrap.cancelled = true;activeBootstrap = null;}
   connectError.value = null;
   connectErrorKind.value = null;
   failedHost.value = null;
@@ -423,14 +453,23 @@ async function dial(host: HostEntry): Promise<boolean> {
 async function enterWorkspace(host: HostEntry): Promise<void> {
   if (trustedAccountMode && keyVault?.platform.accountId) {
     const id = connection.connectionId;
-    const account = await keyVault.platform.accountId();
-    const sessions = useSessionsStore();
-    if (!id || !account) return;
-    const current = async () => connection.connectionId === id
-      && connection.activeHost !== null && hostEntryId(connection.activeHost) === hostEntryId(host)
-      && keyVault.store.state === 'unlocked' && await keyVault.platform.accountId!() === account;
+    if (!id) return;
+    if (activeBootstrap) activeBootstrap.cancelled = true;
+    const token: WorkspaceBootstrap = {cancelled:false,navigating:false,connectionId:id,hostKey:hostEntryId(host),request:pickerRequest};
+    activeBootstrap = token;
     connectingTo.value = host.name;
     try {
+      const account = await keyVault.platform.accountId();
+      const owns = () => pickerAlive && !token.cancelled && activeBootstrap === token && token.request === pickerRequest
+        && connection.connectionId === id && connection.activeHost !== null && hostEntryId(connection.activeHost) === token.hostKey
+        && keyVault.store.state === 'unlocked';
+      const current = async () => {
+        if (!owns() || !account) return false;
+        const now = await keyVault.platform.accountId!();
+        return owns() && now === account;
+      };
+      if (!await current()) return;
+      const sessions = useSessionsStore();
       const route = await openTrustedServerWorkspace({
         current,
         lastFolder:readLastFolder(host.name),
@@ -441,10 +480,11 @@ async function enterWorkspace(host: HostEntry): Promise<void> {
         pending:(result,folder) => {const summary = sessions.summaryFromStartResult(result,folder); if(summary) sessions.addPending(summary);},
       });
       if (!await current()) return;
+      token.navigating = true;
       await router.push({name:'folder',params:{name:host.name,folder:route.folder},
         ...(route.session ? {query:{tab:route.session}} : {})});
-    } catch(e) { connectError.value = (e as Error).message; }
-    finally { connectingTo.value = null; }
+    } catch(e) { if(pickerAlive && activeBootstrap === token && !token.cancelled) connectError.value = (e as Error).message; }
+    finally { if(activeBootstrap === token) {activeBootstrap = null;connectingTo.value = null;connectingKey.value = null;} }
     return;
   }
   // Land in the folder this host was last open on, when there is one — the
