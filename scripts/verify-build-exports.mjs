@@ -13,6 +13,10 @@ for (const name of Object.keys(esm)) assert.equal(typeof cjs[name],typeof esm[na
 for (const api of [esm,cjs]) {
   for (const name of ['parseGatewayDeviceList','normalizeGatewayServerUrl']) assert.equal(typeof api[name],'function',name);
   for (const method of ['createVault','unlock','bindHost','decryptKeyForHost','listKeys']) assert.equal(typeof api.KeyVaultStore.prototype[method],'function',method);
+  // Trusted-server feature exports augment the independently shipped baseline
+  // contract above; verify the actual entry points in both module formats.
+  for (const name of ['trustedHostSlot','openTrustedHost','sealTrustedHost','parseTrustedHostEnvelope']) assert.equal(typeof api[name],'function',name);
+  for (const method of ['getTrustedHost','listTrustedHosts','putTrustedHost']) assert.equal(typeof api.KeyVaultStore.prototype[method],'function',method);
 }
 assert.deepEqual(ipc.gateway, {
   devices:'gateway:devices',pairings:'gateway:pairings',clientKeys:'gateway:clientKeys',
