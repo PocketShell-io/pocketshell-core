@@ -10,6 +10,7 @@ import VaultSetupCard from '../../src/app/components/vault/VaultSetupCard.vue';
 import VaultResetFlow from '../../src/app/components/vault/VaultResetFlow.vue';
 import VaultKeyList from '../../src/app/components/vault/VaultKeyList.vue';
 import VaultChangePassphrase from '../../src/app/components/vault/VaultChangePassphrase.vue';
+import VaultSettingsSection from '../../src/app/components/vault/VaultSettingsSection.vue';
 import HostVaultKeyPicker from '../../src/app/components/vault/HostVaultKeyPicker.vue';
 
 // The shared key-vault UI (key-vault W1) over a real core KeyVaultStore and an
@@ -48,6 +49,31 @@ vi.setConfig({ testTimeout: 30_000 });
 afterEach(() => provideKeyVault(null));
 
 describe('VaultUnlockGate', () => {
+  it('device Lock awaits native lease cleanup before manual Unlock and keeps the remembered record',async()=>{
+    let finish!:()=>void;
+    const onLock=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve;}));
+    const forget=vi.fn(async()=>{});
+    const {controller}=await vaultWith({onLock,remember:{save:async()=>{},forget,isRemembered:async()=>true}});
+    await controller.unlock(PASS,false);
+    const settings=mount(VaultSettingsSection);
+    await settings.get('[data-testid=vault-lock]').trigger('click');await flushPromises();
+    expect(controller.view.state).toBe('locked');expect(settings.text()).not.toContain('Your keys are no longer in memory');
+    await settings.get('[data-testid=vault-unlock]').trigger('click');await flushPromises();
+    expect(controller.sheet.open).toBe(false);finish();await flushPromises();
+    expect(controller.sheet.open).toBe(true);expect(onLock).toHaveBeenCalledTimes(1);expect(forget).not.toHaveBeenCalled();
+    expect(settings.text()).toContain('Your keys are no longer in memory');
+    await controller.unlock(PASS,false);await flushPromises();
+    expect(settings.text()).not.toContain('Your keys are no longer in memory');settings.unmount();
+  });
+
+  it('device Lock reports native cleanup failure without claiming the keys were erased',async()=>{
+    const {controller}=await vaultWith({onLock:async()=>{throw new Error('native cleanup unavailable');}});
+    await controller.unlock(PASS,false);
+    const settings=mount(VaultSettingsSection);
+    await settings.get('[data-testid=vault-lock]').trigger('click');await flushPromises();
+    expect(settings.get('[role=alert]').text()).toContain('native cleanup unavailable');
+    expect(settings.text()).not.toContain('Your keys are no longer in memory');settings.unmount();
+  });
   it('never asks for vault secrets before identity resolves or after account entry is cancelled',async()=>{
     let finish!:(account:string|null)=>void;
     const {controller}=await vaultWith({canCreate:true,accountId:()=>new Promise(resolve=>{finish=resolve;})},false);

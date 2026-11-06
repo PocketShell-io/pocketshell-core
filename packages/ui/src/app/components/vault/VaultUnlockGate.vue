@@ -65,7 +65,8 @@ const DismissLayer = defineComponent({
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  padding: var(--sp-4);
+  padding: calc(var(--sp-4) + var(--ps-inset-top)) calc(var(--sp-4) + var(--ps-inset-right))
+    calc(var(--sp-4) + var(--ps-inset-bottom) + var(--ps-inset-keyboard)) calc(var(--sp-4) + var(--ps-inset-left));
   background: var(--scrim);
 }
 </style>

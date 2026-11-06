@@ -695,7 +695,9 @@ function onBack(): void {
 .workspace {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* The root's content box already excludes platform bars and keyboard.
+     A viewport height here adds that padding back below the visible screen. */
+  height: 100%;
 }
 /* Warning-toned but not an alarm: it is an instruction, and the user can
    still use every other part of the app while it stands. With the topbar gone

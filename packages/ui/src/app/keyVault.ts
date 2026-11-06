@@ -54,6 +54,8 @@ export interface KeyVaultPlatform {
   /** Verify the account, bind its transport and try device-key unlock before asking for a passphrase. */
   prepareAccount?(): Promise<{ accountId: string; state: 'locked' | 'unlocked' | 'absent' }>;
   cancelAccountPreparation?(): void;
+  /** Await platform credential-lease deletion after the shared store locks. */
+  onLock?(): Promise<void>;
   /** First vault setup; independent of key upload, passphrase change and reset capabilities. */
   canCreate?: boolean;
   /** Stable verified issuer+subject, never an email or route-supplied identity. */
@@ -218,6 +220,7 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
   const sheet = reactive<UnlockSheetState>({ open: false, mode: 'unlock', reason: 'connect', hostLabel: '', seq: 0 });
   let waiters: Array<(unlocked: boolean) => void> = [];
   let operationGeneration = 0;
+  let deviceLockTask: Promise<void> | null = null;
 
   function refresh(): void {
     view.state = store.state;
@@ -331,6 +334,19 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       refresh();
     },
 
+    /** The user-facing device lock confirms native key cleanup before reporting success. */
+    lockOnDevice(): Promise<void> {
+      if (deviceLockTask) return deviceLockTask;
+      operationGeneration++;
+      store.lock();
+      refresh();
+      const task = Promise.resolve().then(() => platform.onLock?.());
+      deviceLockTask = task;
+      const finished = () => { if (deviceLockTask === task) deviceLockTask = null; };
+      void task.then(finished, finished);
+      return task;
+    },
+
     async rememberNow(): Promise<void> {
       await saveRemember();
     },
@@ -378,6 +394,7 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
      */
     async requestUnlock(reason: 'connect' | 'account' = 'connect', hostLabel = ''): Promise<boolean> {
       const started = operationGeneration;
+      if (deviceLockTask) await deviceLockTask;
       if (platform.accountId && !await platform.accountId()) return false;
       if (started !== operationGeneration || view.localOnly) return false;
       if (store.state === 'unlocked') return Promise.resolve(true);

@@ -2,7 +2,7 @@
 // The vault's own settings, for a platform's `settings.sections`
 // contribution: lock/unlock, this device (remember / forget), change
 // passphrase, and reset. Renders nothing on a client without a vault.
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { useKeyVault } from '../../keyVault';
 import VaultChangePassphrase from './VaultChangePassphrase.vue';
 import VaultResetFlow from './VaultResetFlow.vue';
@@ -12,9 +12,11 @@ const vault = useKeyVault();
 const panel = ref<'none' | 'change' | 'reset'>('none');
 const notice = ref('');
 const error = ref('');
+watch(()=>vault?.view.state,state=>{if(state==='unlocked') notice.value='';});
 
 async function guard(run: () => Promise<void>, message: string): Promise<void> {
   error.value = '';
+  notice.value = '';
   try {
     await run();
     notice.value = message;
@@ -38,7 +40,7 @@ async function guard(run: () => Promise<void>, message: string): Promise<void> {
         class="vault-btn"
         type="button"
         data-testid="vault-lock"
-        @click="vault.lock(); notice = 'Vault locked. Your keys are no longer in memory here.'"
+        @click="guard(() => vault!.lockOnDevice(), 'Vault locked. Your keys are no longer in memory here.')"
       >
         Lock vault
       </button>
