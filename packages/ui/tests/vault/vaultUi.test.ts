@@ -20,6 +20,7 @@ const PASS = 'correct horse battery staple';
 
 async function vaultWith(platform: Partial<KeyVaultPlatform> = {}, create = true) {
   const transport = new MemoryTransport();
+  Object.assign(transport,{scoped:()=>transport});
   if (create) await new KeyVaultStore({ transport, kdf: KDF }).createVault(PASS, { syncPassphrase: 'sync-passphrase' });
   const store = new KeyVaultStore({ transport, kdf: KDF });
   const controller = provideKeyVault({ store, ...platform })!;
@@ -347,9 +348,9 @@ describe('VaultKeyList and HostVaultKeyPicker', () => {
     const { controller } = await vaultWith();
     await controller.unlock(PASS, false);
     const pem = String(generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }));
-    const added = await controller.addKey(pem, 'laptop');
+    const added = await controller.store.addKey(pem, 'laptop');
     if (added.kind !== 'ok') throw new Error('add failed');
-    await controller.bindHost('hetzner', { keyId: added.entry.keyId, gatewayAuth: 'both' });
+    await controller.store.bindHost('hetzner', added.entry.keyId, 'both');
     const list = mount(VaultKeyList);
     expect(list.text()).toContain('laptop');
     expect(list.text()).toContain('Used by hetzner');
@@ -361,7 +362,7 @@ describe('VaultKeyList and HostVaultKeyPicker', () => {
     await settle();
     expect(controller.view.keys).toEqual([]);
 
-    provideKeyVault({ store: controller.store, canUpload: true });
+    provideKeyVault({ store: controller.store, canUpload: true, accountId:async()=> 'google:synthetic-review' });
     expect(mount(VaultKeyList).find('[data-testid="vault-add-key"]').exists()).toBe(true);
   });
 

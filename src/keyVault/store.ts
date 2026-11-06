@@ -78,6 +78,10 @@ export type VaultSlotPushResult =
  * `conflict`. `delete` of an absent slot must succeed.
  */
 export interface VaultSlotTransport {
+  /** Stable, opaque account/storage namespace. Account-switching adapters
+   * expose the selected scope and preserve it in scoped() snapshots. A fixed
+   * single-account transport can omit it: its own identity is the scope. */
+  readonly scope?: object;
   /** Snapshot the current account context before asynchronous creation/KDF work. */
   scoped?(): VaultSlotTransport;
   pull(slot: string): Promise<VaultSlotPullResult>;
@@ -315,6 +319,7 @@ function describe(error: unknown): string {
 }
 
 interface Unlocked {
+  scope: object;
   header: VaultHeader;
   version: number;
   dek: Uint8Array;
@@ -322,6 +327,34 @@ interface Unlocked {
   auth: Uint8Array | null;
   dekKey: VaultCryptoKey;
   index: VaultIndex;
+  /** A replay cannot replace accepted data or authorize another write in this
+   * session. Keep the accepted index readable until an explicit re-unlock. */
+  revisionRejected?: boolean;
+}
+interface ScopedIo {
+  scope: object;
+  generation: number;
+  transport: VaultSlotTransport;
+  verifier: VaultServerVerifier | undefined;
+}
+interface MutationContext extends ScopedIo {
+  state: Unlocked | null;
+  active?: () => Promise<boolean>;
+}
+interface RevisionFloor {
+  epoch: number;
+  version: number;
+  /** Canonical encrypted header, never a DEK, AUTH or decrypted index. */
+  header: string;
+}
+interface AccountRevisionFloors {
+  epoch: number;
+  activeVaultId: string;
+  vaults: Map<string, RevisionFloor>;
+}
+interface AdditionBinding {
+  hostAlias: string;
+  gatewayAuth: GatewayAuthPolicy;
 }
 type TrustedHostRead = { kind: 'ok'; host: TrustedHostRecord } | { kind: 'locked' | 'absent' | 'gated' | 'invalid' | 'rollback' };
 
@@ -331,6 +364,9 @@ export class KeyVaultStore {
   private readonly kdf: { m: number; t: number; p: number } | undefined;
   private readonly now: () => number;
   private unlocked: Unlocked | null = null;
+  /** Non-secret freshness knowledge outlives lock()/drop(). It belongs to
+   * the account I/O namespace, not the lifetime of a decrypted session. */
+  private readonly revisionFloors = new WeakMap<object, AccountRevisionFloors>();
   /**
    * Bumped by every lock(). An operation captures it when it starts and
    * neither installs an unlocked state nor writes after it changed, so a lock
@@ -351,7 +387,7 @@ export class KeyVaultStore {
    *  - a durable fix needs the server to accept the new verifier atomically
    *    with the header write (or a persisted, wrapped pending proof).
    */
-  private pendingVerifier: { auth: Uint8Array; currentAuth: Uint8Array; epoch: number } | null = null;
+  private pendingVerifier: { auth: Uint8Array; currentAuth: Uint8Array; epoch: number; scope: object } | null = null;
   private failures = 0;
   private blockedUntil = 0;
   private queue: Promise<unknown> = Promise.resolve();
@@ -376,6 +412,12 @@ export class KeyVaultStore {
 
   get epoch(): number | null {
     return this.unlocked?.header.epoch ?? null;
+  }
+
+  /** Account clients must bind both slot and verifier IO before an upload can
+   * outlive an asynchronous passphrase check. Read-only clients need neither. */
+  get supportsScopedMutations(): boolean {
+    return typeof this.transport.scoped === 'function' && (!this.verifier || typeof this.verifier.scoped === 'function');
   }
 
   /** Called after every state or content change (unlock, lock, any write). */
@@ -412,11 +454,13 @@ export class KeyVaultStore {
 
   /** Install a freshly opened vault unless a lock() happened since `generation`. */
   private install(generation: number, next: Unlocked): boolean {
-    if (generation !== this.generation) {
+    if (generation !== this.generation || next.scope !== this.currentScope()
+      || !this.acceptsKnownRevision(next.scope,next.header,next.version)) {
       wipe(next.dek);
       wipe(next.auth);
       return false;
     }
+    this.rememberRevision(next.scope,next.header,next.version);
     this.drop();
     this.unlocked = next;
     return true;
@@ -427,6 +471,35 @@ export class KeyVaultStore {
     const run = this.queue.then(task, task);
     this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  private currentScope(): object {
+    return this.transport.scope ?? this.transport;
+  }
+
+  private scopedIo(): ScopedIo {
+    return { scope:this.currentScope(), generation:this.generation,
+      transport: this.transport.scoped?.() ?? this.transport,
+      verifier: this.verifier?.scoped?.() ?? this.verifier };
+  }
+
+  private ownsIo(io: ScopedIo): boolean {
+    return io.scope === this.currentScope() && io.generation === this.generation;
+  }
+
+  private mutationContext(active?: () => Promise<boolean>): MutationContext {
+    return {...this.scopedIo(),state:this.unlocked,active};
+  }
+
+  private async ownsMutation(context: MutationContext): Promise<boolean> {
+    const current = () => context.state !== null && !context.state.revisionRejected && context.state.scope === context.scope && this.unlocked === context.state && this.ownsIo(context);
+    return current() && (!context.active || await context.active()) && current();
+  }
+
+  private async verifyMutation(context: ScopedIo, auth: Uint8Array): Promise<VaultVerifyResult> {
+    if (!context.verifier) return {kind:'unavailable'};
+    const proof = Uint8Array.from(auth);
+    try {return await context.verifier.verify(proof);} finally {wipe(proof);}
   }
 
   // ── slot access (gated mode: silent re-verify) ─────────────────────────
@@ -440,22 +513,72 @@ export class KeyVaultStore {
     return (await this.verify(Uint8Array.from(auth))).kind === 'ok';
   }
 
-  private async pull(slot: string, auth: Uint8Array | null = this.unlocked?.auth ?? null): Promise<VaultSlotPullResult> {
-    const pulled = await this.transport.pull(slot);
-    if (pulled.kind !== 'gated' || !(await this.reverify(auth))) return pulled;
-    return this.transport.pull(slot);
+  private async pull(slot: string, auth: Uint8Array | null = this.unlocked?.auth ?? null, context?: MutationContext): Promise<VaultSlotPullResult> {
+    const transport = context?.transport ?? this.transport;
+    if (context && !await this.ownsMutation(context)) throw new Error('The vault operation was cancelled.');
+    const pulled = await transport.pull(slot);
+    if (pulled.kind !== 'gated') return pulled;
+    if (context) {
+      if (!auth || !context.verifier || !await this.ownsMutation(context)) return pulled;
+      if ((await this.verifyMutation(context,auth)).kind !== 'ok' || !await this.ownsMutation(context)) return pulled;
+    } else if (!await this.reverify(auth)) return pulled;
+    return transport.pull(slot);
   }
 
-  private async push(slot: string, data: string, baseVersion: number): Promise<VaultSlotPushResult> {
-    const pushed = await this.transport.push(slot, data, baseVersion);
-    if (pushed.kind !== 'gated' || !(await this.reverify(this.unlocked?.auth))) return pushed;
-    return this.transport.push(slot, data, baseVersion);
+  private async push(slot: string, data: string, baseVersion: number, context?: MutationContext): Promise<VaultSlotPushResult> {
+    const transport = context?.transport ?? this.transport;
+    if (context && !await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+    const pushed = await transport.push(slot, data, baseVersion);
+    if (pushed.kind !== 'gated') return pushed;
+    if (context) {
+      const auth = context.state?.auth;
+      if (!auth || !context.verifier || !await this.ownsMutation(context)) return pushed;
+      if ((await this.verifyMutation(context,auth)).kind !== 'ok' || !await this.ownsMutation(context)) return pushed;
+    } else if (!await this.reverify(this.unlocked?.auth)) return pushed;
+    return transport.push(slot, data, baseVersion);
   }
 
   // ── reading the header ─────────────────────────────────────────────────
 
+  private acceptsKnownRevision(scope: object, header: VaultHeader, version: number): boolean {
+    if (!Number.isSafeInteger(version) || version < 1) return false;
+    const account = this.revisionFloors.get(scope);
+    if (!account) return true;
+    if (header.epoch < account.epoch) return false;
+    const floor = account.vaults.get(header.vaultId);
+    // Reset creates a new vaultId. A known identity cannot acquire a new
+    // epoch merely by changing unauthenticated transport/header metadata.
+    if (floor && header.epoch !== floor.epoch) return false;
+    if (header.epoch === account.epoch && floor && header.vaultId !== account.activeVaultId) return false;
+    return !floor || (version >= floor.version
+      && (version !== floor.version || serializeVaultHeader(header) === floor.header));
+  }
+
+  private rememberRevision(scope: object, header: VaultHeader, version: number): void {
+    const account = this.revisionFloors.get(scope) ?? {epoch:header.epoch,activeVaultId:header.vaultId,vaults:new Map<string,RevisionFloor>()};
+    account.epoch = header.epoch;
+    account.activeVaultId = header.vaultId;
+    account.vaults.set(header.vaultId,{epoch:header.epoch,version,header:serializeVaultHeader(header)});
+    this.revisionFloors.set(scope,account);
+  }
+
+  /** AEAD authenticates content, not the transport's revision. An accepted
+   * revision is a floor, and one revision must identify exactly one header.
+   * Never lower that floor or replace its content on conflict/direct retries. */
+  private acceptsHeaderRevision(state: Unlocked, header: VaultHeader, version: number): boolean {
+    if (state.revisionRejected) return false;
+    if (!this.acceptsKnownRevision(state.scope,header,version) || version < state.version
+      || (version === state.version && serializeVaultHeader(header) !== serializeVaultHeader(state.header))) {
+      state.revisionRejected = true;
+      return false;
+    }
+    return true;
+  }
+
   private async pullHeader(
     auth?: Uint8Array | null,
+    context?: MutationContext,
+    io?: ScopedIo,
   ): Promise<
     | { kind: 'ok'; header: VaultHeader; version: number }
     | { kind: 'noVault' }
@@ -463,7 +586,18 @@ export class KeyVaultStore {
     | { kind: 'corrupt' }
     | { kind: 'gated' }
   > {
-    const pulled = await this.pull(VAULT_HEADER_SLOT, auth === undefined ? this.unlocked?.auth ?? null : auth);
+    const proof = auth === undefined ? this.unlocked?.auth ?? null : auth;
+    let pulled: VaultSlotPullResult;
+    if (io) {
+      if (!this.ownsIo(io)) throw new Error('The vault account or lock state changed.');
+      pulled = await io.transport.pull(VAULT_HEADER_SLOT);
+      if (!this.ownsIo(io)) throw new Error('The vault account or lock state changed.');
+      if (pulled.kind === 'gated' && proof && (await this.verifyMutation(io,proof)).kind === 'ok') {
+        if (!this.ownsIo(io)) throw new Error('The vault account or lock state changed.');
+        pulled = await io.transport.pull(VAULT_HEADER_SLOT);
+      }
+      if (!this.ownsIo(io)) throw new Error('The vault account or lock state changed.');
+    } else pulled = await this.pull(VAULT_HEADER_SLOT,proof,context);
     if (pulled.kind === 'absent') return { kind: 'noVault' };
     if (pulled.kind === 'gated') return pulled;
     const header = parseVaultHeader(pulled.data);
@@ -492,10 +626,11 @@ export class KeyVaultStore {
   createVault(passphrase: string, carry: { syncPassphrase?: string | null } = {}): Promise<VaultCreateResult> {
     // Read at CALL time: a lock() in the same tick must win over the queued task.
     const generation = this.generation;
-    const transport = this.transport.scoped?.() ?? this.transport;
-    const verifier = this.verifier?.scoped?.() ?? this.verifier;
+    const io = this.scopedIo();
+    const {transport,verifier} = io;
     return this.exclusive(async () => {
       try {
+        if (io.scope !== this.currentScope()) return {kind:'error',message:'The vault account changed.'};
         const existing = await transport.pull(VAULT_HEADER_SLOT);
         if (existing.kind !== 'absent') return { kind: 'exists' };
         const index: VaultIndex = { keys: [], hosts: {} };
@@ -507,7 +642,7 @@ export class KeyVaultStore {
           if (status.hasVerifier || status.kdf) return {kind:'exists'};
           epoch = status.epoch;
         }
-        return await this.writeFreshVault(passphrase, index, epoch, 0, generation, transport, verifier);
+        return await this.writeFreshVault(passphrase, index, epoch, 0, generation, transport, verifier, io.scope);
       } catch (error) {
         return { kind: 'error', message: describe(error) };
       }
@@ -526,13 +661,19 @@ export class KeyVaultStore {
     generation: number,
     transport: VaultSlotTransport = this.transport,
     verifier: VaultServerVerifier | undefined = this.verifier,
+    scope = this.currentScope(),
   ): Promise<VaultCreateResult> {
     if (!indexRoundTrips(index)) return { kind: 'error', message: 'refusing to write a vault index other devices could not read' };
     const created = await createVaultHeader({ passphrase, index, epoch, ...(this.kdf ? { kdf: this.kdf } : {}) });
     const data = serializeVaultHeader(created.header);
     if (byteLength(data) > VAULT_SLOT_LIMIT_BYTES) {
       wipe(created.dek);
+      wipe(created.auth);
       return { kind: 'indexFull' };
+    }
+    if (scope !== this.currentScope() || !this.acceptsKnownRevision(scope,created.header,baseVersion + 1)) {
+      wipe(created.dek); wipe(created.auth);
+      return {kind:'error',message:'The vault account or accepted revision changed.'};
     }
     const atomic = baseVersion === 0 && verifier?.initialize !== undefined;
     let pushed: VaultSlotPushResult;
@@ -545,10 +686,19 @@ export class KeyVaultStore {
       // A gated answer means a hidden vault already exists.
       return pushed.kind === 'error' ? { kind: 'error', message: pushed.message } : { kind: 'exists' };
     }
+    if (!Number.isSafeInteger(pushed.version) || pushed.version !== baseVersion + 1
+      || !this.acceptsKnownRevision(scope,created.header,pushed.version)) {
+      wipe(created.dek); wipe(created.auth);
+      return {kind:'error',message:'The vault returned an invalid accepted revision.'};
+    }
+    // Even a lock during the dispatched write must not erase knowledge of
+    // the encrypted revision the server has just acknowledged accepting.
+    this.rememberRevision(scope,created.header,pushed.version);
     const auth = Uint8Array.from(created.auth);
     if (atomic) wipe(created.auth);
     else await this.publishVerifier(created.auth, epoch, undefined, verifier);
     const installed = this.install(generation, {
+      scope,
       header: created.header,
       version: pushed.version,
       dek: created.dek,
@@ -590,6 +740,52 @@ export class KeyVaultStore {
     return delay;
   }
 
+  /** Confirm a newly entered passphrase without replacing the live DEK/session.
+   * The account IO and session are captured before queued KDF work starts. */
+  confirmPassphrase(passphrase: string, active?: () => Promise<boolean>): Promise<VaultUnlockResult> {
+    const context = this.mutationContext(active);
+    return this.exclusive(async () => {
+      if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+      const wait = this.backoffRemainingMs();
+      if (wait > 0) return {kind:'backoff',retryAfterMs:wait};
+      try {
+        const pulled = await this.pullHeader(context.state!.auth,context);
+        if (pulled.kind !== 'ok') return pulled.kind === 'gated' ? {kind:'error',message:'Unlock your vault again before adding an entry.'} : pulled;
+        if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+        if (pulled.header.vaultId !== context.state!.header.vaultId || pulled.header.epoch !== context.state!.header.epoch) return {kind:'error',message:'Your vault changed. Unlock it again before adding an entry.'};
+        const held = context.state!.header;
+        if (!this.acceptsHeaderRevision(context.state!,pulled.header,pulled.version)
+          || ['kdf','check','wrappedDek'].some(key => JSON.stringify(pulled.header[key as 'kdf' | 'check' | 'wrappedDek']) !== JSON.stringify(held[key as 'kdf' | 'check' | 'wrappedDek']))) {
+          return {kind:'error',message:'Your vault changed. Unlock it again before adding an entry.'};
+        }
+        const keys = await derivePassphraseKeys(passphrase,pulled.header.kdf);
+        try {
+          if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+          const verdict = context.verifier ? await context.verifier.verify(keys.auth) : {kind:'unavailable' as const};
+          if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+          if (verdict.kind === 'locked') return {kind:'rateLimited',retryAfterMs:Math.max(0,verdict.retryAfterMs)};
+          if (!await verifyCheck(keys.kek,pulled.header)) return {kind:'wrongPassphrase',retryAfterMs:Math.max(this.recordFailure(),verdict.kind === 'wrong' ? verdict.retryAfterMs : 0)};
+          if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+          if (verdict.kind === 'wrong') return {kind:'error',message:'Your vault verification changed. Unlock it again before adding an entry.'};
+          // Confirmation can observe a newer index than our live session.
+          // Authenticate and retain it before authorizing the next mutation;
+          // a later retry may not fall back to the pre-confirmation revision.
+          const index = await openIndex(context.state!.dekKey,pulled.header);
+          if (!await this.ownsMutation(context)) return {kind:'error',message:'The vault operation was cancelled.'};
+          if (!index) return {kind:'corrupt'};
+          context.state!.header = pulled.header;
+          context.state!.version = pulled.version;
+          context.state!.index = index;
+          this.rememberRevision(context.scope,pulled.header,pulled.version);
+          this.failures = 0;
+          this.blockedUntil = 0;
+          this.emit();
+          return {kind:'ok'};
+        } finally {wipe(keys.auth);}
+      } catch (error) {return {kind:'error',message:describe(error)};}
+    });
+  }
+
   /**
    * Unlock with the account vault passphrase: Argon2id → (server verify, if
    * deployed) → check value → unwrap DEK → decrypt the index. A wrong
@@ -598,11 +794,12 @@ export class KeyVaultStore {
   unlock(passphrase: string): Promise<VaultUnlockResult> {
     // Read at CALL time: a lock() in the same tick must win over the queued task.
     const generation = this.generation;
+    const io = this.scopedIo();
     return this.exclusive(async () => {
       const wait = this.backoffRemainingMs();
       if (wait > 0) return { kind: 'backoff', retryAfterMs: wait };
       try {
-        const status = await this.serverStatus();
+        const status = await this.serverStatus(io.verifier);
         if (status && status.retryAfterMs > 0) return { kind: 'rateLimited', retryAfterMs: status.retryAfterMs };
         let header: VaultHeader;
         let version: number;
@@ -612,7 +809,7 @@ export class KeyVaultStore {
           // Gated mode: the header is hidden until a verify, so the server's
           // public KDF params drive Argon2id and the server's answer is final.
           keys = await derivePassphraseKeys(passphrase, status.kdf);
-          verdict = await this.verify(keys.auth);
+          verdict = await this.verify(keys.auth,io.verifier);
           if (verdict.kind === 'locked') {
             wipe(keys.auth);
             return { kind: 'rateLimited', retryAfterMs: Math.max(0, verdict.retryAfterMs) };
@@ -622,7 +819,7 @@ export class KeyVaultStore {
             return { kind: 'wrongPassphrase', retryAfterMs: Math.max(this.recordFailure(), verdict.retryAfterMs) };
           }
           // Just verified, so this read is inside the server's window.
-          const pulled = await this.pullHeader(null);
+          const pulled = await this.pullHeader(null,undefined,io);
           if (pulled.kind !== 'ok') {
             wipe(keys.auth);
             return pulled.kind === 'gated' ? { kind: 'error', message: 'the server still hides the vault after a verify' } : pulled;
@@ -633,20 +830,25 @@ export class KeyVaultStore {
             keys = await derivePassphraseKeys(passphrase, header.kdf);
           }
         } else {
-          const pulled = await this.pullHeader(null);
+          const pulled = await this.pullHeader(null,undefined,io);
           if (pulled.kind === 'gated') {
             return { kind: 'error', message: 'the server hides the vault but gave no KDF parameters (GET /vault/status)' };
           }
           if (pulled.kind !== 'ok') return pulled;
           ({ header, version } = pulled);
+          if (!this.acceptsKnownRevision(io.scope,header,version)) return {kind:'error',message:'The vault returned data older than an accepted revision.'};
           keys = await derivePassphraseKeys(passphrase, header.kdf);
-          verdict = await this.verify(keys.auth);
+          verdict = await this.verify(keys.auth,io.verifier);
           if (verdict.kind === 'locked') {
             wipe(keys.auth);
             return { kind: 'rateLimited', retryAfterMs: Math.max(0, verdict.retryAfterMs) };
           }
         }
         const { kek, auth } = keys;
+        if (!this.ownsIo(io) || !this.acceptsKnownRevision(io.scope,header,version)) {
+          wipe(auth);
+          return {kind:'error',message:'The vault account, lock state or accepted revision changed.'};
+        }
         try {
           if (!(await verifyCheck(kek, header))) {
             wipe(auth);
@@ -656,7 +858,7 @@ export class KeyVaultStore {
           }
           // The check value is authoritative. A server with no verifier yet gets one now;
           // one that disagrees is stale and can only be fixed with the old passphrase.
-          if (verdict.kind === 'noVerifier') await this.publishVerifier(Uint8Array.from(auth), status?.epoch ?? header.epoch);
+          if (verdict.kind === 'noVerifier') await this.publishVerifier(Uint8Array.from(auth), status?.epoch ?? header.epoch,undefined,io.verifier);
           // A change whose verifier update failed left the server on the old AUTH: repair it with the kept proof.
           if (verdict.kind === 'wrong' && this.pendingVerifier && bytesEqual(this.pendingVerifier.auth, auth)) {
             await this.retryVerifierPublishNow();
@@ -673,7 +875,7 @@ export class KeyVaultStore {
           wipe(auth);
           return { kind: 'corrupt' };
         }
-        if (!this.install(generation, { header, version, dek, dekKey, auth, index })) {
+        if (!this.install(generation, { scope:io.scope, header, version, dek, dekKey, auth, index })) {
           return { kind: 'error', message: 'The vault was locked while it was being unlocked.' };
         }
         this.failures = 0;
@@ -686,17 +888,17 @@ export class KeyVaultStore {
     });
   }
 
-  private async serverStatus(): Promise<Extract<VaultServerStatus, { kind: 'ok' }> | null> {
-    if (!this.verifier?.status) return null;
-    const status = await this.verifier.status().catch((): VaultServerStatus => ({ kind: 'unavailable' }));
+  private async serverStatus(verifier = this.verifier): Promise<Extract<VaultServerStatus, { kind: 'ok' }> | null> {
+    if (!verifier?.status) return null;
+    const status = await verifier.status().catch((): VaultServerStatus => ({ kind: 'unavailable' }));
     if (status.kind !== 'ok') return null;
     const kdf = status.kdf === undefined || status.kdf === null ? undefined : parseKdfParams(status.kdf) ?? undefined;
     return { ...status, retryAfterMs: Math.max(0, status.retryAfterMs || 0), ...(kdf ? { kdf } : {}) };
   }
 
-  private async verify(auth: Uint8Array): Promise<VaultVerifyResult> {
-    if (!this.verifier) return { kind: 'unavailable' };
-    return this.verifier.verify(auth).catch((): VaultVerifyResult => ({ kind: 'unavailable' }));
+  private async verify(auth: Uint8Array, verifier = this.verifier): Promise<VaultVerifyResult> {
+    if (!verifier) return { kind: 'unavailable' };
+    return verifier.verify(auth).catch((): VaultVerifyResult => ({ kind: 'unavailable' }));
   }
 
   /** A copy of the raw DEK for the platform to wrap with its device key; null when locked. */
@@ -714,25 +916,27 @@ export class KeyVaultStore {
   unlockWithRememberedDek(record: VaultRememberRecord): Promise<VaultRememberUnlockResult> {
     // Read at CALL time: a lock() in the same tick must win over the queued task.
     const generation = this.generation;
+    const io = this.scopedIo();
     return this.exclusive(async () => {
       try {
         if (!record || !(record.dek instanceof Uint8Array) || record.dek.length !== 32) return { kind: 'stale' };
         const hasAuth = record.auth instanceof Uint8Array && record.auth.length === 32;
-        const status = await this.serverStatus();
+        const status = await this.serverStatus(io.verifier);
         if (status?.kdf) {
           // Gated: the header is only readable after a verify.
           if (!hasAuth) return { kind: 'stale' };
           if (status.retryAfterMs > 0) return { kind: 'rateLimited', retryAfterMs: status.retryAfterMs };
-          const verdict = await this.verify(Uint8Array.from(record.auth as Uint8Array));
+          const verdict = await this.verify(Uint8Array.from(record.auth as Uint8Array),io.verifier);
           if (verdict.kind === 'locked') return { kind: 'rateLimited', retryAfterMs: Math.max(0, verdict.retryAfterMs) };
           // A remembered AUTH the server rejects means the passphrase changed elsewhere.
           if (verdict.kind === 'wrong') return { kind: 'stale' };
         }
-        const pulled = await this.pullHeader(hasAuth ? (record.auth as Uint8Array) : null);
+        const pulled = await this.pullHeader(hasAuth ? (record.auth as Uint8Array) : null,undefined,io);
         if (pulled.kind === 'gated') return { kind: 'stale' };
         if (pulled.kind !== 'ok') return pulled;
         const { header, version } = pulled;
         if (header.vaultId !== record.vaultId || header.epoch !== record.epoch) return { kind: 'stale' };
+        if (!this.acceptsKnownRevision(io.scope,header,version)) return {kind:'stale'};
         const dek = Uint8Array.from(record.dek);
         const dekKey = await importAesKey(dek);
         const index = await openIndex(dekKey, header);
@@ -741,7 +945,7 @@ export class KeyVaultStore {
           return { kind: 'stale' };
         }
         const auth = hasAuth ? Uint8Array.from(record.auth as Uint8Array) : null;
-        if (!this.install(generation, { header, version, dek, dekKey, auth, index })) {
+        if (!this.install(generation, { scope:io.scope, header, version, dek, dekKey, auth, index })) {
           return { kind: 'error', message: 'The vault was locked while it was being unlocked.' };
         }
         this.emit();
@@ -773,9 +977,10 @@ export class KeyVaultStore {
    * a second passphrase. Call only within exclusive(): index writes cannot
    * interleave. lock()/account replacement still wins across every await. */
   private async refreshTrustedHostIndex(state: Unlocked, active: () => boolean = () => true): Promise<{kind:'ok'} | {kind:'locked'|'invalid'|'rollback'|'gated'}> {
-    const owns = () => this.unlocked === state && active();
+    const owns = () => this.unlocked === state && !state.revisionRejected && state.scope === this.currentScope() && active();
     if (!owns()) return {kind:'locked'};
-    const pulled = await this.pullHeader(state.auth);
+    const context:MutationContext={...this.scopedIo(),state,active:async()=>active()};
+    const pulled = await this.pullHeader(state.auth,context);
     if (!owns()) return {kind:'locked'};
     if (pulled.kind === 'gated') return pulled;
     if (pulled.kind !== 'ok' || pulled.header.vaultId !== state.header.vaultId || pulled.header.epoch !== state.header.epoch
@@ -797,6 +1002,7 @@ export class KeyVaultStore {
     state.header = pulled.header;
     state.version = pulled.version;
     state.index = index;
+    this.rememberRevision(state.scope,pulled.header,pulled.version);
     this.emit();
     return {kind:this.unlocked === state ? 'ok' : 'locked'};
   }
@@ -972,11 +1178,15 @@ export class KeyVaultStore {
    * on a 409, re-pull, re-open (same vault and epoch only), re-apply, retry.
    * `mutate` returns false to abort without writing.
    */
-  private async writeIndex(mutate: (index: VaultIndex) => boolean | VaultWriteFailure): Promise<VaultWriteResult> {
-    const state = this.unlocked;
-    const generation = this.generation;
+  private async writeIndex(mutate: (index: VaultIndex) => boolean | VaultWriteFailure, context?: MutationContext): Promise<VaultWriteResult> {
+    const state = context ? context.state : this.unlocked;
+    const generation = context?.generation ?? this.generation;
     if (!state) return { kind: 'locked' };
+    if (state.scope !== this.currentScope()) return {kind:'locked'};
+    if (state.revisionRejected) return {kind:'vaultChanged'};
     for (let attempt = 0; attempt <= CONFLICT_RETRIES; attempt += 1) {
+      if (this.unlocked !== state || generation !== this.generation) return {kind:'locked'};
+      if (context && !await this.ownsMutation(context)) return {kind:'locked'};
       const index: VaultIndex = JSON.parse(JSON.stringify(state.index)) as VaultIndex;
       const verdict = mutate(index);
       if (verdict === false) return { kind: 'ok' };
@@ -993,13 +1203,19 @@ export class KeyVaultStore {
       if (byteLength(data) > VAULT_SLOT_LIMIT_BYTES) return { kind: 'indexFull' };
       let pushed: VaultSlotPushResult;
       try {
-        pushed = await this.push(VAULT_HEADER_SLOT, data, state.version);
+        pushed = await this.push(VAULT_HEADER_SLOT, data, state.version, context);
       } catch (error) {
         return { kind: 'error', message: describe(error) };
       }
       if (pushed.kind === 'error') return { kind: 'error', message: pushed.message };
       if (pushed.kind === 'gated') return { kind: 'gated' };
       if (pushed.kind === 'ok') {
+        if (!Number.isSafeInteger(pushed.version) || pushed.version !== state.version + 1) {
+          state.revisionRejected = true;
+          return {kind:'vaultChanged'};
+        }
+        this.rememberRevision(state.scope,header,pushed.version);
+        if (context && !await this.ownsMutation(context)) return {kind:'locked'};
         state.header = header;
         state.version = pushed.version;
         state.index = index;
@@ -1007,7 +1223,7 @@ export class KeyVaultStore {
         return { kind: 'ok' };
       }
       if (generation !== this.generation) return { kind: 'locked' };
-      const rebased = await this.rebase(state);
+      const rebased = await this.rebase(state, context);
       if (rebased.kind !== 'ok') return rebased;
       if (generation !== this.generation) return { kind: 'locked' };
     }
@@ -1015,19 +1231,24 @@ export class KeyVaultStore {
   }
 
   /** Re-pull the header after a conflict and re-open it with the DEK we hold. */
-  private async rebase(state: Unlocked): Promise<{ kind: 'ok' } | VaultWriteFailure> {
+  private async rebase(state: Unlocked, context?: MutationContext): Promise<{ kind: 'ok' } | VaultWriteFailure> {
+    if (this.unlocked !== state) return {kind:'locked'};
+    if (state.revisionRejected) return {kind:'vaultChanged'};
     let pulled;
     try {
-      pulled = await this.pullHeader();
+      pulled = await this.pullHeader(state.auth, context);
     } catch (error) {
       return { kind: 'error', message: describe(error) };
     }
+    if (this.unlocked !== state || (context && !await this.ownsMutation(context))) return {kind:'locked'};
     if (pulled.kind === 'gated') return { kind: 'gated' };
     if (pulled.kind !== 'ok' || pulled.header.vaultId !== state.header.vaultId || pulled.header.epoch !== state.header.epoch) {
       this.lock();
       return { kind: 'vaultChanged' };
     }
+    if (!this.acceptsHeaderRevision(state,pulled.header,pulled.version)) return {kind:'vaultChanged'};
     const index = await openIndex(state.dekKey, pulled.header);
+    if (this.unlocked !== state || (context && !await this.ownsMutation(context))) return {kind:'locked'};
     if (!index) {
       this.lock();
       return { kind: 'vaultChanged' };
@@ -1035,16 +1256,17 @@ export class KeyVaultStore {
     state.header = pulled.header;
     state.version = pulled.version;
     state.index = index;
+    this.rememberRevision(state.scope,pulled.header,pulled.version);
     return { kind: 'ok' };
   }
 
   /** Write a `vk-` slot (create, or overwrite whatever is there). */
-  private async writeBlob(keyId: string, data: string): Promise<{ kind: 'ok' } | { kind: 'gated' } | { kind: 'error'; message: string }> {
+  private async writeBlob(keyId: string, data: string, context?: MutationContext): Promise<{ kind: 'ok' } | { kind: 'gated' } | { kind: 'error'; message: string }> {
     const slot = vaultKeySlot(keyId);
     let base = 0;
     for (let attempt = 0; attempt <= CONFLICT_RETRIES; attempt += 1) {
       try {
-        const pushed = await this.push(slot, data, base);
+        const pushed = await this.push(slot, data, base, context);
         if (pushed.kind === 'ok') return { kind: 'ok' };
         if (pushed.kind === 'gated') return { kind: 'gated' };
         if (pushed.kind === 'error') return { kind: 'error', message: pushed.message };
@@ -1062,19 +1284,32 @@ export class KeyVaultStore {
    * uploaded twice deduplicates by its content-derived keyId (the name is
    * kept from the first upload).
    */
-  addKey(pem: string, name: string, keyPassphrase?: string | null): Promise<VaultAddKeyResult> {
+  addKey(pem: string, name: string, keyPassphrase?: string | null, active?: () => Promise<boolean>, binding?: AdditionBinding): Promise<VaultAddKeyResult> {
+    const context = this.mutationContext(active);
+    const target = binding ? {...binding} : undefined;
     return this.exclusive(async () => {
-      const unlocked = this.unlocked;
-      if (!unlocked) return { kind: 'locked' };
+      const unlocked = context.state;
+      if (!unlocked || !await this.ownsMutation(context)) return { kind: 'locked' };
+      if (target && (target.hostAlias === '' || target.hostAlias === '__proto__' || !isGatewayAuthPolicy(target.gatewayAuth))) return {kind:'error',message:'invalid host binding'};
       const prepared = await prepareSshPrivateKey(pem, keyPassphrase);
+      if (!await this.ownsMutation(context)) return {kind:'locked'};
       if (prepared.kind !== 'ok') return prepared;
       const key = prepared.key;
       const existed = unlocked.index.keys.some((entry) => entry.keyId === key.keyId);
       if (existed) {
         // Never rewrite a stored key's slot on a duplicate upload: the vault
         // copy stays authoritative. Only a lost slot is restored.
-        const present = await this.pull(vaultKeySlot(key.keyId));
+        const present = await this.pull(vaultKeySlot(key.keyId),unlocked.auth,context);
+        if (!await this.ownsMutation(context)) return {kind:'locked'};
         if (present.kind !== 'absent') {
+          if (present.kind === 'ok' && target) {
+            const bound = await this.writeIndex(index => {
+              const old = index.hosts[target.hostAlias];
+              if(old?.keyId === key.keyId && old.gatewayAuth === target.gatewayAuth)return false;
+              index.hosts[target.hostAlias] = {keyId:key.keyId,gatewayAuth:target.gatewayAuth};return true;
+            },context);
+            if(bound.kind !== 'ok')return bound;
+          }
           return present.kind === 'ok'
             ? { kind: 'ok', entry: this.getKey(key.keyId) as VaultKeyEntry, deduplicated: true }
             : { kind: 'gated' };
@@ -1090,8 +1325,9 @@ export class KeyVaultStore {
         wipe(plaintext);
       }
       if (byteLength(blobData) > VAULT_SLOT_LIMIT_BYTES) return { kind: 'tooLarge' };
-      const wrote = await this.writeBlob(key.keyId, blobData);
+      const wrote = await this.writeBlob(key.keyId, blobData, context);
       if (wrote.kind !== 'ok') return wrote;
+      if (!await this.ownsMutation(context)) return {kind:'locked'};
       const entry: VaultKeyEntry = {
         keyId: key.keyId,
         name: clampVaultName(name, key.type),
@@ -1100,12 +1336,15 @@ export class KeyVaultStore {
         createdAt: new Date(this.now()).toISOString(),
       };
       const result = await this.writeIndex((index) => {
-        if (index.keys.some((existing) => existing.keyId === entry.keyId)) return false;
-        index.keys.push(entry);
-        return true;
-      });
+        const duplicate = index.keys.some((existing) => existing.keyId === entry.keyId);
+        if (!duplicate) index.keys.push(entry);
+        const old = target ? index.hosts[target.hostAlias] : undefined;
+        const changed = !!target && (old?.keyId !== entry.keyId || old.gatewayAuth !== target.gatewayAuth);
+        if (target) index.hosts[target.hostAlias] = {keyId:entry.keyId,gatewayAuth:target.gatewayAuth};
+        return !duplicate || changed;
+      },context);
       if (result.kind !== 'ok') {
-        if (!existed) await this.transport.delete(vaultKeySlot(key.keyId)).catch(() => undefined);
+        if (!existed && await this.ownsMutation(context)) await context.transport.delete(vaultKeySlot(key.keyId)).catch(() => undefined);
         return result;
       }
       return { kind: 'ok', entry: this.getKey(key.keyId) ?? entry, deduplicated: existed };
@@ -1113,10 +1352,13 @@ export class KeyVaultStore {
   }
 
   /** Add a host password as a vault entry (random keyId). */
-  addPassword(password: string, name: string): Promise<VaultAddPasswordResult> {
+  addPassword(password: string, name: string, active?: () => Promise<boolean>, binding?: AdditionBinding): Promise<VaultAddPasswordResult> {
+    const context = this.mutationContext(active);
+    const target = binding ? {...binding} : undefined;
     return this.exclusive(async () => {
-      const unlocked = this.unlocked;
-      if (!unlocked) return { kind: 'locked' };
+      const unlocked = context.state;
+      if (!unlocked || !await this.ownsMutation(context)) return { kind: 'locked' };
+      if (target && (target.hostAlias === '' || target.hostAlias === '__proto__' || !isGatewayAuthPolicy(target.gatewayAuth))) return {kind:'error',message:'invalid host binding'};
       const plaintext = utf8(password);
       if (plaintext.length === 0 || plaintext.length > PASSWORD_MAX_BYTES) {
         wipe(plaintext);
@@ -1129,8 +1371,9 @@ export class KeyVaultStore {
       } finally {
         wipe(plaintext);
       }
-      const wrote = await this.writeBlob(keyId, blobData);
+      const wrote = await this.writeBlob(keyId, blobData, context);
       if (wrote.kind !== 'ok') return wrote;
+      if (!await this.ownsMutation(context)) return {kind:'locked'};
       const entry: VaultKeyEntry = {
         keyId,
         name: clampVaultName(name, 'Password'),
@@ -1139,10 +1382,11 @@ export class KeyVaultStore {
       };
       const result = await this.writeIndex((index) => {
         index.keys.push(entry);
+        if (target) index.hosts[target.hostAlias] = {keyId,gatewayAuth:target.gatewayAuth};
         return true;
-      });
+      },context);
       if (result.kind !== 'ok') {
-        await this.transport.delete(vaultKeySlot(keyId)).catch(() => undefined);
+        if (await this.ownsMutation(context)) await context.transport.delete(vaultKeySlot(keyId)).catch(() => undefined);
         return result;
       }
       return { kind: 'ok', entry };
@@ -1155,15 +1399,16 @@ export class KeyVaultStore {
    * uploaded again or the host is rebound).
    */
   removeKey(keyId: string): Promise<VaultWriteResult> {
+    const context = this.mutationContext();
     return this.exclusive(async () => {
       const result = await this.writeIndex((index) => {
         const before = index.keys.length;
         index.keys = index.keys.filter((entry) => entry.keyId !== keyId);
         return index.keys.length !== before;
-      });
-      if (result.kind === 'ok' && isId16(keyId)) {
+      },context);
+      if (result.kind === 'ok' && isId16(keyId) && await this.ownsMutation(context)) {
         try {
-          await this.transport.delete(vaultKeySlot(keyId));
+          await context.transport.delete(vaultKeySlot(keyId));
         } catch {
           // An orphaned blob is unreadable without the index entry's type and harmless.
         }
@@ -1173,6 +1418,7 @@ export class KeyVaultStore {
   }
 
   renameKey(keyId: string, name: string): Promise<VaultWriteResult> {
+    const context = this.mutationContext();
     return this.exclusive(() =>
       this.writeIndex((index) => {
         const entry = index.keys.find((key) => key.keyId === keyId);
@@ -1180,13 +1426,15 @@ export class KeyVaultStore {
         if (!entry || trimmed === '' || entry.name === trimmed) return false;
         entry.name = trimmed;
         return true;
-      }),
+      },context),
     );
   }
 
   /** Record that `newKeyId` replaces `oldKeyId`: rebind its hosts and drop the old key. */
-  rotateKey(oldKeyId: string, newKeyId: string): Promise<VaultWriteResult> {
+  rotateKey(oldKeyId: string, newKeyId: string, active?: () => Promise<boolean>): Promise<VaultWriteResult> {
+    const context = this.mutationContext(active);
     return this.exclusive(async () => {
+      if (!await this.ownsMutation(context)) return {kind:'locked'};
       const result = await this.writeIndex((index) => {
         const next = index.keys.find((key) => key.keyId === newKeyId);
         if (!next || oldKeyId === newKeyId) return { kind: 'error', message: 'unknown replacement key' };
@@ -1197,14 +1445,15 @@ export class KeyVaultStore {
           if (binding.keyId === oldKeyId) binding.keyId = newKeyId;
         }
         return true;
-      });
-      if (result.kind === 'ok' && isId16(oldKeyId)) await this.transport.delete(vaultKeySlot(oldKeyId)).catch(() => undefined);
+      },context);
+      if (result.kind === 'ok' && isId16(oldKeyId) && await this.ownsMutation(context)) await context.transport.delete(vaultKeySlot(oldKeyId)).catch(() => undefined);
       return result;
     });
   }
 
   /** Bind an account host alias to a vault entry with a gateway auth policy. */
-  bindHost(hostAlias: string, keyId: string, gatewayAuth: GatewayAuthPolicy): Promise<VaultWriteResult> {
+  bindHost(hostAlias: string, keyId: string, gatewayAuth: GatewayAuthPolicy, active?: () => Promise<boolean>): Promise<VaultWriteResult> {
+    const context = this.mutationContext(active);
     return this.exclusive(() =>
       this.writeIndex((index) => {
         if (hostAlias === '' || hostAlias === '__proto__' || !isGatewayAuthPolicy(gatewayAuth)) {
@@ -1215,29 +1464,31 @@ export class KeyVaultStore {
         if (current && current.keyId === keyId && current.gatewayAuth === gatewayAuth) return false;
         index.hosts[hostAlias] = { keyId, gatewayAuth };
         return true;
-      }),
+      },context),
     );
   }
 
   unbindHost(hostAlias: string): Promise<VaultWriteResult> {
+    const context = this.mutationContext();
     return this.exclusive(() =>
       this.writeIndex((index) => {
         if (!Object.prototype.hasOwnProperty.call(index.hosts, hostAlias)) return false;
         delete index.hosts[hostAlias];
         return true;
-      }),
+      },context),
     );
   }
 
   /** Store (or clear, with null) the account settings-sync passphrase in the index. */
   setSyncPassphrase(passphrase: string | null): Promise<VaultWriteResult> {
+    const context = this.mutationContext();
     return this.exclusive(() =>
       this.writeIndex((index) => {
         if ((index.sync?.passphrase ?? null) === passphrase) return false;
         if (passphrase === null) delete index.sync;
         else index.sync = { passphrase };
         return true;
-      }),
+      },context),
     );
   }
 
@@ -1248,9 +1499,11 @@ export class KeyVaultStore {
    */
   changePassphrase(current: string, next: string): Promise<VaultChangePassphraseResult> {
     const generation = this.generation;
+    const context = this.mutationContext();
     return this.exclusive(async () => {
-      const state = this.unlocked;
-      if (!state || generation !== this.generation) return { kind: 'locked' };
+      const state = context.state;
+      if (state?.revisionRejected) return {kind:'vaultChanged'};
+      if (!state || !await this.ownsMutation(context)) return { kind: 'locked' };
       const wait = this.backoffRemainingMs();
       if (wait > 0) return { kind: 'backoff', retryAfterMs: wait };
       // Our own copy: lock() wipes state.dek in place, and a wrap of a wiped
@@ -1280,17 +1533,23 @@ export class KeyVaultStore {
           const intact = reopened !== null && bytesEqual(reopened, dek) && (await openIndex(await importAesKey(reopened), header)) !== null;
           wipe(reopened);
           if (!intact) return { kind: 'error', message: 'the re-wrapped vault did not verify; nothing was written' };
-          const pushed = await this.push(VAULT_HEADER_SLOT, serializeVaultHeader(header), state.version);
+          const pushed = await this.push(VAULT_HEADER_SLOT, serializeVaultHeader(header), state.version,context);
           if (pushed.kind === 'error') return { kind: 'error', message: pushed.message };
           if (pushed.kind === 'gated') return { kind: 'gated' };
           if (pushed.kind === 'ok') {
+            if (!Number.isSafeInteger(pushed.version) || pushed.version !== state.version + 1) {
+              state.revisionRejected = true;
+              return {kind:'vaultChanged'};
+            }
+            this.rememberRevision(state.scope,header,pushed.version);
             state.header = header;
             state.version = pushed.version;
-            const keep = { auth: Uint8Array.from(fresh.auth), currentAuth: Uint8Array.from(old.auth), epoch: header.epoch };
-            const published = await this.publishVerifier(Uint8Array.from(fresh.auth), header.epoch, Uint8Array.from(old.auth));
-            const pending = this.verifier !== undefined && published.kind !== 'ok';
-            this.setPendingVerifier(pending ? keep : null);
-            if (!pending) {
+            const keep = { auth: Uint8Array.from(fresh.auth), currentAuth: Uint8Array.from(old.auth), epoch: header.epoch,scope:context.scope };
+            const published = await this.publishVerifier(Uint8Array.from(fresh.auth), header.epoch, Uint8Array.from(old.auth),context.verifier);
+            const pending = context.verifier !== undefined && published.kind !== 'ok';
+            const canKeep = this.unlocked === state && this.ownsIo(context);
+            this.setPendingVerifier(pending && canKeep ? keep : null);
+            if (!pending || !canKeep) {
               wipe(keep.auth);
               wipe(keep.currentAuth);
             }
@@ -1301,7 +1560,7 @@ export class KeyVaultStore {
             this.emit();
             return pending ? { kind: 'ok', verifierPending: true } : { kind: 'ok' };
           }
-          const rebased = await this.rebase(state);
+          const rebased = await this.rebase(state,context);
           if (rebased.kind !== 'ok') return rebased;
         }
         return { kind: 'conflictLimit' };
@@ -1314,7 +1573,7 @@ export class KeyVaultStore {
     });
   }
 
-  private setPendingVerifier(next: { auth: Uint8Array; currentAuth: Uint8Array; epoch: number } | null): void {
+  private setPendingVerifier(next: NonNullable<KeyVaultStore['pendingVerifier']> | null): void {
     if (this.pendingVerifier) {
       wipe(this.pendingVerifier.auth);
       wipe(this.pendingVerifier.currentAuth);
@@ -1335,7 +1594,13 @@ export class KeyVaultStore {
   private async retryVerifierPublishNow(): Promise<VaultSetVerifierResult> {
     const pending = this.pendingVerifier;
     if (!pending) return { kind: 'unavailable' };
-    const result = await this.publishVerifier(Uint8Array.from(pending.auth), pending.epoch, Uint8Array.from(pending.currentAuth));
+    if (pending.scope !== this.currentScope()) return {kind:'unavailable'};
+    // Reacquire current credentials for the same namespace (tokens can have
+    // refreshed), rather than retaining an expiring token snapshot in memory.
+    let io:ScopedIo;
+    try {io=this.scopedIo();} catch {return {kind:'unavailable'};}
+    if (io.scope !== pending.scope || !this.ownsIo(io)) return {kind:'unavailable'};
+    const result = await this.publishVerifier(Uint8Array.from(pending.auth), pending.epoch, Uint8Array.from(pending.currentAuth),io.verifier);
     if (result.kind === 'ok') this.setPendingVerifier(null);
     return result;
   }
@@ -1351,9 +1616,12 @@ export class KeyVaultStore {
   resetVault(newPassphrase: string, carry: VaultResetCarry = {}): Promise<VaultCreateResult> {
     // Read at CALL time: a lock() in the same tick must win over the queued task.
     const generation = this.generation;
+    const io = this.scopedIo();
     return this.exclusive(async () => {
       try {
-        const current = this.unlocked;
+        const current = this.unlocked?.scope === io.scope ? this.unlocked : null;
+        const accountCurrent = () => io.scope === this.currentScope();
+        if (!accountCurrent()) return {kind:'error',message:'The vault account changed.'};
         const index: VaultIndex = {
           keys: [],
           hosts: carry.hosts ?? (current ? JSON.parse(JSON.stringify(current.index.hosts)) : {}),
@@ -1364,26 +1632,29 @@ export class KeyVaultStore {
         if (!indexRoundTrips(index)) return { kind: 'error', message: 'the host bindings to carry over are not valid' };
         // An older client must never wipe a vault written by a newer format.
         if (carry.forceUnsupported !== true) {
-          const existing = await this.pullHeader();
+          const existing = await this.pullHeader(current?.auth ?? null,undefined,io);
           if (existing.kind === 'unsupportedVersion') return { kind: 'unsupportedVersion' };
         }
 
         let serverEpoch: number | null = null;
-        if (this.verifier?.reset) {
-          const wiped = await this.verifier.reset().catch((): VaultServerResetResult => ({ kind: 'unavailable' }));
+        if (!accountCurrent()) return {kind:'error',message:'The vault account changed.'};
+        if (io.verifier?.reset) {
+          const wiped = await io.verifier.reset().catch((): VaultServerResetResult => ({ kind: 'unavailable' }));
           if (wiped.kind === 'freshAuthRequired') return { kind: 'freshAuthRequired' };
           if (wiped.kind === 'ok') serverEpoch = wiped.epoch;
         }
         // Without the server (phase 1) the client wipes slot by slot; after a
         // server reset this finds nothing left to delete.
-        const slots = await this.transport.list();
+        const slots = await io.transport.list();
         for (const { slot } of slots) {
-          if (keyIdFromSlot(slot) !== null) await this.transport.delete(slot);
+          if (!accountCurrent()) return {kind:'error',message:'The vault account changed.'};
+          if (keyIdFromSlot(slot) !== null) await io.transport.delete(slot);
         }
         let epoch = serverEpoch ?? 1;
         let base = 0;
         for (let attempt = 0; attempt <= CONFLICT_RETRIES; attempt += 1) {
-          const pulled = await this.pull(VAULT_HEADER_SLOT);
+          if (!accountCurrent()) return {kind:'error',message:'The vault account changed.'};
+          const pulled = await io.transport.pull(VAULT_HEADER_SLOT);
           if (pulled.kind === 'gated') {
             return { kind: 'error', message: 'the server hides the vault; reset it through the server (POST /vault/reset)' };
           }
@@ -1393,7 +1664,7 @@ export class KeyVaultStore {
             // A corrupt header still has to go; its epoch is unknown, so jump past any plausible one.
             epoch = Math.max(epoch, old ? old.epoch + 1 : Math.floor(this.now() / 1000));
           }
-          const written = await this.writeFreshVault(newPassphrase, index, epoch, base, generation);
+          const written = await this.writeFreshVault(newPassphrase, index, epoch, base, generation,io.transport,io.verifier,io.scope);
           if (written.kind !== 'exists') return written;
         }
         return { kind: 'error', message: 'the vault kept changing during reset; try again' };
