@@ -198,7 +198,13 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 function sameSession(left: SessionRow, right: SessionRow): boolean {
-  if (left.id && right.id) return left.id === right.id;
+  // An immutable identity never gains or loses continuity through labels.
+  // Generic hosts may match by labels only when BOTH rows have no ID.
+  const leftId = left.id ?? null;
+  const rightId = right.id ?? null;
+  if ((leftId !== null && (typeof leftId !== 'string' || !leftId.trim()))
+    || (rightId !== null && (typeof rightId !== 'string' || !rightId.trim()))) return false;
+  if (leftId !== null || rightId !== null) return leftId === rightId;
   return left.name === right.name && left.workspace === right.workspace;
 }
 
@@ -1208,7 +1214,7 @@ export class ConnectionController {
       const opened = await this.capability.openPty({
         ...connection,
         requestId: openRequestId,
-        command: hostCli.buildAttachCommand(session.name),
+        command: hostCli.buildAttachCommand(session.id ?? session.name),
         cols: record.geometry.cols,
         rows: record.geometry.rows,
         term: 'xterm-256color',
