@@ -14,7 +14,8 @@ const second = ref('');
 const strength = computed(() => passphraseStrength(first.value));
 const mismatch = computed(() => second.value !== '' && first.value !== second.value);
 watch([first, second], () => {
-  emit('update:valid', first.value.length >= VAULT_PASSPHRASE_MIN_LENGTH && first.value === second.value ? first.value : '');
+  emit('update:valid', first.value.length >= VAULT_PASSPHRASE_MIN_LENGTH && first.value.trim() !== ''
+    && !/^\p{Decimal_Number}+$/u.test(first.value) && first.value === second.value ? first.value : '');
 });
 defineExpose({
   clear() {
@@ -44,7 +45,7 @@ defineExpose({
       <span>
         {{
           first === ''
-            ? `At least ${VAULT_PASSPHRASE_MIN_LENGTH} characters. A few unrelated words work well.`
+            ? `At least ${VAULT_PASSPHRASE_MIN_LENGTH} characters, not a numeric PIN. A few unrelated words work well.`
             : `Strength: ${strength.label}`
         }}
       </span>

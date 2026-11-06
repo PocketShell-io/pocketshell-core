@@ -19,7 +19,7 @@ const PASS = 'correct horse battery staple';
 
 async function vaultWith(platform: Partial<KeyVaultPlatform> = {}, create = true) {
   const transport = new MemoryTransport();
-  if (create) await new KeyVaultStore({ transport, kdf: KDF }).createVault(PASS, { syncPassphrase: 'sync-pass' });
+  if (create) await new KeyVaultStore({ transport, kdf: KDF }).createVault(PASS, { syncPassphrase: 'sync-passphrase' });
   const store = new KeyVaultStore({ transport, kdf: KDF });
   const controller = provideKeyVault({ store, ...platform })!;
   return { transport, store, controller };
@@ -48,6 +48,30 @@ vi.setConfig({ testTimeout: 30_000 });
 afterEach(() => provideKeyVault(null));
 
 describe('VaultUnlockGate', () => {
+  it('never asks for vault secrets before identity resolves or after account entry is cancelled',async()=>{
+    let finish!:(account:string|null)=>void;
+    const {controller}=await vaultWith({canCreate:true,accountId:()=>new Promise(resolve=>{finish=resolve;})},false);
+    const unlock=controller.requestUnlock();
+    expect(controller.sheet.open).toBe(false);
+    controller.cancelUnlock();finish('google:one');
+    expect(await unlock).toBe(false);expect(controller.sheet.open).toBe(false);
+    const setup=controller.requestSetup();finish(null);
+    expect(await setup).toBe(false);expect(controller.sheet.open).toBe(false);
+  });
+  it('first setup shares one gate and resolves both callers without a second unlock', async () => {
+    const {controller,store}=await vaultWith({canCreate:true},false);
+    const gate=mount(VaultUnlockGate);
+    const first=controller.requestSetup();const second=controller.requestSetup();await flushPromises();
+    expect(gate.find('[data-testid="vault-setup"]').exists()).toBe(true);
+    expect(gate.find('[data-testid="vault-unlock-form"]').exists()).toBe(false);
+    await gate.get('[data-testid="vault-setup-new"]').setValue(PASS);
+    await gate.get('[data-testid="vault-setup-again"]').setValue(PASS);
+    await gate.get('[data-testid="vault-setup-understood"]').setValue(true);
+    await gate.get('form').trigger('submit');await settle();
+    expect(await first).toBe(true);expect(await second).toBe(true);
+    expect(store.state).toBe('unlocked');
+    expect(gate.find('[data-testid="vault-unlock-gate"]').exists()).toBe(false);gate.unmount();
+  });
   it('renders nothing without a provided vault, and nothing until a dial asks', async () => {
     provideKeyVault(null);
     expect(mount(VaultUnlockGate).find('[data-testid="vault-unlock-gate"]').exists()).toBe(false);
@@ -217,8 +241,8 @@ describe('decision #7: vault and sync passphrases stay apart', () => {
     await controller.unlock(PASS, false);
     const form = mount(VaultChangePassphrase);
     await form.find('[data-testid="vault-change-current"]').setValue(PASS);
-    await form.find('[data-testid="vault-change-new"]').setValue('sync-pass');
-    await form.find('[data-testid="vault-change-again"]').setValue('sync-pass');
+    await form.find('[data-testid="vault-change-new"]').setValue('sync-passphrase');
+    await form.find('[data-testid="vault-change-again"]').setValue('sync-passphrase');
     await form.find('form').trigger('submit');
     await settle();
     expect(form.text()).toContain('different from your sync passphrase');

@@ -78,6 +78,8 @@ export type VaultSlotPushResult =
  * `conflict`. `delete` of an absent slot must succeed.
  */
 export interface VaultSlotTransport {
+  /** Snapshot the current account context before asynchronous creation/KDF work. */
+  scoped?(): VaultSlotTransport;
   pull(slot: string): Promise<VaultSlotPullResult>;
   push(slot: string, data: string, baseVersion: number): Promise<VaultSlotPushResult>;
   delete(slot: string): Promise<void>;
@@ -131,6 +133,9 @@ export type VaultServerResetResult =
  * value and never fails an unlock because of the server.
  */
 export interface VaultServerVerifier {
+  scoped?(): VaultServerVerifier;
+  /** Optional atomic first setup: encrypted header and verifier are committed together, never replacing an existing vault. */
+  initialize?(input: { data: string; auth: Uint8Array; epoch: number }): Promise<VaultSlotPushResult>;
   /** Optional: when it returns `kdf`, unlock runs Argon2id → verify → read `vault`. */
   status?(): Promise<VaultServerStatus>;
   verify(auth: Uint8Array): Promise<VaultVerifyResult>;
@@ -487,13 +492,22 @@ export class KeyVaultStore {
   createVault(passphrase: string, carry: { syncPassphrase?: string | null } = {}): Promise<VaultCreateResult> {
     // Read at CALL time: a lock() in the same tick must win over the queued task.
     const generation = this.generation;
+    const transport = this.transport.scoped?.() ?? this.transport;
+    const verifier = this.verifier?.scoped?.() ?? this.verifier;
     return this.exclusive(async () => {
       try {
-        const existing = await this.pullHeader();
-        if (existing.kind !== 'noVault') return { kind: 'exists' };
+        const existing = await transport.pull(VAULT_HEADER_SLOT);
+        if (existing.kind !== 'absent') return { kind: 'exists' };
         const index: VaultIndex = { keys: [], hosts: {} };
         if (typeof carry.syncPassphrase === 'string' && carry.syncPassphrase !== '') index.sync = { passphrase: carry.syncPassphrase };
-        return await this.writeFreshVault(passphrase, index, 1, 0, generation);
+        let epoch = 1;
+        if (verifier?.initialize) {
+          const status = await verifier.status?.();
+          if (status?.kind !== 'ok' || !Number.isSafeInteger(status.epoch) || status.epoch < 1) return {kind:'error',message:'Vault setup is temporarily unavailable. Try again.'};
+          if (status.hasVerifier || status.kdf) return {kind:'exists'};
+          epoch = status.epoch;
+        }
+        return await this.writeFreshVault(passphrase, index, epoch, 0, generation, transport, verifier);
       } catch (error) {
         return { kind: 'error', message: describe(error) };
       }
@@ -510,6 +524,8 @@ export class KeyVaultStore {
     epoch: number,
     baseVersion: number,
     generation: number,
+    transport: VaultSlotTransport = this.transport,
+    verifier: VaultServerVerifier | undefined = this.verifier,
   ): Promise<VaultCreateResult> {
     if (!indexRoundTrips(index)) return { kind: 'error', message: 'refusing to write a vault index other devices could not read' };
     const created = await createVaultHeader({ passphrase, index, epoch, ...(this.kdf ? { kdf: this.kdf } : {}) });
@@ -518,7 +534,11 @@ export class KeyVaultStore {
       wipe(created.dek);
       return { kind: 'indexFull' };
     }
-    const pushed = await this.transport.push(VAULT_HEADER_SLOT, data, baseVersion);
+    const atomic = baseVersion === 0 && verifier?.initialize !== undefined;
+    let pushed: VaultSlotPushResult;
+    try {
+      pushed = atomic ? await verifier!.initialize!({data,auth:created.auth,epoch}) : await transport.push(VAULT_HEADER_SLOT, data, baseVersion);
+    } catch (error) {wipe(created.dek);wipe(created.auth);throw error;}
     if (pushed.kind !== 'ok') {
       wipe(created.dek);
       wipe(created.auth);
@@ -526,7 +546,8 @@ export class KeyVaultStore {
       return pushed.kind === 'error' ? { kind: 'error', message: pushed.message } : { kind: 'exists' };
     }
     const auth = Uint8Array.from(created.auth);
-    await this.publishVerifier(created.auth, epoch);
+    if (atomic) wipe(created.auth);
+    else await this.publishVerifier(created.auth, epoch, undefined, verifier);
     const installed = this.install(generation, {
       header: created.header,
       version: pushed.version,
@@ -547,12 +568,12 @@ export class KeyVaultStore {
    * authoritative). A server epoch that differs from the header's is
    * adopted for the one retry. Wipes `auth` and `currentAuth`.
    */
-  private async publishVerifier(auth: Uint8Array, epoch: number, currentAuth?: Uint8Array): Promise<VaultSetVerifierResult> {
+  private async publishVerifier(auth: Uint8Array, epoch: number, currentAuth?: Uint8Array, verifier = this.verifier): Promise<VaultSetVerifierResult> {
     try {
-      if (!this.verifier) return { kind: 'unavailable' };
+      if (!verifier) return { kind: 'unavailable' };
       const input = (at: number) => ({ auth, epoch: at, ...(currentAuth ? { currentAuth } : {}) });
-      let result = await this.verifier.setVerifier(input(epoch));
-      if (result.kind === 'epochMismatch') result = await this.verifier.setVerifier(input(result.epoch));
+      let result = await verifier.setVerifier(input(epoch));
+      if (result.kind === 'epochMismatch') result = await verifier.setVerifier(input(result.epoch));
       return result;
     } catch {
       return { kind: 'unavailable' };

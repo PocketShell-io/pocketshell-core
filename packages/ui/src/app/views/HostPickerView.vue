@@ -64,6 +64,7 @@ const hostList = useHostsStore();
 const sync = useSyncStore();
 const keyVault = useKeyVault();
 const trustedAccountMode = Boolean(keyVault?.platform.accountId && keyVault.platform.installTrustedHost && keyVault.platform.trustedHostRevisions);
+const localSetupAllowed = computed(() => !trustedAccountMode || keyVault?.view?.localOnly === true);
 const connectError = ref<string | null>(null);
 /**
  * Why {@link connectError}'s dial failed, when it was a gateway dial core
@@ -707,7 +708,7 @@ function onClearDefault(): void {
           </li>
         </ul>
         <p
-          v-if="!trustedAccountMode && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
+          v-if="localSetupAllowed && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
           class="muted"
         >
           <span>{{ emptyHint.before }}</span><code v-if="emptyHint.source">{{ emptyHint.source }}</code><span>{{ emptyHint.after }}</span>

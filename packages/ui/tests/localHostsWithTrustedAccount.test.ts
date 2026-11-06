@@ -3,6 +3,7 @@ import {flushPromises,mount} from '@vue/test-utils';
 import {createPinia,setActivePinia} from 'pinia';
 import {createMemoryHistory,createRouter} from 'vue-router';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {reactive} from 'vue';
 import {provideApi} from '../src/app/ipc';
 import type {PocketShellApi} from '../src/app/api';
 import type {HostEntry} from '@pocketshell/core';
@@ -16,13 +17,13 @@ let wrapper:ReturnType<typeof mount>|undefined;
 beforeEach(()=>{setActivePinia(createPinia());localStorage.clear();resetAutoConnectLatch();});
 afterEach(()=>{wrapper?.unmount();wrapper=undefined;});
 
-async function setup(options:{provenance?:'local'|'account';signedIn?:boolean;legacy?:boolean;hosts?:HostEntry[];accountHosts?:HostEntry[];defaultHost?:string}={}) {
+async function setup(options:{provenance?:'local'|'account';signedIn?:boolean;legacy?:boolean;localOnly?:boolean;hosts?:HostEntry[];accountHosts?:HostEntry[];defaultHost?:string}={}) {
   const local=entry('manual-device'), imported=entry('imported-device');
   const hosts=options.hosts??[local,imported];
   const connect=vi.fn(async()=>({ok:true,connectionId:'conn-local'}));
   const accountId=vi.fn(async()=>options.signedIn?'google:orin':null);
   supplied.vault=options.legacy?null:{platform:{accountId,installTrustedHost:vi.fn(),trustedHostRevisions:{}},
-    store:{state:'locked'},view:{state:'locked'},requestUnlock:vi.fn(async()=>false)};
+    store:{state:'locked',probe:async()=>({kind:'gated'})},view:reactive({state:'locked',localOnly:options.localOnly??false}),requestUnlock:vi.fn(async()=>false),cancelUnlock:vi.fn(),lock:vi.fn()};
   let router:ReturnType<typeof createRouter>;
   provideApi({win:{setTitle:vi.fn(),openAccount:vi.fn(),openNewWindow:async()=>{await router.push('/add-host');}},ssh:{listConfigHosts:async()=>hosts,connect,onState:()=>()=>{},close:async()=>true},
     helper:{bootstrap:async()=>null},forwards:{isAutoEnabled:async()=>false},preview:{onStats:()=>()=>{}},
@@ -38,7 +39,7 @@ async function setup(options:{provenance?:'local'|'account';signedIn?:boolean;le
 
 describe('explicit local host provenance alongside trusted account servers',()=>{
   it.each([false,true])('local saved/imported direct rows navigate with signedIn=%s and a locked vault',async(signedIn)=>{
-    const t=await setup({provenance:'local',signedIn});
+    const t=await setup({provenance:'local',signedIn,localOnly:true});
     const rows=wrapper!.findAll('.host-row');expect(rows).toHaveLength(2);
     expect(wrapper!.text()).toContain('manual-device');expect(wrapper!.text()).toContain('imported-device');
     await rows[0]!.trigger('click');await flushPromises();
@@ -72,6 +73,12 @@ describe('explicit local host provenance alongside trusted account servers',()=>
     expect(wrapper!.find('.host-list').exists()).toBe(true);
     await wrapper!.get('header button[aria-label="Open a new window"]').trigger('click');
     await flushPromises();expect(t.router.currentRoute.value.name).toBe('add-host');
+  });
+  it('choosing SSH without an account exposes normal local host setup without login',async()=>{
+    await setup({provenance:'local',hosts:[]});
+    await wrapper!.get('[data-testid="server-use-local"]').trigger('click');await flushPromises();
+    expect(wrapper!.text()).toContain('SSH without an account');
+    expect(wrapper!.text()).toContain('Add a host');
   });
   it('legacy desktop host listing and navigation does not require a provenance migration',async()=>{
     const t=await setup({legacy:true,hosts:[entry('desktop',{fromConfig:true})]});

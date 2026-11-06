@@ -72,7 +72,7 @@ async function guard(run: () => Promise<void>, message: string): Promise<void> {
         Remember on this device
       </button>
     </div>
-    <div v-if="vault.view.state === 'unlocked'" class="setting">
+    <div v-if="vault.canUpload && vault.view.state === 'unlocked'" class="setting">
       <div>
         <div class="name">Passphrase</div>
         <div class="meta">Changing it keeps your keys.</div>
@@ -82,7 +82,7 @@ async function guard(run: () => Promise<void>, message: string): Promise<void> {
       </button>
     </div>
     <VaultChangePassphrase
-      v-if="panel === 'change'"
+      v-if="vault.canUpload && panel === 'change'"
       @changed="(pending: boolean) => { panel = 'none'; notice = pending ? 'Vault passphrase changed. The server will be updated the next time you unlock.' : 'Vault passphrase changed.'; }"
       @cancel="panel = 'none'"
     />

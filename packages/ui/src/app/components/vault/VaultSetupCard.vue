@@ -24,13 +24,15 @@ const busy = ref(false);
 const error = ref('');
 
 async function create(): Promise<void> {
-  if (!vault || fresh.value === '' || !understood.value) return;
+  if (!vault || busy.value || fresh.value === '' || !understood.value) return;
   busy.value = true;
   error.value = '';
   try {
     const result = await vault.create(fresh.value, remember.value, props.syncPassphrase ?? null);
     if (result.kind === 'ok') emit('created');
     else error.value = vaultWriteMessage(result);
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : 'Vault setup could not finish. Try again.';
   } finally {
     busy.value = false;
   }

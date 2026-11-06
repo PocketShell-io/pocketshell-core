@@ -15,10 +15,60 @@ beforeEach(()=>{
   state.sync=reactive({status:{loggedIn:true,email:'orin@example.test'},busy:false,login:vi.fn(async()=>{})});
   state.vault={view:reactive({state:'unlocked'}),store:reactive({vaultId:host.vaultId,epoch:1,
     listTrustedHosts:vi.fn(async()=>[host]),getTrustedHost:vi.fn(async()=>({kind:'ok',host}))}),
-    requestUnlock:vi.fn(async()=>false),platform:{accountId:vi.fn(async()=>state.account),
+    requestUnlock:vi.fn(async()=>false),cancelUnlock:vi.fn(),lock:vi.fn(),platform:{accountId:vi.fn(async()=>state.account),
       installTrustedHost:vi.fn(async()=>{}),trustedHostRevisions:{load:vi.fn(async()=>({})),save:vi.fn(async()=>{})}}};
 });
 describe('native account to authenticated server journey',()=>{
+  it('verifies the saved account before opening a vault prompt',async()=>{
+    state.vault.view.state='locked';
+    let finish!:(value:string|null)=>void;
+    state.vault.platform.accountId=vi.fn(()=>new Promise(r=>{finish=r;}));
+    const w=mount(TrustedServersSection);await flushPromises();
+    expect(state.vault.platform.accountId).toHaveBeenCalled();
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();
+    finish(null);await flushPromises();
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();
+    expect(w.find('[data-testid="server-google-login"]').exists()).toBe(true);w.unmount();
+  });
+  it('creates a missing vault in app instead of asking for an existing passphrase',async()=>{
+    state.vault.view.state='locked';
+    state.vault.platform.prepareAccount=vi.fn(async()=>({accountId:state.account,state:'absent'}));
+    state.vault.platform.canCreate=true;
+    state.vault.requestSetup=vi.fn(async()=>false);
+    const w=mount(TrustedServersSection);await flushPromises();
+    expect(state.vault.requestSetup).toHaveBeenCalledTimes(1);
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();w.unmount();
+  });
+  it('offers local SSH without login or vault creation',async()=>{
+    state.sync.status.loggedIn=false;state.vault.view.state='locked';
+    const w=mount(TrustedServersSection);await flushPromises();
+    await w.get('[data-testid="server-use-local"]').trigger('click');await flushPromises();
+    expect(w.text()).toContain('SSH without an account');
+    expect(state.sync.login).not.toHaveBeenCalled();
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();
+    expect(w.emitted('local')).toHaveLength(1);w.unmount();
+  });
+  it('keeps the local choice across picker navigation and ignores late account preparation',async()=>{
+    state.vault.view.state='locked';
+    let finish!:(value:any)=>void;
+    state.vault.platform.prepareAccount=vi.fn(()=>new Promise(r=>{finish=r;}));
+    const w=mount(TrustedServersSection);await flushPromises();
+    await w.get('[data-testid="server-use-local"]').trigger('click');
+    finish({accountId:state.account,state:'locked'});await flushPromises();
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();w.unmount();
+    const next=mount(TrustedServersSection);await flushPromises();
+    expect(next.text()).toContain('SSH without an account');
+    expect(state.vault.platform.prepareAccount).toHaveBeenCalledTimes(1);next.unmount();
+  });
+  it('a vault service failure does not open setup or unlock',async()=>{
+    state.vault.view.state='locked';
+    state.vault.platform.prepareAccount=vi.fn(async()=>{throw new Error('Vault service unavailable');});
+    state.vault.requestSetup=vi.fn();
+    const w=mount(TrustedServersSection);await flushPromises();
+    expect(w.get('[role="alert"]').text()).toContain('Vault service unavailable');
+    expect(state.vault.requestSetup).not.toHaveBeenCalled();
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();w.unmount();
+  });
   it('renders only server rows and double click installs/connects once',async()=>{
     let finish!:()=>void;
     state.vault.platform.installTrustedHost.mockImplementation(()=>new Promise<void>(r=>{finish=r;}));
