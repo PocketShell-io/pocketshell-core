@@ -8,6 +8,7 @@ import { computed, defineComponent } from 'vue';
 import { keyVaultRef } from '../../keyVault';
 import { useDismissLayer } from '../../extensions';
 import VaultUnlockForm from './VaultUnlockForm.vue';
+import VaultSetupCard from './VaultSetupCard.vue';
 import './vault.css';
 
 const vault = computed(() => keyVaultRef.value);
@@ -30,7 +31,11 @@ const DismissLayer = defineComponent({
 <template>
   <div v-if="vault?.sheet.open" :key="vault.sheet.seq" class="vault-scrim" data-testid="vault-unlock-gate">
     <DismissLayer @close="vault.cancelUnlock()" />
-    <section class="vault-card" role="dialog" aria-modal="true" aria-labelledby="vault-unlock-title">
+    <section v-if="vault.sheet.mode === 'create'" class="vault-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="vault-setup-title">
+      <VaultSetupCard />
+      <button class="vault-btn" type="button" data-testid="vault-setup-cancel" @click="vault.cancelUnlock()">Cancel</button>
+    </section>
+    <section v-else class="vault-card" role="dialog" aria-modal="true" aria-labelledby="vault-unlock-title">
       <h2 id="vault-unlock-title" class="vault-title">{{ title }}</h2>
       <p class="vault-body">
         Your SSH keys are kept encrypted in your PocketShell account. Enter your vault passphrase to use them here.
@@ -47,6 +52,7 @@ const DismissLayer = defineComponent({
 </template>
 
 <style scoped>
+.vault-setup-dialog {width:min(480px,100%);max-height:100%;overflow-y:auto;}
 .vault-scrim {
   /* The visible viewport, as HostKeyTrustGate: inset:0 would follow a widened layout viewport. */
   position: fixed;
@@ -59,7 +65,8 @@ const DismissLayer = defineComponent({
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  padding: var(--sp-4);
+  padding: calc(var(--sp-4) + var(--ps-inset-top)) calc(var(--sp-4) + var(--ps-inset-right))
+    calc(var(--sp-4) + var(--ps-inset-bottom) + var(--ps-inset-keyboard)) calc(var(--sp-4) + var(--ps-inset-left));
   background: var(--scrim);
 }
 </style>

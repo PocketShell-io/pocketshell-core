@@ -3,7 +3,7 @@
 // copy public key, rename, delete (confirmed), and — where the platform can
 // upload (`canUpload`) — add a key or password and rotate a key. Elsewhere the
 // list is read-only. Renders nothing while the vault is locked.
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { VaultKeyEntry } from '@pocketshell/core';
 import { useKeyVault, vaultWriteMessage } from '../../keyVault';
 import VaultKeyUpload from './VaultKeyUpload.vue';
@@ -17,9 +17,17 @@ const renameDraft = ref('');
 const deleting = ref<VaultKeyEntry | null>(null);
 const passwordDraft = ref('');
 const passwordName = ref('');
+const passwordVaultPassphrase = ref('');
+const passwordBusy = ref(false);
 const notice = ref('');
 const error = ref('');
 const copied = ref('');
+watch(adding, (next, previous) => {
+  if (previous === 'password' && next !== 'password') {
+    vault?.cancelAddition(); passwordDraft.value = ''; passwordVaultPassphrase.value = '';
+  }
+});
+onBeforeUnmount(() => {vault?.cancelAddition(); passwordDraft.value = ''; passwordVaultPassphrase.value = '';});
 
 const entries = computed(() => vault?.view.keys ?? []);
 const usedBy = computed(() => {
@@ -52,17 +60,20 @@ function onRotated(entry: VaultKeyEntry): void {
 }
 
 async function addPassword(): Promise<void> {
-  if (!vault || passwordDraft.value === '') return;
+  if (!vault || passwordBusy.value || passwordDraft.value === '' || passwordVaultPassphrase.value === '') return;
   const name = passwordName.value.trim() || 'Password';
-  await write(
-    () => vault.store.addPassword(passwordDraft.value, name),
+  const confirmation = passwordVaultPassphrase.value;
+  passwordVaultPassphrase.value = '';
+  passwordBusy.value = true;
+  try {await write(
+    () => vault.addPassword(passwordDraft.value, name, confirmation),
     () => {
       passwordDraft.value = '';
       passwordName.value = '';
       adding.value = 'none';
       say(`${name} added to your vault.`);
     },
-  );
+  );} finally {passwordBusy.value = false;}
 }
 
 async function saveRename(entry: VaultKeyEntry): Promise<void> {
@@ -121,15 +132,20 @@ function added(iso: string): string {
     <form v-if="adding === 'password'" class="panel vault-form" @submit.prevent="addPassword">
       <label class="vault-field">
         Password
-        <input v-model="passwordDraft" data-testid="vault-password-value" type="password" autocomplete="new-password" />
+        <input v-model="passwordDraft" data-testid="vault-password-value" type="password" autocomplete="new-password" :disabled="passwordBusy" />
       </label>
       <label class="vault-field">
         Name
-        <input v-model="passwordName" data-testid="vault-password-name" autocomplete="off" placeholder="e.g. prod-box password" />
+        <input v-model="passwordName" data-testid="vault-password-name" autocomplete="off" placeholder="e.g. prod-box password" :disabled="passwordBusy" />
+      </label>
+      <label class="vault-field">
+        Vault passphrase
+        <input v-model="passwordVaultPassphrase" data-testid="vault-password-vault-passphrase" type="password" autocomplete="current-password" autocapitalize="off" :disabled="passwordBusy" />
+        <small>Confirm your vault passphrase each time you add a password.</small>
       </label>
       <div class="vault-actions">
         <button class="vault-btn" type="button" @click="adding = 'none'">Cancel</button>
-        <button class="vault-btn primary" type="submit" :disabled="passwordDraft === ''">Add to vault</button>
+        <button class="vault-btn primary" type="submit" :disabled="passwordBusy || passwordDraft === '' || passwordVaultPassphrase === ''">{{passwordBusy ? 'Adding…' : 'Add to vault'}}</button>
       </div>
     </form>
 

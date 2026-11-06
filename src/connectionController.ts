@@ -303,6 +303,11 @@ export class ConnectionController {
   private terminalGeometry: TerminalGeometry = { ...DEFAULT_TERMINAL_GEOMETRY };
   private graceDeadlineEpochMs: number | null = null;
   private reconnectTask: Promise<void> | null = null;
+  private credentialRefreshTask: Promise<ConnectionActionResult> | null = null;
+  private credentialRefreshTarget: SshHostTarget | null = null;
+  private credentialRefreshContext = 0;
+  /** Explicit host changes invalidate queued refreshes, independently of recovery ladder intents. */
+  private hostContext = 0;
   private disposed = false;
   private lastDialRetryable = true;
   private connectIntent = 0;
@@ -371,6 +376,7 @@ export class ConnectionController {
       const admission = this.gatewayAdmission(host);
       if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
     }
+    this.hostContext += 1;
     const intent = ++this.connectIntent;
     const requestId = this.createId();
     this.pendingConnectRequestId = requestId;
@@ -726,10 +732,77 @@ export class ConnectionController {
    * - Otherwise it runs ONE fresh ladder with the full budget, re-attaching
    *   every terminal still open.
    *
+   * An optional freshly authorized target may renew the credential only for
+   * the same host/user/transport binding. Refreshes join one controller-owned
+   * task, supersede obsolete native dials, and retain terminal records.
    * Background grace is not a Retry target: foreground reconciliation owns
    * that transport (`returnToForeground`).
    */
-  async reconnect(): Promise<ConnectionActionResult> {
+  async reconnect(authorizedTarget?: SshHostTarget): Promise<ConnectionActionResult> {
+    this.assertLive();
+    if (!authorizedTarget) return this.credentialRefreshTask ?? this.reconnectCurrent();
+    if (!this.host || !this.sameReconnectBinding(this.host, authorizedTarget)) {
+      return { ok: false, reason: 'failed', message: 'Reconnect cannot change the SSH host, user or transport route.' };
+    }
+    if (isKeyHandleCredential(authorizedTarget.credential) && !isValidSshKeyHandleCredential(authorizedTarget.credential)) {
+      return { ok: false, reason: 'failed', message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.' };
+    }
+    if (hasGatewayMarker(authorizedTarget)) {
+      const admission = this.gatewayAdmission(authorizedTarget);
+      if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
+    }
+    const target: SshHostTarget = { ...authorizedTarget, credential: { ...authorizedTarget.credential },
+      ...(authorizedTarget.gateway ? { gateway: { ...authorizedTarget.gateway } } : {}),
+      ...(authorizedTarget.link ? { link: { ...authorizedTarget.link } } : {}),
+    };
+    const context = this.hostContext;
+    const previous = this.credentialRefreshTask;
+    if (previous && this.credentialRefreshContext === context && this.credentialRefreshTarget && this.sameReconnectBinding(this.credentialRefreshTarget, target)
+      && JSON.stringify(this.credentialRefreshTarget.credential) === JSON.stringify(target.credential)) return previous;
+    // Publish the joinable request before its body runs: synchronous snapshot
+    // listeners must never create another transport owner during refresh.
+    const task = Promise.resolve().then(() => this.refreshReconnectCredential(target, previous, context)).finally(() => {
+      if (this.credentialRefreshTask === task) { this.credentialRefreshTask = null; this.credentialRefreshTarget = null; }
+    });
+    this.credentialRefreshTask = task;
+    this.credentialRefreshTarget = target;
+    this.credentialRefreshContext = context;
+    return task;
+  }
+
+  private async refreshReconnectCredential(target: SshHostTarget, previous: Promise<ConnectionActionResult> | null, context: number): Promise<ConnectionActionResult> {
+    if (previous) await previous.catch(() => undefined);
+    if (this.disposed || context !== this.hostContext || !this.host || !this.sameReconnectBinding(this.host, target)) {
+      return { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+    }
+    if (this.snapshot.phase === 'background') return this.reconnectCurrent();
+    const running = this.reconnectTask;
+    if (running) {
+      // Supersede only the obsolete dial. Terminal records/selection survive;
+      // its native result must finish cancellation before the new ladder starts.
+      const intent = ++this.connectIntent;
+      const pending = this.pendingConnectRequestId;
+      if (pending) await this.cancelCapability({ kind: 'connect', targetRequestId: pending });
+      await running;
+      if (!this.isCurrentConnect(intent)) return { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+    }
+    this.host = hostWithoutTransientPassphrase(target);
+    const resumed = this.reconnectCurrent(target);
+    const intent = this.connectIntent;
+    const result = await resumed;
+    return context === this.hostContext && this.isCurrentConnect(intent) ? result : { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+  }
+
+  private sameReconnectBinding(a: SshHostTarget, b: SshHostTarget): boolean {
+    if (a.hostId !== b.hostId || a.hostname !== b.hostname || a.port !== b.port || a.username !== b.username) return false;
+    if (JSON.stringify(a.link) !== JSON.stringify(b.link)) return false;
+    if (hasGatewayMarker(a) !== hasGatewayMarker(b)) return false;
+    if (!hasGatewayMarker(a)) return true;
+    const left = normalizeGatewayTarget(a.gateway), right = normalizeGatewayTarget(b.gateway);
+    return left !== null && right !== null && left.serverUrl === right.serverUrl && left.deviceId === right.deviceId;
+  }
+
+  private async reconnectCurrent(firstDialTarget?: SshHostTarget): Promise<ConnectionActionResult> {
     this.assertLive();
     if (!this.host) {
       return { ok: false, reason: 'not-connected', message: 'There is no host to reconnect to.' };
@@ -741,7 +814,7 @@ export class ConnectionController {
     } else if (this.snapshot.phase === 'background') {
       return { ok: false, reason: 'failed', message: 'The connection is in background grace; it reconnects on return.' };
     } else if (!usable) {
-      await this.reconnectAndAttach('reconnect requested');
+      await this.reconnectAndAttach('reconnect requested', firstDialTarget);
     }
     const phase = this.snapshot.phase;
     if (this.connection && phase !== 'lost' && phase !== 'reconnecting') return { ok: true, value: undefined };
@@ -825,6 +898,7 @@ export class ConnectionController {
   async close(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.hostContext += 1;
     this.connectIntent += 1;
     const pendingConnectRequestId = this.pendingConnectRequestId;
     this.pendingConnectRequestId = null;
@@ -1340,10 +1414,10 @@ export class ConnectionController {
     }
   }
 
-  private async reconnectAndAttach(reason: string): Promise<void> {
+  private async reconnectAndAttach(reason: string, firstDialTarget?: SshHostTarget): Promise<void> {
     const task = this.reconnectTask;
     if (task) return task;
-    const host = this.host;
+    const host = firstDialTarget ?? this.host;
     if (!host) return;
     const intent = ++this.connectIntent;
     this.reconnectTask = this.runReconnect(host, reason, intent).finally(() => {
@@ -1384,7 +1458,9 @@ export class ConnectionController {
       this.pendingConnectRequestId = requestId;
       let connected: ConnectionActionResult<SshConnectionRef>;
       try {
-        connected = await this.dial(host, intent, requestId);
+        // A newly authorized passphrase is for this first dial only. The
+        // cached host is already stripped; retries also use a stripped target.
+        connected = await this.dial(attempt === 0 ? host : hostWithoutTransientPassphrase(host), intent, requestId);
       } finally {
         if (this.pendingConnectRequestId === requestId) this.pendingConnectRequestId = null;
       }

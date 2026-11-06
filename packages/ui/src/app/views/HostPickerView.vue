@@ -64,6 +64,7 @@ const hostList = useHostsStore();
 const sync = useSyncStore();
 const keyVault = useKeyVault();
 const trustedAccountMode = Boolean(keyVault?.platform.accountId && keyVault.platform.installTrustedHost && keyVault.platform.trustedHostRevisions);
+const localSetupAllowed = computed(() => !trustedAccountMode || keyVault?.view?.localOnly === true);
 const connectError = ref<string | null>(null);
 /**
  * Why {@link connectError}'s dial failed, when it was a gateway dial core
@@ -129,11 +130,28 @@ const sourceName = hostSource?.sourceName ?? 'the host list';
 /** Local provenance belongs to the platform source, not fromConfig or other
  * server-supplied row metadata. Even a local cache cannot bypass managed
  * gateway trust: any transport/policy marker excludes the alternate path. */
+const hasManagedMarker = (host: HostEntry) => ['gateway','gatewayAuth','link','trustedVault'].some(key => Object.prototype.hasOwnProperty.call(host,key));
 const localDirectHosts = computed(() => hostSource?.provenance === 'local'
-  ? connection.hosts.filter(host => !['gateway','gatewayAuth','link','trustedVault'].some(key => Object.prototype.hasOwnProperty.call(host,key)))
+  ? connection.hosts.filter(host => !hasManagedMarker(host))
   : []);
 function isLocalDirectHost(host: HostEntry): boolean {
   return localDirectHosts.value.some(row => row === host);
+}
+
+interface LocalHostAdmission { readonly binding: string }
+/** This comparison stays private: identity-file paths are never diagnostics. */
+function localDialBinding(host: HostEntry): string {
+  const forwards = (rows: HostEntry['localForwards']) => rows.map(row => [row.kind,row.listenHost,row.listenPort,row.destHost,row.destPort]);
+  return JSON.stringify([hostEntryId(host),host.name,host.hostname,host.port,host.user,host.identityFile,
+    host.proxyJump,host.forwardAgent,host.local ?? false,forwards(host.localForwards),forwards(host.remoteForwards)]);
+}
+/** Admission must originate in the platform's current local row, not an alias supplied by an account row. */
+function admitLocalHost(host: HostEntry): LocalHostAdmission | null {
+  return isLocalDirectHost(host) ? {binding:localDialBinding(host)} : null;
+}
+function currentLocalAdmission(host: HostEntry, admission: LocalHostAdmission): boolean {
+  return hostSource?.provenance === 'local' && !hasManagedMarker(host) && localDialBinding(host) === admission.binding
+    && localDirectHosts.value.some(row => localDialBinding(row) === admission.binding);
 }
 
 /**
@@ -338,6 +356,8 @@ onBeforeUnmount(() => {
 });
 
 async function runAutoConnect(host: HostEntry): Promise<void> {
+  const localAdmission = trustedAccountMode ? admitLocalHost(host) : null;
+  if (trustedAccountMode && !localAdmission) {connectError.value = 'Local host changed. Connect again.';return;}
   // Latch BEFORE dialling: whatever happens next — success, failure, cancel,
   // a hang that the user escapes — this launch has had its one attempt. This
   // is what stops Back from the workspace bouncing straight back in.
@@ -354,7 +374,7 @@ async function runAutoConnect(host: HostEntry): Promise<void> {
     // still lift or the picker's rows stay disabled until remount.
     autoConnecting.value = false;
   }
-  if (ok) enterWorkspace(host);
+  if (ok) await enterWorkspace(host,localAdmission);
 }
 
 /** Re-read ~/.ssh/config without disturbing an existing connection or dial. */
@@ -389,23 +409,25 @@ function onCancelConnect(): void {
 }
 
 async function onConnect(host: HostEntry, trusted = false): Promise<void> {
+  const localAdmission = !trusted ? admitLocalHost(host) : null;
   if (trustedAccountMode && (trusted
     ? host.gatewayAuth !== 'managed' || normalizeGatewayTarget(host.gateway) === null
-    : !isLocalDirectHost(host))) {
+    : !localAdmission)) {
     connectError.value = 'Open this server from the verified account server list.';
     return;
   }
   const request = ++pickerRequest;
   if (pendingBootstrapClose) await pendingBootstrapClose;
   if (!pickerAlive || request !== pickerRequest) return;
+  if (localAdmission && !currentLocalAdmission(host,localAdmission)) {connectError.value = 'Local host changed. Connect again.';return;}
   // Already connected to this host: go back in, don't dial again. A second
   // dial would open a second connection and orphan the first — the session
   // panel, terminal pool and forwards all key off the old id.
   if (hostEntryId(host) === connectedKey.value) {
-    await enterWorkspace(host);
+    await enterWorkspace(host,localAdmission);
     return;
   }
-  if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host);
+  if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host,localAdmission);
 }
 
 function onTrustedConnect(host: HostEntry): void {
@@ -472,8 +494,24 @@ async function dial(host: HostEntry): Promise<boolean> {
   return ok;
 }
 
-async function enterWorkspace(host: HostEntry): Promise<void> {
-  if (trustedAccountMode && !isLocalDirectHost(host) && keyVault?.platform.accountId) {
+async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmission | null): Promise<void> {
+  if (trustedAccountMode && localAdmission) {
+    // A source refresh replaces objects while native SSH is pending. Preserve
+    // the admitted local origin, but recheck the complete current binding.
+    // A changed target/source/policy is refused, never reclassified as account.
+    if (!currentLocalAdmission(host,localAdmission)) {
+      connectError.value = 'Local host changed while connecting. Connect again.';
+      if (connection.connectionId && connection.activeHost === host) {
+        const closing = connection.disconnect().catch(() => undefined);
+        pendingBootstrapClose = closing;
+        await closing;
+        if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
+      }
+      return;
+    }
+    if (!connection.activeHost || hasManagedMarker(connection.activeHost)
+      || localDialBinding(connection.activeHost) !== localAdmission.binding) return;
+  } else if (trustedAccountMode && keyVault?.platform.accountId) {
     const id = connection.connectionId;
     if (!id) return;
     if (activeBootstrap) activeBootstrap.cancelled = true;
@@ -707,7 +745,7 @@ function onClearDefault(): void {
           </li>
         </ul>
         <p
-          v-if="!trustedAccountMode && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
+          v-if="localSetupAllowed && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
           class="muted"
         >
           <span>{{ emptyHint.before }}</span><code v-if="emptyHint.source">{{ emptyHint.source }}</code><span>{{ emptyHint.after }}</span>
