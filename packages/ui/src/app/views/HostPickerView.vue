@@ -56,7 +56,7 @@ import { useSessionsStore } from '../stores/sessions';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
 import { useGatewayPickerSource } from '../useGatewayPickerSource';
-import { hostEntryId, type GatewayDialFailureKind, type HostEntry } from '@pocketshell/core';
+import { hostEntryId, normalizeGatewayTarget, type GatewayDialFailureKind, type HostEntry } from '@pocketshell/core';
 
 const router = useRouter();
 const connection = useConnectionStore();
@@ -126,6 +126,15 @@ const canOpenNewWindow = (() => {
 const hostSource = api.hosts ?? null;
 /** The platform's noun for its host source, for load-failure copy. */
 const sourceName = hostSource?.sourceName ?? 'the host list';
+/** Local provenance belongs to the platform source, not fromConfig or other
+ * server-supplied row metadata. Even a local cache cannot bypass managed
+ * gateway trust: any transport/policy marker excludes the alternate path. */
+const localDirectHosts = computed(() => hostSource?.provenance === 'local'
+  ? connection.hosts.filter(host => !['gateway','gatewayAuth','link','trustedVault'].some(key => Object.prototype.hasOwnProperty.call(host,key)))
+  : []);
+function isLocalDirectHost(host: HostEntry): boolean {
+  return localDirectHosts.value.some(row => row === host);
+}
 
 /**
  * The empty list's copy, split on the source's name so the name keeps the
@@ -223,6 +232,8 @@ interface HostGroup {
 }
 
 const hostGroups = computed<HostGroup[]>(() => {
+  if (trustedAccountMode) return hostSource?.provenance === 'local'
+    ? [{kind:'config',label:localDirectHosts.value.length ? hostSource.groupLabel : '',hosts:localDirectHosts.value}] : [];
   if (!accountSignedIn.value) {
     return [{ kind: 'config', label: '', hosts: connection.hosts }];
   }
@@ -311,11 +322,10 @@ onMounted(async () => {
   }
   const decision = decideAutoConnect({
     defaultHost: launchDefaultHost(launch, hostList.defaultHostKey),
-    hosts: connection.hosts,
+    hosts: trustedAccountMode ? localDirectHosts.value : connection.hosts,
     attempted: autoConnectAttempted(),
     connected: connection.connectionId !== null,
   });
-  if (trustedAccountMode) return;
   if (decision.action === 'connect') await runAutoConnect(decision.host);
 });
 
@@ -378,7 +388,13 @@ function onCancelConnect(): void {
   connectingKey.value = null;
 }
 
-async function onConnect(host: HostEntry): Promise<void> {
+async function onConnect(host: HostEntry, trusted = false): Promise<void> {
+  if (trustedAccountMode && (trusted
+    ? host.gatewayAuth !== 'managed' || normalizeGatewayTarget(host.gateway) === null
+    : !isLocalDirectHost(host))) {
+    connectError.value = 'Open this server from the verified account server list.';
+    return;
+  }
   const request = ++pickerRequest;
   if (pendingBootstrapClose) await pendingBootstrapClose;
   if (!pickerAlive || request !== pickerRequest) return;
@@ -390,6 +406,12 @@ async function onConnect(host: HostEntry): Promise<void> {
     return;
   }
   if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host);
+}
+
+function onTrustedConnect(host: HostEntry): void {
+  // TrustedServersSection revalidates the descriptor and installs account-
+  // bound native trust before emitting. Cached/manual rows never use this.
+  void onConnect(host,true);
 }
 
 /** Hang up. Stays on the picker — the row's dot going grey is the feedback. */
@@ -451,7 +473,7 @@ async function dial(host: HostEntry): Promise<boolean> {
 }
 
 async function enterWorkspace(host: HostEntry): Promise<void> {
-  if (trustedAccountMode && keyVault?.platform.accountId) {
+  if (trustedAccountMode && !isLocalDirectHost(host) && keyVault?.platform.accountId) {
     const id = connection.connectionId;
     if (!id) return;
     if (activeBootstrap) activeBootstrap.cancelled = true;
@@ -614,7 +636,7 @@ function onClearDefault(): void {
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:
            say how to reveal it rather than reading as an empty account. -->
-      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onConnect" />
+      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onTrustedConnect" />
       <p v-if="!trustedAccountMode && accountSignedIn && !accountUnlocked" class="muted locked-note">
         Your account's hosts show up here once Account &amp; sync has checked the account.
         <!-- The unlock lives behind the account action; a note alone would
@@ -624,7 +646,7 @@ function onClearDefault(): void {
       <!-- The two host sources. Each group is a labelled list; the config
            group keeps the empty state, the account group only exists when it
            has something the config group does not. -->
-      <template v-for="group in trustedAccountMode ? [] : hostGroups" :key="group.kind">
+      <template v-for="group in hostGroups" :key="group.kind">
         <h2 v-if="group.label" class="group-label">{{ group.label }}</h2>
         <ul class="host-list">
           <!-- The card is the <li>, not the row button: the "make this the
@@ -685,7 +707,7 @@ function onClearDefault(): void {
           </li>
         </ul>
         <p
-          v-if="group.kind === 'config' && !connection.hosts.length && !connection.error && !hostReloadError"
+          v-if="!trustedAccountMode && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
           class="muted"
         >
           <span>{{ emptyHint.before }}</span><code v-if="emptyHint.source">{{ emptyHint.source }}</code><span>{{ emptyHint.after }}</span>
