@@ -431,6 +431,10 @@ export interface PocketShellApi {
     // no config file and words the same surfaces around the synced account
     // list. Omitting the group gets neutral wording and no source chip.
     "hosts"?: {
+    /** Provenance of ssh.listConfigHosts, asserted by platform code, never
+     * host metadata. Trusted-account mode exposes direct entries only when
+     * this is explicitly local; cloud/account and unknown sources stay hidden. */
+    "provenance"?: 'local' | 'account';
     /** Eyebrow over the local host group in the picker. */
     "groupLabel": string;
     /** The source's name; the picker renders it as code where it cites it. */
