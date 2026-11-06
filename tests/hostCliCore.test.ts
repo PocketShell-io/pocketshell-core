@@ -110,6 +110,19 @@ describe('HostCliCore sessions contract', () => {
     expect(() => parseHostSessionsList('{"schema":3,"sessions":[{"name":"x","attached":"yes"}]}')).toThrow(HostCliMalformed);
   });
 
+  it.each(['', ' ', '\t\r\n'])('rejects the whole listing when a provided session id is blank %j', async (id) => {
+    const rows = [{ name: 'same-label', id: 'valid-opaque-id', workspace: '/work', attached: false },
+      { name: 'same-label', id, workspace: '/another', attached: false }];
+    const core = new HostCliCore(new ScriptedTransport(ok(JSON.stringify({ schema: 3, sessions: rows }))));
+    await expect(core.listSessions()).rejects.toBeInstanceOf(HostCliMalformed);
+    expect(() => parseHostSessionsList(JSON.stringify({ schema: 3, sessions: rows }))).toThrow(/id.*non-empty/);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('rejects a provided blank create identity %j rather than a name fallback', async (id) => {
+    const core = new HostCliCore(new ScriptedTransport(ok(JSON.stringify({ schema: 3, name: 'same-label', id, created: true }))));
+    await expect(core.createSession('same-label')).rejects.toBeInstanceOf(HostCliMalformed);
+  });
+
   it('rejects transport, timeout, and nonzero exit failures instead of returning an empty list', async () => {
     const noCli = new HostCliCore(new ScriptedTransport({
       exitCode: 127,

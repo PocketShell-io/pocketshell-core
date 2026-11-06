@@ -109,6 +109,12 @@ export function isSessionsListResult(value: unknown): value is { sessions: unkno
       typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string');
 }
 
+function optionalSessionId(value: unknown, row: string): string | null {
+  const id = optionalString(value, 'id', row);
+  if (id !== null && id.trim().length === 0) throw new Error(`${row}.id must be a non-empty, non-whitespace string or null`);
+  return id;
+}
+
 /** Parse the schema-3 output from `pocketshell sessions list --json`. */
 export function parseHostSessionsList(raw: string): SessionsListing {
   const root = parseObject(raw);
@@ -129,7 +135,7 @@ export function parseHostSessionsList(raw: string): SessionsListing {
       const phase = optionalString(row.phase, 'phase', label)?.trim().toLowerCase() || null;
       return {
         name: row.name,
-        id: optionalString(row.id, 'id', label),
+        id: optionalSessionId(row.id, label),
         workspace: optionalString(row.workspace, 'workspace', label),
         tag: optionalString(row.tag, 'tag', label),
         engine: optionalString(row.engine, 'engine', label),
@@ -249,7 +255,7 @@ export class HostCliSessions extends HostCliModule {
     return parseShape(schema, 'create', () => {
       if (typeof root.name !== 'string') throw new Error('name must be a string');
       if (typeof root.created !== 'boolean') throw new Error('created must be a boolean');
-      return { name: root.name, id: optionalString(root.id, 'id', 'create'), created: root.created };
+      return { name: root.name, id: optionalSessionId(root.id, 'create'), created: root.created };
     });
   }
 }

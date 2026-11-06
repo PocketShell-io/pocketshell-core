@@ -656,6 +656,141 @@ describe('JS connection and session policy', () => {
     ]);
   });
 
+  it.each([null, undefined])('immutable identity refuses initial UUID selection against listing id %s', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    // Undefined is deliberately omitted on the wire; the real parser yields null.
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id: id as null });
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect(await controller.attachSession(selected)).toMatchObject({ ok: false, reason: 'not-found' });
+    expect(capability.openPtyCalls).toHaveLength(0);
+  });
+
+  it.each([null, undefined])('immutable identity never downgrades to listing id %s on reconnect', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, id: id as null };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && ['lost', 'live'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().phase).toBe('lost');
+    expect(controller.getSnapshot().terminals).toHaveLength(0);
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable identity skips colliding null and other-ID metadata when refreshing terminals', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id: null },
+      { ...selected, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' }, { ...selected, name: 'renamed' });
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(controller.getSnapshot().selectedSession).toMatchObject({ id: selected.id, name: 'renamed' });
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable identity does not let a null-ID consumer control an established UUID terminal', async () => {
+    const capability = new FakeCapability();
+    const selected = session('same-label');
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    const generic = { ...selected, id: null };
+    expect(controller.focusSession(generic)).toBe(false);
+    expect((await controller.writeTerminalBytes(generic, new Uint8Array([120]))).ok).toBe(false);
+    expect((await controller.resizeTerminal(generic, { cols: 70, rows: 20 })).ok).toBe(false);
+    await controller.detachSession(generic);
+    expect(controller.getSnapshot().terminals).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect(capability.writeCalls).toHaveLength(0);
+    expect(capability.resizeCalls).toHaveLength(0);
+  });
+
+  it('immutable identity does not infer legacy null to UUID continuity at initial selection or reconnect', async () => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('same-label'), id: null };
+    const modern = { ...legacy, id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, modern);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(legacy)).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    capability.sessions[0] = legacy;
+    await controller.refreshSessions();
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    capability.sessions[0] = modern;
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && ['lost', 'live'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().phase).toBe('lost');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual(["exec pocketshell sessions attach -- 'same-label'"]);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank identity %j fails the initial parser boundary across colliding workspaces', async (id) => {
+    const capability = new FakeCapability();
+    const first = { ...session('same-label'), id };
+    const second = { ...first, workspace: '/another' };
+    capability.sessions.splice(0, capability.sessions.length, first, second);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(false);
+    expect(controller.getSnapshot().sessions).toHaveLength(0);
+    expect((await controller.attachSession(second)).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    expect(controller.getSnapshot().terminals).toHaveLength(0);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank identity %j cannot replace an established UUID on reconnect', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id }, { ...selected, id, workspace: '/another' });
+    capability.emitLost();
+    await waitFor(() => ['error', 'lost'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().error).toContain('non-empty');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank public request %j cannot bootstrap or reuse a generic terminal', async (id) => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('same-label'), id: null };
+    capability.sessions.splice(0, capability.sessions.length, legacy);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession({ ...legacy, id })).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    expect((await controller.attachSession({ ...legacy, id })).ok).toBe(false);
+    expect(controller.getSnapshot().terminals).toHaveLength(1);
+    expect(capability.openPtyCalls).toHaveLength(1);
+  });
+
   it('immutable selector preserves the explicitly id-null generic host contract', async () => {
     const capability = new FakeCapability();
     const legacy = { ...session('legacy host'), id: null };
@@ -665,6 +800,12 @@ describe('JS connection and session policy', () => {
     await connectAndList(controller);
     expect((await controller.attachSession(legacy)).ok).toBe(true);
     expect(capability.openPtyCalls[0]?.command).toBe("exec pocketshell sessions attach -- 'legacy host'");
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      "exec pocketshell sessions attach -- 'legacy host'",
+      "exec pocketshell sessions attach -- 'legacy host'",
+    ]);
   });
 
   it('does not let old queued operations or resize errors poison a fresh attach of the same session', async () => {
