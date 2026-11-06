@@ -34,7 +34,11 @@ import {
  * profile / no profile, skip / no skip, and a directory with a space in it.
  */
 const V44 = resolve(__dirname, 'fixtures');
-const readV44 = (name: string): string => readFileSync(resolve(V44, name), 'utf8');
+// Git may check the captures out with CRLF on Windows; the assertions
+// below match the captured LF lines, so normalise on read.
+const CRLF = /\r\n/g;
+const readV44 = (name: string): string =>
+  readFileSync(resolve(V44, name), 'utf8').replace(CRLF, '\n');
 
 describe('the 0.4.44 `pocketshell agent` contract, as captured', () => {
   const claudeHelp = readV44('v0.4.44-agent-claude-help.txt');
