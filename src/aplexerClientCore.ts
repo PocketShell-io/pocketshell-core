@@ -20,6 +20,7 @@ import { APLEXER_LIST_SORT } from './aplexer';
 import { windowsWorkspaceForm } from './windowsPaths';
 import {
   aplexerAckCommand,
+  aplexerEnginesCommand,
   aplexerKillCommand,
   aplexerProbeCommand,
   aplexerRenameCommand,
@@ -35,6 +36,7 @@ import {
 import {
   aplexerRecordToSummary,
   byOldestCreated,
+  parseAplexerEngineIds,
   parseAplexerSnapshot,
   parseAplexerWarnings,
   parseSingleAplexerRecord,
@@ -317,6 +319,25 @@ export class AplexerCore {
       return parseAplexerWarnings(res.stdout);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The engine IDs this host can launch, for the launch picker's live
+   * catalog, or null when the query cannot be answered — `a` absent, a
+   * non-zero exit, or output that is not the documented JSON array. Null is
+   * the picker's offline signal (it falls back to its small static list);
+   * `[]` is a real answer (this host has no available engine). The
+   * availability gate rides the cache the listing warms, like warnings.
+   */
+  async engines(): Promise<string[] | null> {
+    if (!(await this.isAvailable())) return null;
+    try {
+      const res = await this.transport.exec(pathAwareCommand(aplexerEnginesCommand()));
+      if (res.exitCode !== 0) return null;
+      return parseAplexerEngineIds(res.stdout);
+    } catch {
+      return null;
     }
   }
 
