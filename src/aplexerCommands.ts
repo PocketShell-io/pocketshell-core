@@ -98,6 +98,15 @@ export function aplexerWarningsCommand(): string {
 }
 
 /**
+ * `a engines --json`: the host's engine catalog as the launch picker reads
+ * it — one row per known engine, `available` saying whether this host can
+ * run it now. The picker's live engine list is these rows' available names.
+ */
+export function aplexerEnginesCommand(): string {
+  return 'a engines --json';
+}
+
+/**
  * `a ack [TARGET]`: acknowledge warnings so they stop listing, host-side and
  * durably. Bare acks everything; a target acks one. The target is the
  * warning's session UUID, not the `workspace:tag` selector: the UUID is
