@@ -570,7 +570,7 @@ describe('JS connection and session policy', () => {
     const firstPty = controller.getSnapshot().selectedSession;
     expect(firstPty?.name).toBe('alpha');
     expect(capability.openPtyCalls[0]?.command).toContain('pocketshell sessions attach --');
-    expect(capability.openPtyCalls[0]?.command).toContain("'alpha'");
+    expect(capability.openPtyCalls[0]?.command).toContain("'alpha-id'");
 
     expect((await controller.attachSession(session('beta'))).ok).toBe(true);
     // Attaching beta keeps alpha's PTY (#2955).
@@ -579,7 +579,92 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
     expect(capability.connectCalls).toHaveLength(connectedCount);
-    expect(capability.openPtyCalls[1]?.command).toContain("'beta'");
+    expect(capability.openPtyCalls[1]?.command).toContain("'beta-id'");
+  });
+
+  it('immutable selector uses the authoritative id despite a stale display label', async () => {
+    const capability = new FakeCapability();
+    const authoritative = { ...session('renamed'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, authoritative);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession({ ...authoritative, name: 'old-label' })).ok).toBe(true);
+    expect(capability.openPtyCalls[0]?.command).toBe(`exec pocketshell sessions attach -- '${authoritative.id}'`);
+  });
+
+  it('immutable selector keeps colliding display names on distinct session ids', async () => {
+    const capability = new FakeCapability();
+    const first = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    const second = { ...first, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d', workspace: '/another' };
+    capability.sessions.splice(0, capability.sessions.length, first, second);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(first)).ok).toBe(true);
+    expect((await controller.attachSession(second)).ok).toBe(true);
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${first.id}'`,
+      `exec pocketshell sessions attach -- '${second.id}'`,
+    ]);
+  });
+
+  it('immutable selector reconnects to the same UUID after its label changes', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('before-rename'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, name: 'after-rename' };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('after-rename');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable selector does not replace a missing UUID with a same-name session', async () => {
+    const capability = new FakeCapability();
+    const stale = { ...session('reused-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    const replacement = { ...stale, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' };
+    capability.sessions.splice(0, capability.sessions.length, replacement);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect(await controller.attachSession(stale)).toMatchObject({ ok: false, reason: 'not-found' });
+    expect(capability.openPtyCalls).toHaveLength(0);
+  });
+
+  it('immutable selector refuses a same-name replacement after reconnect loses the selected UUID', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('reused-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'lost');
+    expect(controller.getSnapshot().error).toContain('no longer exists');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable selector preserves the explicitly id-null generic host contract', async () => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('legacy host'), id: null };
+    capability.sessions.splice(0, capability.sessions.length, legacy);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    expect(capability.openPtyCalls[0]?.command).toBe("exec pocketshell sessions attach -- 'legacy host'");
   });
 
   it('does not let old queued operations or resize errors poison a fresh attach of the same session', async () => {
@@ -709,8 +794,8 @@ describe('JS connection and session policy', () => {
     capability.emitLost();
     await waitFor(() => capability.openPtyCalls.length === 4 && controller.getSnapshot().phase === 'live');
     const reopened = capability.openPtyCalls.slice(2);
-    expect(reopened.find((call) => call.command.includes("'alpha'"))).toMatchObject({ cols: 60, rows: 20 });
-    expect(reopened.find((call) => call.command.includes("'beta'"))).toMatchObject({ cols: 70, rows: 25 });
+    expect(reopened.find((call) => call.command.includes("'alpha-id'"))).toMatchObject({ cols: 60, rows: 20 });
+    expect(reopened.find((call) => call.command.includes("'beta-id'"))).toMatchObject({ cols: 70, rows: 25 });
   });
 
   it('detaches the attached PTY so re-selecting the same session attaches afresh', async () => {
@@ -1722,7 +1807,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
 
   /** The newest channel attached to `name`. */
   function channelOf(capability: FakeCapability, name: string): string {
-    const index = capability.openPtyCalls.map((call) => call.command.includes(`'${name}'`)).lastIndexOf(true);
+    const index = capability.openPtyCalls.map((call) => call.command.includes(`'${name}-id'`)).lastIndexOf(true);
     if (index < 0) throw new Error(`no PTY opened for ${name}`);
     return `pty-${index + 1}`;
   }
@@ -1830,7 +1915,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
     for (const name of ['alpha', 'beta', 'gamma']) {
-      expect(reopened.filter((command) => command.includes(`'${name}'`)), name).toHaveLength(1);
+      expect(reopened.filter((command) => command.includes(`'${name}-id'`)), name).toHaveLength(1);
     }
     expect(reopened).toHaveLength(3);
     expect(recorder.ladders(), recorder.phases.join(' -> ')).toBe(1);
@@ -1992,13 +2077,13 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await controller.detachSession(session('beta'));
     connectGate.resolve();
     await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
-    expect(capability.openPtyCalls.slice(opensBefore).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+    expect(capability.openPtyCalls.slice(opensBefore).map((call) => call.command.includes("'alpha-id'"))).toEqual([true]);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
 
     // The detach belonged to THAT reconnect only: the next one re-attaches alpha.
     capability.emitLost();
     await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'live');
-    expect(capability.openPtyCalls.slice(opensBefore + 1).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+    expect(capability.openPtyCalls.slice(opensBefore + 1).map((call) => call.command.includes("'alpha-id'"))).toEqual([true]);
   });
 
   it('drops a terminal whose session vanished during the reconnect and keeps the others live', async () => {
@@ -2067,12 +2152,12 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     expect((await controller.attachSession(session('s1'))).ok).toBe(true);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's6', 's7', 's8', 's1']);
     expect(capability.openPtyCalls).toHaveLength(9);
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1-id'");
     expect(capability.ptys.size).toBe(5);
     expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
     // The evicted terminal re-attaches (a fresh PTY) when it is looked at again.
     expect((await controller.attachSession(session('s5'))).ok).toBe(true);
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5-id'");
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's7', 's8', 's1', 's5']);
     expect((await controller.writeTerminalBytes(session('s5'), new TextEncoder().encode('x'))).ok).toBe(true);
   });
@@ -2101,7 +2186,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     const openPty = capability.openPty;
     let generation = 0;
     capability.openPty = async (options) => {
-      if (options.command.includes("'beta'") && generation === 1) await betaGate.promise;
+      if (options.command.includes("'beta-id'") && generation === 1) await betaGate.promise;
       return openPty(options);
     };
     const opensBefore = capability.openPtyCalls.length;
@@ -2110,7 +2195,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     // alpha is re-opened; beta's open is held on the wire (not yet recorded).
     await waitFor(() => capability.openPtyCalls.length === opensBefore + 1);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha-id'");
     expect(controller.getSnapshot().phase).toBe('attaching');
     // alpha is already open on the new generation: re-selecting it opens nothing.
     expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
@@ -2119,8 +2204,8 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await waitFor(() => controller.getSnapshot().phase === 'live');
     await new Promise((resolve) => setTimeout(resolve, 20));
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
-    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
-    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'alpha-id'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta-id'"))).toHaveLength(1);
   });
 
   it('keeps a terminal whose read failed while backgrounded, and re-attaches it exactly once when grace expired', async () => {
@@ -2145,8 +2230,8 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await controller.returnToForeground();
     await waitFor(() => controller.getSnapshot().phase === 'live');
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
-    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
-    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'alpha-id'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta-id'"))).toHaveLength(1);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
   });
 

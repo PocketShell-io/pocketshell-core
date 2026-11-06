@@ -1208,7 +1208,7 @@ export class ConnectionController {
       const opened = await this.capability.openPty({
         ...connection,
         requestId: openRequestId,
-        command: hostCli.buildAttachCommand(session.name),
+        command: hostCli.buildAttachCommand(session.id ?? session.name),
         cols: record.geometry.cols,
         rows: record.geometry.rows,
         term: 'xterm-256color',
