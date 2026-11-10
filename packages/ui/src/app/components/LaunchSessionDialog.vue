@@ -359,6 +359,12 @@ function onConfirm(): void {
 .segmented {
   display: flex;
   flex: 1;
+  /* A catalog with every engine installed does not fit one row at the `sm`
+     panel width, and a flex child floors at its label's width — so the row
+     once forced the whole dialog to scroll sideways. Overflowing segments
+     wrap to a second line instead; the two-segment Shell|Agent row still
+     fills one line, because `flex: 1` grows what fits. */
+  flex-wrap: wrap;
   gap: var(--sp-1);
   padding: var(--sp-1);
   background: var(--surface-2);
@@ -367,6 +373,7 @@ function onConfirm(): void {
 }
 .segment {
   flex: 1;
+  white-space: nowrap;
   height: var(--control-h);
   background: transparent;
   border: none;
