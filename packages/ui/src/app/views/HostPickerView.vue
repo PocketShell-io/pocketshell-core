@@ -263,7 +263,7 @@ const directAccountScope = ref<{ accountId: string; vaultId: string; epoch: numb
  * explicit local source, and never for a row carrying any Gateway/link/policy
  * marker, a local-machine flag, an unusable endpoint, or an alias taken by a
  * local host or a verified server. Their origin stays "account": picking one
- * is an explicit import-and-connect, see {@link onAccountDirectConnect}.
+ * starts an explicit direct dial, see {@link onAccountDirectConnect}.
  */
 const accountDirectHosts = computed<HostEntry[]>(() => {
   if (!trustedAccountMode || hostSource?.provenance !== 'local' || !hostSource.accountDirect || keyVault?.view?.localOnly === true) return [];

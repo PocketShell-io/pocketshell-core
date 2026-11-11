@@ -15,10 +15,11 @@ const entry=(name:string,extra:Partial<HostEntry>={})=>({name,hostname:`${name}.
 const server={accountId:'google:orin',vaultId:'vault-1',epoch:1,revision:1,version:1,serverUrl:'wss://gateway.pocketshell.io',deviceId:'desktop-1',
   hostAlias:'Desktop Gateway',username:'orin',keyId:'k',sshHostKey:'pin',devicePublicKey:'id',status:'active',updatedAt:'2026-11-05T00:00:00.000Z'};
 let wrapper:ReturnType<typeof mount>|undefined;
-beforeEach(()=>{setActivePinia(createPinia());localStorage.clear();resetAutoConnectLatch();});
+beforeEach(()=>{localStorage.clear();resetAutoConnectLatch();});
 afterEach(()=>{wrapper?.unmount();wrapper=undefined;});
 
 async function setup(options:{accountHosts:HostEntry[];vaultState?:'locked'|'unlocked';localOnly?:boolean;accountAfterDial?:string}){
+  setActivePinia(createPinia());
   let dialed=false;
   const connect=vi.fn(async()=>{dialed=true;return {ok:true,connectionId:'conn-account'};});
   const close=vi.fn(async()=>true);
@@ -39,6 +40,12 @@ async function setup(options:{accountHosts:HostEntry[];vaultState?:'locked'|'unl
   await flushPromises();await flushPromises();
   const {useSyncStore}=await import('../src/app/stores/sync');
   await useSyncStore().refreshStatus();await flushPromises();
+  if (options.vaultState !== 'locked' && !options.localOnly) {
+    await vi.waitFor(() => {
+      expect(wrapper!.find('[data-testid="trusted-server-connect"]').exists()).toBe(true);
+      expect(rows()).toHaveLength(1);
+    }, { timeout: 3000 });
+  }
   return{connect,close,router,installTrustedHost,accountId};
 }
 const rows=()=>wrapper!.findAll('.host-row');
@@ -72,5 +79,6 @@ describe('account-only direct SSH row beside a signed-in trusted Gateway server'
     await rows()[0]!.trigger('click');await flushPromises();await flushPromises();
     expect(t.router.currentRoute.value.name).toBe('hosts');
     expect(wrapper!.text()).toContain('Your account or host changed');
+    expect(t.close).toHaveBeenCalledWith('conn-account');
   });
 });
