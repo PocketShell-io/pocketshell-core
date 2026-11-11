@@ -249,9 +249,53 @@ interface HostGroup {
   hosts: HostEntry[];
 }
 
+/**
+ * Verified Gateway server aliases the signed-in vault lists (reported by
+ * TrustedServersSection). An account settings row may never reuse one: a
+ * direct dial would otherwise inherit that alias's vault binding.
+ */
+const directAccountScope = ref<{ accountId: string; vaultId: string; epoch: number; aliases: string[] } | null>(null);
+
+/**
+ * Trusted-account mode: the account's direct SSH rows (settings rows, NOT
+ * verified Gateway descriptors) this phone does not already have. Offered only
+ * while the signed-in account's vault is unlocked, only for the platform's
+ * explicit local source, and never for a row carrying any Gateway/link/policy
+ * marker, a local-machine flag, an unusable endpoint, or an alias taken by a
+ * local host or a verified server. Their origin stays "account": picking one
+ * is an explicit import-and-connect, see {@link onAccountDirectConnect}.
+ */
+const accountDirectHosts = computed<HostEntry[]>(() => {
+  if (!trustedAccountMode || hostSource?.provenance !== 'local' || !hostSource.accountDirect || keyVault?.view?.localOnly === true) return [];
+  if (keyVault?.view?.state !== 'unlocked' || !accountSignedIn.value) return [];
+  const rows = sync.accountHosts;
+  const scope = directAccountScope.value;
+  if (rows === null || !scope || keyVault.store.vaultId !== scope.vaultId || keyVault.store.epoch !== scope.epoch) return [];
+  const taken = new Set([...connection.hosts.map(host => host.name), ...scope.aliases]);
+  const seen = new Set<string>();
+  return rows.filter((host) => {
+    if (hasManagedMarker(host) || host.local === true || taken.has(host.name) || seen.has(host.name)) return false;
+    if (!host.name || !host.hostname || !host.user || !Number.isInteger(host.port) || host.port < 1 || host.port > 65535) return false;
+    if (connection.hosts.some(local => local.hostname === host.hostname && local.port === host.port)) return false;
+    seen.add(host.name);
+    return true;
+  });
+});
+function isAccountDirectHost(host: HostEntry): boolean {
+  return trustedAccountMode && accountDirectHosts.value.some(row => row === host);
+}
+
 const hostGroups = computed<HostGroup[]>(() => {
-  if (trustedAccountMode) return hostSource?.provenance === 'local'
-    ? [{kind:'config',label:localDirectHosts.value.length ? hostSource.groupLabel : '',hosts:localDirectHosts.value}] : [];
+  if (trustedAccountMode) {
+    const groups: HostGroup[] = [];
+    if (hostSource?.provenance === 'local') {
+      groups.push({kind:'config',label:localDirectHosts.value.length ? hostSource.groupLabel : '',hosts:localDirectHosts.value});
+    }
+    if (accountDirectHosts.value.length > 0) {
+      groups.push({kind:'account',label:'In your account · direct SSH',hosts:accountDirectHosts.value});
+    }
+    return groups;
+  }
   if (!accountSignedIn.value) {
     return [{ kind: 'config', label: '', hosts: connection.hosts }];
   }
@@ -409,6 +453,7 @@ function onCancelConnect(): void {
 }
 
 async function onConnect(host: HostEntry, trusted = false): Promise<void> {
+  if (!trusted && isAccountDirectHost(host)) return onAccountDirectConnect(host);
   const localAdmission = !trusted ? admitLocalHost(host) : null;
   if (trustedAccountMode && (trusted
     ? host.gatewayAuth !== 'managed' || normalizeGatewayTarget(host.gateway) === null
@@ -428,6 +473,39 @@ async function onConnect(host: HostEntry, trusted = false): Promise<void> {
     return;
   }
   if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host,localAdmission);
+}
+
+/**
+ * An account-only direct SSH row. The row is an unverified settings record, so
+ * nothing about it is trusted here: the platform's own dial decides the
+ * credential from the account vault's binding for that alias, and the usual
+ * host-key prompt still gates the first contact. The verified account and
+ * unlocked vault captured here must still be the same ones when the dial
+ * lands, else the connection is closed and nothing opens.
+ */
+async function onAccountDirectConnect(host: HostEntry): Promise<void> {
+  const scope = directAccountScope.value;
+  if (!keyVault?.platform.accountId || !scope) return;
+  const request = ++pickerRequest;
+  const directEndpoint = (row: HostEntry) => JSON.stringify([row.name, row.hostname, row.port, row.user]);
+  const binding = directEndpoint(host);
+  const current = () => pickerAlive && request === pickerRequest && directAccountScope.value === scope
+    && keyVault.store.state === 'unlocked' && keyVault.store.vaultId === scope.vaultId && keyVault.store.epoch === scope.epoch
+    && accountDirectHosts.value.some(row => directEndpoint(row) === binding);
+  if (pendingBootstrapClose) await pendingBootstrapClose;
+  if (await keyVault.platform.accountId() !== scope.accountId || !current()) return;
+  if (!(await dial(host, true)) || !pickerAlive || request !== pickerRequest) return;
+  const sameAccount = await keyVault.platform.accountId() === scope.accountId;
+  if (!pickerAlive || request !== pickerRequest) return;
+  const active = connection.activeHost;
+  if (!sameAccount || !current() || !active || directEndpoint(active) !== binding) {
+    connectError.value = 'Your account or host changed. Connect again.';
+    if (connection.connectionId && active && directEndpoint(active) === binding) {
+      await connection.disconnect().catch(() => undefined);
+    }
+    return;
+  }
+  enterPlainWorkspace(host);
 }
 
 function onTrustedConnect(host: HostEntry): void {
@@ -454,7 +532,7 @@ async function onDisconnect(): Promise<void> {
  * FALSE whatever the transport eventually said, which is the one bit both
  * callers act on — neither can navigate to a workspace the user walked out of.
  */
-async function dial(host: HostEntry): Promise<boolean> {
+async function dial(host: HostEntry, accountDirect = false): Promise<boolean> {
   if (activeBootstrap) {activeBootstrap.cancelled = true;activeBootstrap = null;}
   connectError.value = null;
   connectErrorKind.value = null;
@@ -463,7 +541,7 @@ async function dial(host: HostEntry): Promise<boolean> {
   connectingKey.value = hostEntryId(host);
   const token = { cancelled: false };
   activeDial = token;
-  const ok = await connection.connect(host);
+  const ok = await connection.connect(host, undefined, undefined, accountDirect);
   // Only put the picker back if a newer dial has not claimed it: after a
   // cancel the rows re-enable, so by the time this resolves `connectingTo`
   // and the error slot may belong to a dial the user started since, and a
@@ -552,13 +630,16 @@ async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmissio
   // rest of its own state (Files tabs, selection) from the same store, so the
   // folder route alone is the entire handoff. A host never opened, or a
   // record that names nothing, keeps the old landing below.
+  enterPlainWorkspace(host);
+}
+
+/** Land in the host's last folder, else its session list (no managed bootstrap). */
+function enterPlainWorkspace(host: HostEntry): void {
   const folder = readLastFolder(host.name);
   if (folder) {
     void router.push({ name: 'folder', params: { name: host.name, folder } });
     return;
   }
-  // Land on the host's default view: the session list. `void`: vue-router
-  // rejects on aborted/redirected navigation, neither of which is an error.
   void router.push({ name: 'host-sessions', params: { name: host.name } });
 }
 
@@ -674,7 +755,7 @@ function onClearDefault(): void {
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:
            say how to reveal it rather than reading as an empty account. -->
-      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onTrustedConnect" />
+      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onTrustedConnect" @loaded="directAccountScope = $event" />
       <p v-if="!trustedAccountMode && accountSignedIn && !accountUnlocked" class="muted locked-note">
         Your account's hosts show up here once Account &amp; sync has checked the account.
         <!-- The unlock lives behind the account action; a note alone would

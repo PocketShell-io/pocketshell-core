@@ -173,6 +173,8 @@ export interface PocketShellApi {
         user: string;
         /** The `~/.ssh/config` `Host` alias (`HostEntry.name`), when there is one. */
         hostAlias?: string;
+        /** The picker explicitly selected a direct endpoint from settings sync. */
+        accountDirect?: true;
         privateKeyPath?: string;
         privateKey?: string;
         passphrase?: string;
@@ -431,6 +433,8 @@ export interface PocketShellApi {
     // no config file and words the same surfaces around the synced account
     // list. Omitting the group gets neutral wording and no source chip.
     "hosts"?: {
+        /** Supports explicit direct SSH dials from authenticated settings. */
+        accountDirect?: boolean;
     /** Provenance of ssh.listConfigHosts, asserted by platform code, never
      * host metadata. Trusted-account mode exposes direct entries only when
      * this is explicitly local; cloud/account and unknown sources stay hidden. */

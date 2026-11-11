@@ -5,7 +5,7 @@ import { useKeyVault } from '../keyVault';
 import { useSyncStore } from '../stores/sync';
 
 defineProps<{ busy?: boolean }>();
-const emit = defineEmits<{ connect: [host: HostEntry]; local: [] }>();
+const emit = defineEmits<{ connect: [host: HostEntry]; local: []; loaded: [scope: { accountId: string; vaultId: string; epoch: number; aliases: string[] } | null] }>();
 const vault = useKeyVault();
 const sync = useSyncStore();
 const loading = ref(false);
@@ -26,6 +26,7 @@ let attemptedAccount: string | null = null;
 async function load(): Promise<void> {
   const seq = ++generation;
   servers.value = [];
+  emit('loaded', null);
   error.value = '';
   if (localOnly.value || !verifiedAccount.value || !vault?.platform.accountId || !vault.platform.trustedHostRevisions || !vault.platform.installTrustedHost) return;
   loading.value = true;
@@ -33,7 +34,8 @@ async function load(): Promise<void> {
     const account = await vault.platform.accountId();
     if (!account || account !== verifiedAccount.value || !alive || seq !== generation) return;
     const vaultId = vault.store.vaultId;
-    if (!vaultId || !unlocked.value) return;
+    const epoch = vault.store.epoch;
+    if (!vaultId || epoch === null || !unlocked.value) return;
     const floors = await vault.platform.trustedHostRevisions.load(account,vaultId);
     const hosts = await vault.store.listTrustedHosts(account,floors);
     if (!alive || seq !== generation || !unlocked.value || await vault.platform.accountId() !== account) return;
@@ -41,8 +43,11 @@ async function load(): Promise<void> {
     for (const host of hosts) {
       await vault.platform.trustedHostRevisions.save(account,vaultId,await trustedHostSlot(host),host.revision);
     }
-    if (!alive || seq !== generation || await vault.platform.accountId() !== account) return;
+    const currentAccount = await vault.platform.accountId();
+    if (!alive || seq !== generation || currentAccount !== account || !unlocked.value
+      || vault.store.vaultId !== vaultId || vault.store.epoch !== epoch) return;
     servers.value = hosts.filter(host => host.status === 'active');
+    emit('loaded', { accountId: account, vaultId, epoch, aliases: hosts.map(host => host.hostAlias) });
   } catch (e) { if (seq === generation) error.value = (e as Error).message; }
   finally { if (seq === generation) loading.value = false; }
 }
@@ -99,6 +104,7 @@ function useLocal(): void {
   authPending.value = false;
   verifiedAccount.value = null;
   servers.value = [];
+  emit('loaded', null);
   loading.value = false;
   error.value = '';
   vault?.cancelUnlock();
@@ -134,7 +140,7 @@ watch(() => [sync.status?.loggedIn,sync.status?.email,sync.busy] as const, ([sig
   const key = signedIn ? email ?? '' : null;
   if (key !== attemptedAccount) {
     entryGeneration++; generation++;
-    servers.value = []; loading.value = false; verifiedAccount.value = null;
+    servers.value = []; emit('loaded', null); loading.value = false; verifiedAccount.value = null;
     if (attemptedAccount !== null) {vault?.cancelUnlock(); vault?.lock();}
     entryTask = null; authPending.value = false;
     attemptedAccount = null;
@@ -144,7 +150,7 @@ watch(() => [sync.status?.loggedIn,sync.status?.email,sync.busy] as const, ([sig
     void enterAccount();
   }
 }, {immediate:true});
-watch(unlocked, (isUnlocked) => {generation++;servers.value=[];loading.value=false;if(isUnlocked && !sync.busy && verifiedAccount.value && !entryTask) void load();});
+watch(unlocked, (isUnlocked) => {generation++;servers.value=[];emit('loaded', null);loading.value=false;if(isUnlocked && !sync.busy && verifiedAccount.value && !entryTask) void load();});
 onBeforeUnmount(() => {alive = false; generation++; entryGeneration++; vault?.cancelUnlock();});
 </script>
 
