@@ -33,6 +33,28 @@ const waitSec = computed(() => {
 });
 const message = computed(() => (failure.value ? vaultUnlockMessage(failure.value, waitSec.value) : ''));
 
+const fillMessage = ref('');
+const fillMessages = {
+  none: 'No saved passphrase was found for this account.',
+  cancelled: '',
+  unavailable: 'No password manager is available on this device.',
+  failed: 'The saved passphrase could not be read. Type it instead.',
+  otherAccount: 'That saved passphrase belongs to a different account.',
+} as const;
+
+/** Fill from the system password manager, then unlock with it (the user just chose it). */
+async function useSaved(): Promise<void> {
+  if (!vault || busy.value || waitSec.value > 0) return;
+  fillMessage.value = '';
+  const result = await vault.retrievePassphrase();
+  if (result.kind !== 'ok') {
+    fillMessage.value = fillMessages[result.kind];
+    return;
+  }
+  passphrase.value = result.passphrase;
+  await submit();
+}
+
 async function submit(): Promise<void> {
   if (!vault || busy.value || passphrase.value === '' || waitSec.value > 0) return;
   busy.value = true;
@@ -69,6 +91,12 @@ async function submit(): Promise<void> {
         :disabled="busy"
       />
     </label>
+    <div v-if="vault.passwordManager" class="vault-actions">
+      <button class="vault-btn" type="button" data-testid="vault-unlock-use-saved" :disabled="busy" @click="useSaved">
+        Use passphrase from {{ vault.passwordManager.label }}
+      </button>
+    </div>
+    <p v-if="fillMessage" class="vault-note" role="status" data-testid="vault-unlock-fill-message">{{ fillMessage }}</p>
     <fieldset v-if="vault.canRemember" class="vault-choice">
       <legend>On this device</legend>
       <label class="vault-radio">

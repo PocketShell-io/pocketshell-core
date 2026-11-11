@@ -51,8 +51,30 @@ export interface KeyVaultHostListApi {
   remove(): Promise<void>;
 }
 
+/** Outcome of an explicit "save to the system password manager" request. */
+export type PasswordManagerSave = 'saved' | 'cancelled' | 'unavailable' | 'failed';
+/** Outcome of "use the saved passphrase"; `passphrase` is only ever the one saved for the current account. */
+export type PasswordManagerRetrieve =
+  | { kind: 'ok'; passphrase: string }
+  | { kind: 'none' | 'cancelled' | 'unavailable' | 'failed' | 'otherAccount' };
+
+/**
+ * A system password manager (Google Password Manager on Android) that can keep
+ * the vault passphrase. The platform binds both calls to the current account;
+ * the passphrase goes only to the system provider: never a log, request or the
+ * general clipboard.
+ */
+export interface KeyVaultPasswordManager {
+  /** Provider name for button copy, e.g. "Google Password Manager". */
+  label: string;
+  save(passphrase: string): Promise<PasswordManagerSave>;
+  retrieve(): Promise<PasswordManagerRetrieve>;
+}
+
 export interface KeyVaultPlatform {
   store: KeyVaultStore;
+  /** Optional system password manager: offer to save a new passphrase and to fill it at unlock. */
+  passwordManager?: KeyVaultPasswordManager;
   /** Verify the account, bind its transport and try device-key unlock before asking for a passphrase. */
   prepareAccount?(): Promise<{ accountId: string; state: 'locked' | 'unlocked' | 'absent' }>;
   cancelAccountPreparation?(): void;
@@ -170,6 +192,24 @@ export function isValidNewVaultPassphrase(passphrase: string): boolean {
   return [...normalized].length >= VAULT_PASSPHRASE_MIN_LENGTH && normalized.trim() !== '' && !/^\p{Decimal_Number}+$/u.test(normalized);
 }
 
+const GENERATED_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+/**
+ * A random vault passphrase from WebCrypto: 5 groups of 5 characters from a
+ * 31-symbol alphabet (about 124 bits), unbiased by rejection sampling. Used when
+ * the platform's own strong-password suggestion is unavailable.
+ */
+export function generateVaultPassphrase(random: (bytes: Uint8Array) => Uint8Array = (b) => crypto.getRandomValues(b)): string {
+  const limit = 256 - (256 % GENERATED_ALPHABET.length);
+  const chars: string[] = [];
+  while (chars.length < 25) {
+    for (const byte of random(new Uint8Array(32))) {
+      if (byte < limit && chars.length < 25) chars.push(GENERATED_ALPHABET[byte % GENERATED_ALPHABET.length]);
+    }
+  }
+  return chars.join('').replace(/(.{5})(?=.)/g, '$1-');
+}
+
 export interface PassphraseStrength {
   score: 0 | 1 | 2 | 3 | 4;
   label: 'too short' | 'weak' | 'fair' | 'good' | 'strong';
@@ -231,6 +271,17 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
   let deviceLockTask: Promise<void> | null = null;
   let additionGeneration = 0;
   let additionBusy = false;
+  // After a create that offers a system save, the sheet stays open until the
+  // user finishes; the new passphrase lives only here, never in reactive state.
+  const setup = reactive({ offer: false });
+  let heldPassphrase: string | null = null;
+  let holdSheet = false;
+
+  function discardSetup(): void {
+    heldPassphrase = null;
+    holdSheet = false;
+    setup.offer = false;
+  }
 
   function refresh(): void {
     view.state = store.state;
@@ -238,7 +289,7 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     view.bindings = store.listHostBindings();
     const remaining = store.backoffRemainingMs();
     view.retryAt = remaining > 0 ? now() + remaining : 0;
-    if (store.state === 'unlocked' && sheet.open) settle(true);
+    if (store.state === 'unlocked' && sheet.open && !holdSheet) settle(true);
   }
   store.subscribe(refresh);
   refresh();
@@ -301,6 +352,36 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     view,
     sheet,
     canRemember: platform.remember !== undefined,
+    passwordManager: platform.passwordManager ?? null,
+    setup,
+
+    /** Save the just-created passphrase to the system password manager (explicit user action). */
+    async savePassphrase(): Promise<PasswordManagerSave> {
+      const manager = platform.passwordManager;
+      if (!manager || heldPassphrase === null) return 'failed';
+      try {
+        return await manager.save(heldPassphrase);
+      } catch {
+        return 'failed';
+      }
+    },
+
+    /** Done with the save offer: drop the held passphrase and let the setup sheet settle. */
+    finishSetup(): void {
+      discardSetup();
+      if (store.state === 'unlocked' && sheet.open) settle(true);
+    },
+
+    /** Ask the system password manager for this account's saved passphrase. */
+    async retrievePassphrase(): Promise<PasswordManagerRetrieve> {
+      const manager = platform.passwordManager;
+      if (!manager) return { kind: 'unavailable' };
+      try {
+        return await manager.retrieve();
+      } catch {
+        return { kind: 'failed' };
+      }
+    },
     canUpload: platform.canUpload === true && platform.accountId !== undefined && store.supportsScopedMutations,
     canForgot: platform.onForgot !== undefined || (platform.resetUrl !== undefined && platform.openUrl !== undefined),
 
@@ -330,8 +411,23 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       if (await reusesSync(passphrase, syncPassphrase ?? null)) return { kind: 'reusesSync' };
       const current = async () => started === operationGeneration && (!platform.accountId || account !== null && await platform.accountId() === account);
       if (!await current()) return {kind:'error',message:'Your account changed. Start vault setup again.'};
-      const result = await store.createVault(passphrase, { syncPassphrase: syncPassphrase || generateSyncPassphrase() });
-      if (!await current()) return {kind:'error',message:'Vault setup was interrupted. Open the vault again.'};
+      holdSheet = platform.passwordManager !== undefined;
+      let result: VaultCreateResult;
+      try {
+        result = await store.createVault(passphrase, { syncPassphrase: syncPassphrase || generateSyncPassphrase() });
+      } catch (failure) {
+        discardSetup();
+        throw failure;
+      }
+      if (!await current()) {
+        discardSetup();
+        return {kind:'error',message:'Vault setup was interrupted. Open the vault again.'};
+      }
+      if (result.kind !== 'ok') discardSetup();
+      else if (holdSheet) {
+        heldPassphrase = passphrase;
+        setup.offer = true;
+      }
       refresh();
       if (result.kind === 'ok' && remember) await saveRemember().catch(() => undefined);
       return result;
@@ -482,6 +578,7 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       platform.cancelAccountPreparation?.();
       operationGeneration++;
       additionGeneration++;
+      discardSetup();
       if (sheet.open) store.lock();
       settle(false);
     },

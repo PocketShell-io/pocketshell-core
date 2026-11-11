@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { KeyVaultStore, type VaultRememberRecord } from '@pocketshell/core';
 import { MemoryTransport } from '../../../../tests/keyVault/memoryTransport';
-import { passphraseStrength, provideKeyVault, requestVaultUnlock, type KeyVaultPlatform } from '../../src/app/keyVault';
+import { generateVaultPassphrase, isValidNewVaultPassphrase, passphraseStrength, provideKeyVault, requestVaultUnlock, type KeyVaultPlatform } from '../../src/app/keyVault';
+import VaultUnlockForm from '../../src/app/components/vault/VaultUnlockForm.vue';
 import VaultUnlockGate from '../../src/app/components/vault/VaultUnlockGate.vue';
 import VaultSetupCard from '../../src/app/components/vault/VaultSetupCard.vue';
 import VaultResetFlow from '../../src/app/components/vault/VaultResetFlow.vue';
@@ -379,5 +380,135 @@ describe('VaultKeyList and HostVaultKeyPicker', () => {
     expect(picker.emitted('update:modelValue')![2]).toEqual([null]);
     await picker.setProps({ modelValue: { keyId: 'BBBBBBBBBBBBBBBBBBBBBB', gatewayAuth: 'host' } });
     expect(picker.text()).toContain('Missing key');
+  });
+});
+
+describe('system password manager (synthetic credentials)', () => {
+  const SYNTHETIC = 'synthetic-vault-pass-123';
+  const manager = (over: Partial<import('../../src/app/keyVault').KeyVaultPasswordManager> = {}) => ({
+    label: 'Google Password Manager',
+    save: vi.fn(async () => 'saved' as const),
+    retrieve: vi.fn(async () => ({ kind: 'ok' as const, passphrase: SYNTHETIC })),
+    ...over,
+  });
+
+  it('generates a valid, unbiased, unique passphrase', () => {
+    const a = generateVaultPassphrase();
+    expect(a).toMatch(/^([a-z2-9]{5}-){4}[a-z2-9]{5}$/);
+    expect(isValidNewVaultPassphrase(a)).toBe(true);
+    expect(generateVaultPassphrase()).not.toBe(a);
+    // Bytes at or above the rejection limit are skipped, never wrapped.
+    const bytes = [...Array(40).fill(255), ...Array(32).fill(0)];
+    let i = 0;
+    const out = generateVaultPassphrase((buf) => buf.map(() => bytes[i++ % bytes.length]));
+    expect(out).toBe('aaaaa-aaaaa-aaaaa-aaaaa-aaaaa');
+  });
+
+  it('Generate fills both fields with one valid passphrase', async () => {
+    await vaultWith({}, false);
+    const card = mount(VaultSetupCard);
+    await card.find('[data-testid="vault-setup-generate"]').trigger('click');
+    const first = (card.find('[data-testid="vault-setup-new"]').element as HTMLInputElement).value;
+    const again = (card.find('[data-testid="vault-setup-again"]').element as HTMLInputElement).value;
+    expect(first).toBe(again);
+    expect(isValidNewVaultPassphrase(first)).toBe(true);
+    await card.find('[data-testid="vault-setup-understood"]').setValue(true);
+    expect(card.find('[data-testid="vault-setup-create"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('after create offers an explicit save, holds the sheet, and wipes the passphrase on continue', async () => {
+    const pm = manager();
+    const { controller } = await vaultWith({ passwordManager: pm, canCreate: true }, false);
+    const settled = controller.requestSetup();
+    const card = mount(VaultSetupCard);
+    await card.find('[data-testid="vault-setup-new"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-again"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-understood"]').setValue(true);
+    await card.find('form').trigger('submit');
+    await settle();
+    expect(controller.view.state).toBe('unlocked');
+    expect(controller.sheet.open).toBe(true);
+    expect(pm.save).not.toHaveBeenCalled();
+    expect(card.emitted('created')).toBeUndefined();
+    await card.find('[data-testid="vault-setup-save"]').trigger('click');
+    await settle();
+    expect(pm.save).toHaveBeenCalledWith('a long new passphrase');
+    expect(card.find('[data-testid="vault-setup-save-result"]').text()).toContain('Saved');
+    await card.find('[data-testid="vault-setup-continue"]').trigger('click');
+    await settle();
+    expect(card.emitted('created')).toHaveLength(1);
+    expect(await settled).toBe(true);
+    expect(await controller.savePassphrase()).toBe("failed");
+    expect(card.html()).not.toContain('a long new passphrase');
+  });
+
+  it.each(['cancelled', 'unavailable', 'failed'] as const)('save %s keeps the vault and lets the user retry or skip', async (outcome) => {
+    const pm = manager({ save: vi.fn(async () => outcome) });
+    const { controller } = await vaultWith({ passwordManager: pm }, false);
+    const card = mount(VaultSetupCard);
+    await card.find('[data-testid="vault-setup-new"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-again"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-understood"]').setValue(true);
+    await card.find('form').trigger('submit');
+    await settle();
+    await card.find('[data-testid="vault-setup-save"]').trigger('click');
+    await settle();
+    expect(card.find('[data-testid="vault-setup-save"]').exists()).toBe(true);
+    expect(card.find('[data-testid="vault-setup-continue"]').text()).toBe('Skip');
+    expect(controller.view.state).toBe('unlocked');
+  });
+
+  it('a throwing provider reads as failed; without a provider setup finishes at once', async () => {
+    const { controller } = await vaultWith({ passwordManager: manager({ save: vi.fn(async () => { throw new Error('boom'); }) }) }, false);
+    const card = mount(VaultSetupCard);
+    await card.find('[data-testid="vault-setup-new"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-again"]').setValue('a long new passphrase');
+    await card.find('[data-testid="vault-setup-understood"]').setValue(true);
+    await card.find('form').trigger('submit');
+    await settle();
+    expect(await controller.savePassphrase()).toBe('failed');
+    provideKeyVault(null);
+    const plain = await vaultWith({}, false);
+    const second = mount(VaultSetupCard);
+    await second.find('[data-testid="vault-setup-new"]').setValue('a long new passphrase');
+    await second.find('[data-testid="vault-setup-again"]').setValue('a long new passphrase');
+    await second.find('[data-testid="vault-setup-understood"]').setValue(true);
+    await second.find('form').trigger('submit');
+    await settle();
+    expect(second.emitted('created')).toHaveLength(1);
+    expect(plain.controller.passwordManager).toBeNull();
+  });
+
+  it('unlock offers the saved passphrase, unlocks the same vault, and reports provider outcomes', async () => {
+    const pm = manager({ retrieve: vi.fn(async () => ({ kind: 'ok' as const, passphrase: PASS })) });
+    const { controller } = await vaultWith({ passwordManager: pm });
+    const form = mount(VaultUnlockForm);
+    expect(form.find('[data-testid="vault-unlock-use-saved"]').text()).toContain('Google Password Manager');
+    await form.find('[data-testid="vault-unlock-use-saved"]').trigger('click');
+    await settle();
+    expect(controller.view.state).toBe('unlocked');
+    expect(form.emitted('unlocked')).toHaveLength(1);
+    for (const [kind, text] of [['none', 'No saved'], ['otherAccount', 'different account'], ['unavailable', 'No password manager'], ['failed', 'Type it instead']] as const) {
+      const f = mount(VaultUnlockForm);
+      (pm.retrieve as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ kind });
+      await f.find('[data-testid="vault-unlock-use-saved"]').trigger('click');
+      await settle();
+      expect(f.find('[data-testid="vault-unlock-fill-message"]').text()).toContain(text);
+    }
+    const cancelled = mount(VaultUnlockForm);
+    (pm.retrieve as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ kind: 'cancelled' });
+    await cancelled.find('[data-testid="vault-unlock-use-saved"]').trigger('click');
+    await settle();
+    expect(cancelled.find('[data-testid="vault-unlock-fill-message"]').exists()).toBe(false);
+  });
+
+  it('manual unlock works unchanged and no button shows without a provider', async () => {
+    await vaultWith({});
+    const form = mount(VaultUnlockForm);
+    expect(form.find('[data-testid="vault-unlock-use-saved"]').exists()).toBe(false);
+    await form.find('[data-testid="vault-unlock-passphrase"]').setValue(PASS);
+    await form.find('form').trigger('submit');
+    await settle();
+    expect(form.emitted('unlocked')).toHaveLength(1);
   });
 });

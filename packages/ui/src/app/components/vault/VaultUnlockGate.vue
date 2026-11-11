@@ -33,7 +33,7 @@ const DismissLayer = defineComponent({
     <DismissLayer @close="vault.cancelUnlock()" />
     <section v-if="vault.sheet.mode === 'create'" class="vault-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="vault-setup-title">
       <VaultSetupCard />
-      <button class="vault-btn" type="button" data-testid="vault-setup-cancel" @click="vault.cancelUnlock()">Cancel</button>
+      <button v-if="!vault.setup.offer" class="vault-btn" type="button" data-testid="vault-setup-cancel" @click="vault.cancelUnlock()">Cancel</button>
     </section>
     <section v-else class="vault-card" role="dialog" aria-modal="true" aria-labelledby="vault-unlock-title">
       <h2 id="vault-unlock-title" class="vault-title">{{ title }}</h2>
