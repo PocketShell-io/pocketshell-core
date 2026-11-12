@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // A new vault passphrase, entered twice, with a strength meter (setup, change,
 // reset). Emits the passphrase once it is long enough and both entries match,
-// else ''. The meter only guides; the length floor is the one hard rule.
+// else ''. The meter guides; normalized length and nonnumeric input are enforced.
 import { computed, ref, watch } from 'vue';
-import { passphraseStrength, VAULT_PASSPHRASE_MIN_LENGTH } from '../../keyVault';
+import { isValidNewVaultPassphrase, passphraseStrength, VAULT_PASSPHRASE_MIN_LENGTH } from '../../keyVault';
 import './vault.css';
 
 const props = defineProps<{ idPrefix: string; label?: string }>();
@@ -14,7 +14,7 @@ const second = ref('');
 const strength = computed(() => passphraseStrength(first.value));
 const mismatch = computed(() => second.value !== '' && first.value !== second.value);
 watch([first, second], () => {
-  emit('update:valid', first.value.length >= VAULT_PASSPHRASE_MIN_LENGTH && first.value === second.value ? first.value : '');
+  emit('update:valid', isValidNewVaultPassphrase(first.value) && first.value === second.value ? first.value : '');
 });
 defineExpose({
   clear() {
@@ -44,7 +44,7 @@ defineExpose({
       <span>
         {{
           first === ''
-            ? `At least ${VAULT_PASSPHRASE_MIN_LENGTH} characters. A few unrelated words work well.`
+            ? `At least ${VAULT_PASSPHRASE_MIN_LENGTH} characters, not a numeric PIN. A few unrelated words work well.`
             : `Strength: ${strength.label}`
         }}
       </span>

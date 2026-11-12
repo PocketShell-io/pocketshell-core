@@ -389,6 +389,7 @@ export const useConnectionStore = defineStore('connection', () => {
     host: HostEntry,
     privateKeyPath?: string,
     preserveComposerFrom?: ConnectionId,
+    accountDirect = false,
   ): Promise<boolean> {
     // Remote homes and SFTP browser paths belong to the connection, not to the
     // host-picker singleton. Clear them before a new dial so a workspace or
@@ -408,6 +409,7 @@ export const useConnectionStore = defineStore('connection', () => {
         // The account host alias: the platform resolves the host's vault key
         // binding by it, never by address (two hosts may share host:port).
         ...(host.name ? { hostAlias: host.name } : {}),
+        ...(accountDirect ? { accountDirect: true as const } : {}),
         privateKeyPath: privateKeyPath ?? host.identityFile ?? undefined,
         // Transport intent rides to the platform boundary verbatim (issue
         // #3059): the store decides nothing about support, it only refuses to

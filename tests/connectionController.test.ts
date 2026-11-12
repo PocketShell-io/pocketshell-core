@@ -2988,3 +2988,208 @@ describe('gateway dials require native pin proof (pocketshell#3086)', () => {
     expect(controller.getSnapshot().gatewayFailure).toBeNull();
   });
 });
+
+describe('authorized reconnect credential refresh', () => {
+  const controllers: ConnectionController[] = [];
+  afterEach(async () => { await Promise.all(controllers.splice(0).map(controller => controller.close())); });
+  const leasedHost = (handleId: string): SshHostTarget => ({ ...host, credential: { kind: 'key-handle', handleId } });
+
+  it('replaces an erased lease while preserving the same selected terminal and one recovery owner', async () => {
+    const capability = new FakeCapability();
+    const original = capability.connect;
+    let erased = false;
+    capability.connect = async options => {
+      if (erased && options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease') {
+        capability.connectCalls.push(options);
+        throw new SshCapabilityError('Key lease erased', 'AUTH_FAILED');
+      }
+      return original(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    expect((await controller.connect(leasedHost('old-lease'))).ok).toBe(true);
+    await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    const selected = controller.getSnapshot().selectedSession;
+    erased = true; capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    const [a,b] = await Promise.all([controller.reconnect(leasedHost('fresh-lease')), controller.reconnect(leasedHost('fresh-lease'))]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(3); // Initial + erased retry + ONE fresh retry.
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+    expect(controller.getSnapshot().selectedSession).toEqual(selected);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('after-reauth'))).ok).toBe(true);
+  });
+
+  it('cancels and joins an obsolete in-flight dial before one refreshed ladder reattaches the terminal', async () => {
+    const capability = new FakeCapability();
+    const original = capability.connect;
+    const entered = deferred<void>();
+    const blocked = deferred<SshConnectResult>();
+    let staleRequest: string | null = null;
+    capability.connect = async options => {
+      if (options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease' && capability.connectCalls.length > 0) {
+        capability.connectCalls.push(options); staleRequest = options.requestId; entered.resolve(); return blocked.promise;
+      }
+      return original(options);
+    };
+    let cancellations = 0;
+    const cancel = capability.cancelOperation;
+    capability.cancelOperation = async options => {
+      if (options.target.kind === 'connect' && options.target.targetRequestId === staleRequest) {
+        cancellations++; blocked.reject(new SshCapabilityError('Cancelled obsolete dial', 'CANCELLED'));
+      }
+      return cancel(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions();
+    await controller.attachSession(session('alpha'));
+    const selected = controller.getSnapshot().selectedSession;
+    capability.emitLost(); await entered.promise;
+    const a = controller.reconnect(leasedHost('fresh-lease'));
+    const b = controller.reconnect(leasedHost('fresh-lease'));
+    expect((await a).ok && (await b).ok).toBe(true);
+    expect(cancellations).toBe(1);
+    expect(capability.connectCalls).toHaveLength(3);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', selectedSession: selected });
+  });
+
+  it('rejects changed gateway authority or malformed handles before disturbing a live terminal', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    const before = controller.getSnapshot();
+    for (const target of [
+      { ...gatewayHost, hostId: 'other' }, { ...gatewayHost, hostname: 'elsewhere' },
+      { ...gatewayHost, username: 'other-user' }, { ...gatewayHost, port: 23 },
+      { ...gatewayHost, gateway: { ...GATEWAY, deviceId: 'other-device' } },
+      { ...gatewayHost, gateway: { ...GATEWAY, serverUrl: 'wss://other.example' } },
+      { ...host }, { ...gatewayHost, credential: { kind: 'key-handle', handleId: '' } },
+    ]) {
+      expect((await controller.reconnect(target as SshHostTarget)).ok).toBe(false);
+      expect(controller.getSnapshot()).toEqual(before);
+    }
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('still-live'))).ok).toBe(true);
+  });
+
+  it('refreshes a healthy connection lease for its next reconnect without closing its live PTY', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions();
+    await controller.attachSession(session('alpha'));
+    expect((await controller.reconnect(leasedHost('fresh-lease'))).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'live');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+  });
+
+  it('does not apply a queued credential refresh after the controller closes', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const refreshed = controller.reconnect(leasedHost('fresh-lease'));
+    await controller.close();
+    expect(await refreshed).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(await capability.resourceSnapshot('closed')).toMatchObject({ connections:0, ptys:0 });
+  });
+  it('supersedes a queued refresh when a newer connect enters before the refresh body', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const obsolete = controller.reconnect(leasedHost('fresh-lease'));
+    const newer = controller.connect({ ...host, hostId: 'newer-host', hostname: 'newer.example' });
+    expect((await newer).ok).toBe(true);
+    expect(await obsolete).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(controller.getSnapshot().hostId).toBe('newer-host');
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('supersedes serialized refreshes when a newer explicit connect keeps the same host binding', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const first = controller.reconnect(leasedHost('queued-first'));
+    const second = controller.reconnect(leasedHost('queued-second'));
+    expect((await controller.connect(leasedHost('explicit-newer'))).ok).toBe(true);
+    expect(await first).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(await second).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(capability.connectCalls).toHaveLength(1); // Explicit connect reused the healthy transport.
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'old-lease' });
+  });
+
+  it('serializes different fresh credentials within the same host context without superseding either', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const first = controller.reconnect(leasedHost('queued-first'));
+    const second = controller.reconnect(leasedHost('queued-second'));
+    expect((await first).ok).toBe(true);
+    expect((await second).ok).toBe(true);
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'queued-second' });
+  });
+
+  it('uses a fresh transient passphrase for only the first replacement dial and never caches it', async () => {
+    const capability = new FakeCapability(); const original = capability.connect;
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] }); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    capability.refuseDials = true; capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    capability.refuseDials = false;
+    const start = capability.connectCalls.length;
+    capability.connect = async options => {
+      if (capability.connectCalls.length === start) {
+        capability.connectCalls.push(options);
+        throw new SshCapabilityError('First replacement transport dropped', 'CONNECTION_LOST');
+      }
+      return original(options);
+    };
+    expect((await controller.reconnect({ ...leasedHost('fresh-lease'), credential: {
+      kind: 'key-handle', handleId: 'fresh-lease', passphrase: 'fixture passphrase',
+    } })).ok).toBe(true);
+    expect(capability.connectCalls[start]?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease', passphrase: 'fixture passphrase' });
+    expect(capability.connectCalls[start + 1]?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+  });
+
+  it('never overwrites a newer host connect while an obsolete dial cancellation finishes', async () => {
+    const capability = new FakeCapability(); const original = capability.connect;
+    const entered = deferred<void>(), cancelEntered = deferred<void>(), releaseCancel = deferred<void>();
+    const blocked = deferred<SshConnectResult>(); let obsolete: string | null = null;
+    capability.connect = async options => {
+      if (options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease' && capability.connectCalls.length > 0) {
+        capability.connectCalls.push(options); obsolete = options.requestId; entered.resolve(); return blocked.promise;
+      }
+      return original(options);
+    };
+    const originalCancel = capability.cancelOperation;
+    capability.cancelOperation = async options => {
+      if (options.target.kind === 'connect' && options.target.targetRequestId === obsolete) {
+        cancelEntered.resolve(); await releaseCancel.promise;
+        blocked.reject(new SshCapabilityError('Cancelled old dial', 'CANCELLED'));
+      }
+      return originalCancel(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    capability.emitLost(); await entered.promise;
+    const refresh = controller.reconnect(leasedHost('fresh-lease'));
+    try {
+      await cancelEntered.promise;
+      expect((await controller.connect({ ...host, hostId: 'new-host', hostname: 'new.example' })).ok).toBe(true);
+      releaseCancel.resolve();
+      expect(await refresh).toMatchObject({ ok: false, reason: 'superseded' });
+      expect(controller.getSnapshot()).toMatchObject({ hostId: 'new-host', phase: 'connected' });
+      expect(capability.connectCalls).toHaveLength(3);
+      expect(capability.connectCalls.at(-1)?.hostId).toBe('new-host');
+    } finally { releaseCancel.resolve(); await refresh; }
+  });
+
+});

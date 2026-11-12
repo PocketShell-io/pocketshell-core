@@ -5,7 +5,7 @@ import { useKeyVault } from '../keyVault';
 import { useSyncStore } from '../stores/sync';
 
 defineProps<{ busy?: boolean }>();
-const emit = defineEmits<{ connect: [host: HostEntry] }>();
+const emit = defineEmits<{ connect: [host: HostEntry]; local: []; loaded: [scope: { accountId: string; vaultId: string; epoch: number; aliases: string[] } | null] }>();
 const vault = useKeyVault();
 const sync = useSyncStore();
 const loading = ref(false);
@@ -13,22 +13,29 @@ const error = ref('');
 const servers = ref<TrustedHostRecord[]>([]);
 const connecting = ref(false);
 const authPending = ref(false);
+const localOnly = computed({get:()=>vault?.view.localOnly === true,set:(value:boolean)=>{if(vault) vault.view.localOnly=value;}});
+const verifiedAccount = ref<string | null>(null);
+const needsSetup = ref(false);
 const unlocked = computed(() => vault?.view.state === 'unlocked');
 let generation = 0;
 let alive = true;
-let promptedAccount: string | null = null;
+let entryGeneration = 0;
+let entryTask: Promise<void> | null = null;
+let attemptedAccount: string | null = null;
 
 async function load(): Promise<void> {
   const seq = ++generation;
   servers.value = [];
+  emit('loaded', null);
   error.value = '';
-  if (!vault?.platform.accountId || !vault.platform.trustedHostRevisions || !vault.platform.installTrustedHost) return;
+  if (localOnly.value || !verifiedAccount.value || !vault?.platform.accountId || !vault.platform.trustedHostRevisions || !vault.platform.installTrustedHost) return;
   loading.value = true;
   try {
     const account = await vault.platform.accountId();
-    if (!account || !alive || seq !== generation) return;
+    if (!account || account !== verifiedAccount.value || !alive || seq !== generation) return;
     const vaultId = vault.store.vaultId;
-    if (!vaultId || !unlocked.value) return;
+    const epoch = vault.store.epoch;
+    if (!vaultId || epoch === null || !unlocked.value) return;
     const floors = await vault.platform.trustedHostRevisions.load(account,vaultId);
     const hosts = await vault.store.listTrustedHosts(account,floors);
     if (!alive || seq !== generation || !unlocked.value || await vault.platform.accountId() !== account) return;
@@ -36,22 +43,73 @@ async function load(): Promise<void> {
     for (const host of hosts) {
       await vault.platform.trustedHostRevisions.save(account,vaultId,await trustedHostSlot(host),host.revision);
     }
-    if (!alive || seq !== generation || await vault.platform.accountId() !== account) return;
+    const currentAccount = await vault.platform.accountId();
+    if (!alive || seq !== generation || currentAccount !== account || !unlocked.value
+      || vault.store.vaultId !== vaultId || vault.store.epoch !== epoch) return;
     servers.value = hosts.filter(host => host.status === 'active');
+    emit('loaded', { accountId: account, vaultId, epoch, aliases: hosts.map(host => host.hostAlias) });
   } catch (e) { if (seq === generation) error.value = (e as Error).message; }
   finally { if (seq === generation) loading.value = false; }
 }
 
-async function unlock(): Promise<void> {
-  if (authPending.value || sync.busy) return;
+function enterAccount(): Promise<void> {
+  if (entryTask) return entryTask;
+  const seq = entryGeneration;
+  const current = () => alive && seq === entryGeneration && !localOnly.value && sync.status?.loggedIn === true;
   authPending.value = true;
   error.value = '';
-  try {
-    if (!sync.status?.loggedIn) {await sync.login();return;}
-    if (!sync.status?.loggedIn) return;
-    if (await vault?.requestUnlock('account')) await load();
-  } catch(e) { error.value = (e as Error).message; }
-  finally {authPending.value = false;}
+  const pending = (async () => {
+    if (!vault || !current()) return;
+    // A remembered email is not authorization. The platform verifies the
+    // actual subject before probing, recalling or asking for vault secrets.
+    let prepared;
+    if (vault.platform.prepareAccount) prepared = await vault.platform.prepareAccount();
+    else {
+      const accountId = await vault.platform.accountId?.();
+      if (!accountId || !current()) return;
+      const probe = unlocked.value ? null : await vault.store.probe();
+      if (probe?.kind === 'error') throw new Error(probe.message);
+      prepared = {accountId, state: unlocked.value ? 'unlocked' : probe?.kind === 'noVault' ? 'absent' : 'locked'};
+    }
+    if (!current() || !prepared?.accountId) return;
+    verifiedAccount.value = prepared.accountId;
+    needsSetup.value = prepared.state === 'absent';
+    const ready = prepared.state === 'unlocked' || await (needsSetup.value
+      ? vault.requestSetup() : vault.requestUnlock('account'));
+    if (ready && current() && await vault.platform.accountId?.() === prepared.accountId) await load();
+  })().catch(e => {
+    if (current()) error.value = (e as Error).message;
+  }).finally(() => {
+    if (entryTask === pending) {entryTask = null; authPending.value = false;}
+  });
+  entryTask = pending;
+  return pending;
+}
+
+async function unlock(): Promise<void> {
+  if (authPending.value || sync.busy) return;
+  localOnly.value = false;
+  if (!sync.status?.loggedIn || !verifiedAccount.value) {
+    await sync.login();
+    if (!alive || !sync.status?.loggedIn) return;
+  }
+  await enterAccount();
+}
+
+function useLocal(): void {
+  localOnly.value = true;
+  entryGeneration++;
+  generation++;
+  entryTask = null;
+  authPending.value = false;
+  verifiedAccount.value = null;
+  servers.value = [];
+  emit('loaded', null);
+  loading.value = false;
+  error.value = '';
+  vault?.cancelUnlock();
+  vault?.lock();
+  emit('local');
 }
 
 async function connect(server: TrustedHostRecord): Promise<void> {
@@ -61,7 +119,7 @@ async function connect(server: TrustedHostRecord): Promise<void> {
   const seq = generation;
   error.value = '';
   try {
-    const valid = () => alive && generation === seq && unlocked.value && vault.store.vaultId === server.vaultId && vault.store.epoch === server.epoch;
+    const valid = () => alive && !localOnly.value && verifiedAccount.value === server.accountId && generation === seq && unlocked.value && vault.store.vaultId === server.vaultId && vault.store.epoch === server.epoch;
     const account = await vault.platform.accountId();
     if (account !== server.accountId || !valid()) throw new Error('Sign in and unlock your vault again.');
     const floors = await vault.platform.trustedHostRevisions.load(account,server.vaultId);
@@ -79,27 +137,32 @@ async function connect(server: TrustedHostRecord): Promise<void> {
 }
 
 watch(() => [sync.status?.loggedIn,sync.status?.email,sync.busy] as const, ([signedIn,email,busy]) => {
-  generation++;
-  servers.value = [];
-  loading.value = false;
-  if (!signedIn) promptedAccount = null;
-  if (signedIn && !busy) {
-    if (unlocked.value) void load();
-    else if (email !== promptedAccount) {
-      promptedAccount = email ?? '';
-      void vault?.requestUnlock('account').then(ok => { if (ok && alive) void load(); }).catch(e=>{error.value=(e as Error).message;});
-    }
+  const key = signedIn ? email ?? '' : null;
+  if (key !== attemptedAccount) {
+    entryGeneration++; generation++;
+    servers.value = []; emit('loaded', null); loading.value = false; verifiedAccount.value = null;
+    if (attemptedAccount !== null) {vault?.cancelUnlock(); vault?.lock();}
+    entryTask = null; authPending.value = false;
+    attemptedAccount = null;
+  }
+  if (signedIn && !busy && !localOnly.value && key !== attemptedAccount) {
+    attemptedAccount = key;
+    void enterAccount();
   }
 }, {immediate:true});
-watch(unlocked, (isUnlocked) => {generation++;servers.value=[];loading.value=false;if(isUnlocked && !sync.busy) void load();});
-onBeforeUnmount(() => {alive = false; generation++;});
+watch(unlocked, (isUnlocked) => {generation++;servers.value=[];emit('loaded', null);loading.value=false;if(isUnlocked && !sync.busy && verifiedAccount.value && !entryTask) void load();});
+onBeforeUnmount(() => {alive = false; generation++; entryGeneration++; vault?.cancelUnlock();});
 </script>
 
 <template>
   <section class="trusted-servers" data-testid="trusted-servers">
-    <h2>Your servers</h2>
-    <button v-if="!sync.status?.loggedIn" class="btn" :disabled="authPending || sync.busy" data-testid="server-google-login" @click="unlock">Sign in with Google</button>
-    <button v-else-if="!unlocked" class="btn" data-testid="server-vault-unlock" @click="unlock">Unlock your vault</button>
+    <h2>{{localOnly ? 'SSH without an account' : 'Your servers'}}</h2>
+    <p v-if="authPending" class="muted" role="status">{{verifiedAccount ? 'Open your vault to continue.' : 'Checking your Google account…'}}</p>
+    <template v-else-if="!verifiedAccount || localOnly">
+      <p class="muted">Sign in to use your encrypted server list, or connect with SSH credentials kept on this device.</p>
+      <button class="btn" :disabled="sync.busy" data-testid="server-google-login" @click="unlock">Sign in with Google</button>
+    </template>
+    <button v-else-if="!unlocked" class="btn" data-testid="server-vault-unlock" @click="enterAccount">{{needsSetup ? 'Create your vault' : 'Unlock your vault'}}</button>
     <p v-else-if="loading" class="muted">Loading your servers…</p>
     <template v-else>
       <ul class="server-list">
@@ -107,9 +170,10 @@ onBeforeUnmount(() => {alive = false; generation++;});
           <button class="server-row" :disabled="busy || connecting" data-testid="trusted-server-connect" @click="connect(server)">{{server.hostAlias}}</button>
         </li>
       </ul>
-      <p v-if="!servers.length && !error" class="muted">No servers registered to this vault yet.</p>
+      <p v-if="!servers.length && !error" class="muted">No servers registered to this vault yet. Register a server with PocketShell on that machine and enter this vault passphrase. Then refresh here.</p>
       <button class="btn-ghost" @click="load">Refresh servers</button>
     </template>
+    <button v-if="!localOnly" class="btn-ghost" data-testid="server-use-local" @click="useLocal">Use SSH without an account</button>
     <p v-if="error" class="error" role="alert">{{error}}</p>
   </section>
 </template>

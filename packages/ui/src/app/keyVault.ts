@@ -24,12 +24,14 @@ import type {
   HostKeyBinding,
   KeyVaultStore,
   VaultAddKeyResult,
+  VaultAddPasswordResult,
   VaultChangePassphraseResult,
   VaultCreateResult,
   VaultKeyEntry,
   VaultRememberRecord,
   VaultUnlockResult,
   VaultWriteResult,
+  VaultWriteFailure,
 } from '@pocketshell/core';
 
 export interface KeyVaultRememberApi {
@@ -51,6 +53,13 @@ export interface KeyVaultHostListApi {
 
 export interface KeyVaultPlatform {
   store: KeyVaultStore;
+  /** Verify the account, bind its transport and try device-key unlock before asking for a passphrase. */
+  prepareAccount?(): Promise<{ accountId: string; state: 'locked' | 'unlocked' | 'absent' }>;
+  cancelAccountPreparation?(): void;
+  /** Await platform credential-lease deletion after the shared store locks. */
+  onLock?(): Promise<void>;
+  /** First vault setup; independent of key upload, passphrase change and reset capabilities. */
+  canCreate?: boolean;
   /** Stable verified issuer+subject, never an email or route-supplied identity. */
   accountId?(): Promise<string | null>;
   /** Native account-bound trust/credential installation; no network-provided pins. */
@@ -153,7 +162,13 @@ export function vaultWriteMessage(result: { kind: string; message?: string }): s
 
 // ── passphrase strength (a guide; MIN_LENGTH is the only hard floor) ─────
 
-export const VAULT_PASSPHRASE_MIN_LENGTH = 8;
+export const VAULT_PASSPHRASE_MIN_LENGTH = 12;
+
+/** New vaults use the KDF's normalized text; legacy unlock stays unrestricted. */
+export function isValidNewVaultPassphrase(passphrase: string): boolean {
+  const normalized=passphrase.normalize('NFKC');
+  return [...normalized].length >= VAULT_PASSPHRASE_MIN_LENGTH && normalized.trim() !== '' && !/^\p{Decimal_Number}+$/u.test(normalized);
+}
 
 export interface PassphraseStrength {
   score: 0 | 1 | 2 | 3 | 4;
@@ -184,6 +199,8 @@ export function passphraseStrength(passphrase: string): PassphraseStrength {
 // ── the controller ───────────────────────────────────────────────────────
 
 export interface KeyVaultView {
+  /** Session choice survives picker navigation, without signing the account out. */
+  localOnly: boolean;
   state: 'locked' | 'unlocked';
   keys: VaultKeyEntry[];
   bindings: Record<string, HostKeyBinding>;
@@ -194,6 +211,7 @@ export interface KeyVaultView {
 
 export interface UnlockSheetState {
   open: boolean;
+  mode: 'unlock' | 'create';
   /** Why: a dial waits on it, or the user asked (settings, keys page). */
   reason: 'connect' | 'account';
   /** Optional host label for the "to connect" title. */
@@ -206,9 +224,13 @@ export type KeyVaultController = ReturnType<typeof createKeyVaultController>;
 export function createKeyVaultController(platform: KeyVaultPlatform) {
   const store = platform.store;
   const now = platform.now ?? (() => Date.now());
-  const view = reactive<KeyVaultView>({ state: 'locked', keys: [], bindings: {}, retryAt: 0, remembered: false });
-  const sheet = reactive<UnlockSheetState>({ open: false, reason: 'connect', hostLabel: '', seq: 0 });
+  const view = reactive<KeyVaultView>({ localOnly: false, state: 'locked', keys: [], bindings: {}, retryAt: 0, remembered: false });
+  const sheet = reactive<UnlockSheetState>({ open: false, mode: 'unlock', reason: 'connect', hostLabel: '', seq: 0 });
   let waiters: Array<(unlocked: boolean) => void> = [];
+  let operationGeneration = 0;
+  let deviceLockTask: Promise<void> | null = null;
+  let additionGeneration = 0;
+  let additionBusy = false;
 
   function refresh(): void {
     view.state = store.state;
@@ -238,6 +260,32 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     for (const resolve of pending) resolve(unlocked);
   }
 
+  async function withFreshPassphrase<T>(passphrase: string | undefined,
+    write: (active: () => Promise<boolean>) => Promise<T>): Promise<T | VaultWriteFailure> {
+    if (!platform.canUpload || !platform.accountId || !store.supportsScopedMutations) return {kind:'error',message:'Secure vault uploads are not available on this device.'};
+    if (!passphrase) return {kind:'error',message:'Enter your vault passphrase before adding an entry.'};
+    if (additionBusy) return {kind:'error',message:'Finish or cancel the current addition first.'};
+    const started = operationGeneration;
+    const seq = ++additionGeneration;
+    const vaultId = store.vaultId;
+    const epoch = store.epoch;
+    additionBusy = true;
+    try {
+      const account = await platform.accountId?.();
+      const current = () => seq === additionGeneration && started === operationGeneration && !view.localOnly
+        && store.state === 'unlocked' && vaultId !== null && store.vaultId === vaultId && store.epoch === epoch;
+      const active = async () => current() && (!platform.accountId || account !== null && await platform.accountId() === account) && current();
+      if (!await active()) return {kind:'locked'};
+      const confirmed = await store.confirmPassphrase(passphrase,active);
+      refresh();
+      if (confirmed.kind !== 'ok') return {kind:'error',message:vaultUnlockMessage(confirmed, 'retryAfterMs' in confirmed ? Math.ceil(confirmed.retryAfterMs / 1000) : 0)};
+      if (!await active()) return {kind:'locked'};
+      return await write(active);
+    } catch {
+      return {kind:'error',message:'Could not confirm your vault. Try again.'};
+    } finally {additionBusy = false;}
+  }
+
   /** Decision #7: does a would-be vault passphrase reuse the sync passphrase? */
   function reusesSync(passphrase: string, syncPassphrase: string | null): Promise<boolean> {
     const opens = platform.hostList?.verifyPassphrase;
@@ -253,7 +301,7 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     view,
     sheet,
     canRemember: platform.remember !== undefined,
-    canUpload: platform.canUpload === true,
+    canUpload: platform.canUpload === true && platform.accountId !== undefined && store.supportsScopedMutations,
     canForgot: platform.onForgot !== undefined || (platform.resetUrl !== undefined && platform.openUrl !== undefined),
 
     /** Unlock with the passphrase; on success optionally remember this device. */
@@ -276,8 +324,14 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
      * gets a fresh random sync passphrase (decision #7: never the vault's).
      */
     async create(passphrase: string, remember: boolean, syncPassphrase?: string | null): Promise<VaultCreateResult | { kind: 'reusesSync' }> {
+      if(!isValidNewVaultPassphrase(passphrase))return {kind:'error',message:`Use a vault passphrase with at least ${VAULT_PASSPHRASE_MIN_LENGTH} characters, not a numeric PIN.`};
+      const started = operationGeneration;
+      const account = await platform.accountId?.();
       if (await reusesSync(passphrase, syncPassphrase ?? null)) return { kind: 'reusesSync' };
+      const current = async () => started === operationGeneration && (!platform.accountId || account !== null && await platform.accountId() === account);
+      if (!await current()) return {kind:'error',message:'Your account changed. Start vault setup again.'};
       const result = await store.createVault(passphrase, { syncPassphrase: syncPassphrase || generateSyncPassphrase() });
+      if (!await current()) return {kind:'error',message:'Vault setup was interrupted. Open the vault again.'};
       refresh();
       if (result.kind === 'ok' && remember) await saveRemember().catch(() => undefined);
       return result;
@@ -312,8 +366,23 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
     },
 
     lock(): void {
+      operationGeneration++;
+      additionGeneration++;
       store.lock();
       refresh();
+    },
+
+    /** The user-facing device lock confirms native key cleanup before reporting success. */
+    lockOnDevice(): Promise<void> {
+      if (deviceLockTask) return deviceLockTask;
+      operationGeneration++;
+      store.lock();
+      refresh();
+      const task = Promise.resolve().then(() => platform.onLock?.());
+      deviceLockTask = task;
+      const finished = () => { if (deviceLockTask === task) deviceLockTask = null; };
+      void task.then(finished, finished);
+      return task;
     },
 
     async rememberNow(): Promise<void> {
@@ -325,21 +394,36 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       view.remembered = false;
     },
 
-    addKey(pem: string, name: string, keyPassphrase?: string): Promise<VaultAddKeyResult> {
-      return store.addKey(pem, name, keyPassphrase);
+    addKey(pem: string, name: string, keyPassphrase?: string, vaultPassphrase?: string, binding?: {hostAlias:string;gatewayAuth:GatewayAuthPolicy}): Promise<VaultAddKeyResult> {
+      const target = binding ? {...binding} : undefined;
+      return withFreshPassphrase(vaultPassphrase,active => store.addKey(pem,name,keyPassphrase,active,target));
+    },
+
+    addPassword(password: string, name: string, vaultPassphrase?: string, binding?: {hostAlias:string;gatewayAuth:GatewayAuthPolicy}): Promise<VaultAddPasswordResult> {
+      const target = binding ? {...binding} : undefined;
+      return withFreshPassphrase(vaultPassphrase,active => store.addPassword(password,name,active,target));
+    },
+
+    cancelAddition(): void {
+      additionGeneration++;
     },
 
     /** Upload a replacement for `oldKeyId`; hosts follow and the old key goes. */
-    async rotateKey(oldKeyId: string, pem: string, name: string, keyPassphrase?: string): Promise<VaultAddKeyResult> {
-      const added = await store.addKey(pem, name, keyPassphrase);
-      if (added.kind !== 'ok') return added;
-      if (added.entry.keyId === oldKeyId) return { kind: 'error', message: 'That is the same key.' };
-      const rotated = await store.rotateKey(oldKeyId, added.entry.keyId);
-      return rotated.kind === 'ok' ? added : rotated;
+    async rotateKey(oldKeyId: string, pem: string, name: string, keyPassphrase?: string, vaultPassphrase?: string): Promise<VaultAddKeyResult> {
+      return withFreshPassphrase(vaultPassphrase,async active => {
+        const added = await store.addKey(pem,name,keyPassphrase,active);
+        if (added.kind !== 'ok') return added;
+        if (added.entry.keyId === oldKeyId) return {kind:'error' as const,message:'That is the same key.'};
+        if (!await active()) return {kind:'locked' as const};
+        const rotated = await store.rotateKey(oldKeyId,added.entry.keyId,active);
+        return rotated.kind === 'ok' ? added : rotated;
+      });
     },
 
-    bindHost(hostAlias: string, binding: HostKeyBinding | null): Promise<VaultWriteResult> {
-      return binding === null ? store.unbindHost(hostAlias) : store.bindHost(hostAlias, binding.keyId, binding.gatewayAuth);
+    bindHost(hostAlias: string, binding: HostKeyBinding | null, vaultPassphrase?: string): Promise<VaultWriteResult> {
+      if(binding === null)return store.unbindHost(hostAlias);
+      const target = {...binding};
+      return withFreshPassphrase(vaultPassphrase,active => store.bindHost(hostAlias,target.keyId,target.gatewayAuth,active));
     },
 
     async copyPublicKey(keyId: string): Promise<boolean> {
@@ -361,10 +445,15 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
      * is open, false when cancelled. Concurrent callers share one sheet; an
      * unlocked vault resolves at once.
      */
-    requestUnlock(reason: 'connect' | 'account' = 'connect', hostLabel = ''): Promise<boolean> {
+    async requestUnlock(reason: 'connect' | 'account' = 'connect', hostLabel = ''): Promise<boolean> {
+      const started = operationGeneration;
+      if (deviceLockTask) await deviceLockTask;
+      if (platform.accountId && !await platform.accountId()) return false;
+      if (started !== operationGeneration || view.localOnly) return false;
       if (store.state === 'unlocked') return Promise.resolve(true);
       if (!sheet.open) {
         sheet.open = true;
+        sheet.mode = 'unlock';
         sheet.reason = reason;
         sheet.hostLabel = hostLabel;
         sheet.seq += 1;
@@ -372,7 +461,28 @@ export function createKeyVaultController(platform: KeyVaultPlatform) {
       return new Promise((resolve) => waiters.push(resolve));
     },
 
+    /** First setup shares the one gate and waiter list; a successful create settles it. */
+    async requestSetup(): Promise<boolean> {
+      if (!platform.canCreate) return Promise.resolve(false);
+      const started = operationGeneration;
+      if (platform.accountId && !await platform.accountId()) return false;
+      if (started !== operationGeneration || view.localOnly) return false;
+      if (store.state === 'unlocked') return Promise.resolve(true);
+      if (!sheet.open) {
+        sheet.open = true;
+        sheet.mode = 'create';
+        sheet.reason = 'account';
+        sheet.hostLabel = '';
+        sheet.seq += 1;
+      }
+      return new Promise(resolve => waiters.push(resolve));
+    },
+
     cancelUnlock(): void {
+      platform.cancelAccountPreparation?.();
+      operationGeneration++;
+      additionGeneration++;
+      if (sheet.open) store.lock();
       settle(false);
     },
 
