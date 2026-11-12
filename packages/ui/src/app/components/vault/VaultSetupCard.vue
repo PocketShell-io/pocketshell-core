@@ -6,7 +6,7 @@
 // host list). The vault passphrase must differ from the sync passphrase
 // (decision #7); one that equals it or opens the host list is refused.
 import { ref } from 'vue';
-import { useKeyVault, VAULT_TEXT, vaultWriteMessage } from '../../keyVault';
+import { useKeyVault, VAULT_TEXT, vaultWriteMessage, type PasswordManagerSave } from '../../keyVault';
 import VaultPassphraseFields from './VaultPassphraseFields.vue';
 import './vault.css';
 
@@ -22,6 +22,31 @@ const remember = ref(false);
 const understood = ref(false);
 const busy = ref(false);
 const error = ref('');
+const saveResult = ref<PasswordManagerSave | null>(null);
+const saving = ref(false);
+
+const SAVE_MESSAGE: Record<PasswordManagerSave, string> = {
+  saved: 'Saved. You can fill the passphrase from there when you unlock.',
+  cancelled: 'Nothing was saved. You can try again or continue.',
+  unavailable: 'No password manager is available on this device. Keep the passphrase somewhere safe.',
+  failed: 'The save did not finish. You can try again or continue.',
+};
+
+async function saveToManager(): Promise<void> {
+  if (!vault || saving.value) return;
+  saving.value = true;
+  try {
+    saveResult.value = await vault.savePassphrase();
+  } finally {
+    saving.value = false;
+  }
+}
+
+function finish(): void {
+  fresh.value = '';
+  vault?.finishSetup();
+  emit('created');
+}
 
 async function create(): Promise<void> {
   if (!vault || busy.value || fresh.value === '' || !understood.value) return;
@@ -29,8 +54,11 @@ async function create(): Promise<void> {
   error.value = '';
   try {
     const result = await vault.create(fresh.value, remember.value, props.syncPassphrase ?? null);
-    if (result.kind === 'ok') emit('created');
-    else error.value = vaultWriteMessage(result);
+    if (result.kind === 'ok') {
+      if (vault.setup.offer) return;
+      fresh.value = '';
+      emit('created');
+    } else error.value = vaultWriteMessage(result);
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : 'Vault setup could not finish. Try again.';
   } finally {
@@ -42,6 +70,31 @@ async function create(): Promise<void> {
 <template>
   <section v-if="vault" class="vault-card" aria-labelledby="vault-setup-title" data-testid="vault-setup">
     <h2 id="vault-setup-title" class="vault-title">Create your vault passphrase</h2>
+    <template v-if="vault.setup.offer && vault.passwordManager">
+      <p class="vault-body" data-testid="vault-setup-save-title">
+        Your vault is ready. Save its passphrase to {{ vault.passwordManager.label }} so you can fill it in when you
+        unlock, even after reinstalling.
+      </p>
+      <p v-if="saveResult" class="vault-note" role="status" data-testid="vault-setup-save-result">
+        {{ SAVE_MESSAGE[saveResult] }}
+      </p>
+      <div class="vault-actions">
+        <button
+          v-if="saveResult !== 'saved'"
+          class="vault-btn primary"
+          type="button"
+          data-testid="vault-setup-save"
+          :disabled="saving"
+          @click="saveToManager"
+        >
+          {{ saving ? 'Saving…' : `Save to ${vault.passwordManager.label}` }}
+        </button>
+        <button class="vault-btn" :class="{ primary: saveResult === 'saved' }" type="button" data-testid="vault-setup-continue" @click="finish">
+          {{ saveResult === 'saved' ? 'Continue' : 'Skip' }}
+        </button>
+      </div>
+    </template>
+    <template v-else>
     <p class="vault-body">
       Your SSH keys and host passwords are encrypted on this device with this passphrase before they reach your
       account. One passphrase unlocks your keys and your host list on every device.
@@ -79,5 +132,6 @@ async function create(): Promise<void> {
         </button>
       </div>
     </form>
+    </template>
   </section>
 </template>

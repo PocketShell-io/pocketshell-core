@@ -3,7 +3,12 @@
 // reset). Emits the passphrase once it is long enough and both entries match,
 // else ''. The meter guides; normalized length and nonnumeric input are enforced.
 import { computed, ref, watch } from 'vue';
-import { isValidNewVaultPassphrase, passphraseStrength, VAULT_PASSPHRASE_MIN_LENGTH } from '../../keyVault';
+import {
+  generateVaultPassphrase,
+  isValidNewVaultPassphrase,
+  passphraseStrength,
+  VAULT_PASSPHRASE_MIN_LENGTH,
+} from '../../keyVault';
 import './vault.css';
 
 const props = defineProps<{ idPrefix: string; label?: string }>();
@@ -11,15 +16,24 @@ const emit = defineEmits<{ 'update:valid': [passphrase: string] }>();
 
 const first = ref('');
 const second = ref('');
+const revealed = ref(false);
 const strength = computed(() => passphraseStrength(first.value));
 const mismatch = computed(() => second.value !== '' && first.value !== second.value);
 watch([first, second], () => {
   emit('update:valid', isValidNewVaultPassphrase(first.value) && first.value === second.value ? first.value : '');
 });
+/** Fill both fields with a random passphrase and show it so it can be checked or copied by hand. */
+function generate(): void {
+  const passphrase = generateVaultPassphrase();
+  first.value = passphrase;
+  second.value = passphrase;
+  revealed.value = true;
+}
 defineExpose({
   clear() {
     first.value = '';
     second.value = '';
+    revealed.value = false;
   },
 });
 </script>
@@ -31,9 +45,10 @@ defineExpose({
       <input
         v-model="first"
         :data-testid="`${props.idPrefix}-new`"
-        type="password"
+        :type="revealed ? 'text' : 'password'"
         autocomplete="new-password"
         autocapitalize="off"
+        spellcheck="false"
         :aria-describedby="`${props.idPrefix}-meter`"
       />
     </label>
@@ -49,14 +64,23 @@ defineExpose({
         }}
       </span>
     </div>
+    <div class="vault-actions">
+      <button class="vault-btn" type="button" :data-testid="`${props.idPrefix}-generate`" @click="generate">
+        Generate a strong passphrase
+      </button>
+      <button class="vault-btn" type="button" :data-testid="`${props.idPrefix}-reveal`" :aria-pressed="revealed" @click="revealed = !revealed">
+        {{ revealed ? 'Hide' : 'Show' }}
+      </button>
+    </div>
     <label class="vault-field">
       Type it again
       <input
         v-model="second"
         :data-testid="`${props.idPrefix}-again`"
-        type="password"
+        :type="revealed ? 'text' : 'password'"
         autocomplete="new-password"
         autocapitalize="off"
+        spellcheck="false"
         :aria-invalid="mismatch ? 'true' : undefined"
       />
     </label>
