@@ -33,22 +33,60 @@ export const KIND_LABELS: Readonly<Record<string, string>> = {
 export const OFFLINE_LAUNCHABLE_KINDS = Object.keys(KIND_LABELS);
 
 /**
+ * Catalog IDs that are one engine spelled twice, mapped to the kind they
+ * collapse onto. `zcodex` is Codex on the z.ai provider — the aplexer lists
+ * both IDs available on the same host — and a picker offering both would be
+ * two Codex chips for one engine.
+ */
+const KIND_ALIASES: Readonly<Record<string, string>> = {
+  zcodex: 'codex',
+};
+
+/**
  * Current launchable IDs from `a engines --json`; null means offline/failure
  * and uses the small static fallback. The aplexer catalog also lists `shell`,
  * which is handled by the separate Shell choice in the launch dialog.
+ *
+ * Alias groups ({@link KIND_ALIASES}) collapse onto one entry at the position
+ * where either spelling appeared, and the canonical spelling wins when the
+ * catalog lists it — so `[…, codex, …, zcodex]` and `[…, zcodex, …, codex]`
+ * both render a single Codex chip. A catalog that only spells it `zcodex`
+ * keeps that spelling: it is the ID `pocketshell agent` accepts on that host,
+ * and substituting `codex` there would trade a launch that works for one that
+ * may not.
  */
 export function launchableKindsFor(engineIds: readonly string[] | null | undefined): LaunchableKind[] {
   if (!Array.isArray(engineIds)) return [...OFFLINE_LAUNCHABLE_KINDS];
   const seen = new Set<string>();
-  const kinds: string[] = [];
+  const ids: string[] = [];
   for (const raw of engineIds) {
     if (typeof raw !== 'string') continue;
     const id = raw.trim();
     if (!isLaunchableKind(id) || seen.has(id)) continue;
     seen.add(id);
-    kinds.push(id);
+    ids.push(id);
   }
-  return kinds;
+  interface AliasGroup {
+    /** The ID the picker speaks, and the collapse target. */
+    canonical: string;
+    /** Every spelling the catalog listed for it, host order. */
+    spellings: string[];
+  }
+  const groups: AliasGroup[] = [];
+  const groupOf = new Map<string, AliasGroup>();
+  for (const id of ids) {
+    const canonical = KIND_ALIASES[id] ?? id;
+    let group = groupOf.get(canonical);
+    if (!group) {
+      group = { canonical, spellings: [] };
+      groupOf.set(canonical, group);
+      groups.push(group);
+    }
+    group.spellings.push(id);
+  }
+  return groups.map(({ canonical, spellings }) =>
+    spellings.includes(canonical) ? canonical : spellings[0]!,
+  );
 }
 
 /**

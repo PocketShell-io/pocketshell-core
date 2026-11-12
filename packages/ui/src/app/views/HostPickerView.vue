@@ -488,24 +488,39 @@ async function onAccountDirectConnect(host: HostEntry): Promise<void> {
   if (!keyVault?.platform.accountId || !scope) return;
   const request = ++pickerRequest;
   const directEndpoint = (row: HostEntry) => JSON.stringify([row.name, row.hostname, row.port, row.user]);
-  const binding = directEndpoint(host);
+  // Account rows are reactive and may be edited in place while native SSH is
+  // pending. The dial and its ownership must retain the admitted endpoint.
+  const admitted = { ...host };
+  const binding = directEndpoint(admitted);
   const current = () => pickerAlive && request === pickerRequest && directAccountScope.value === scope
     && keyVault.store.state === 'unlocked' && keyVault.store.vaultId === scope.vaultId && keyVault.store.epoch === scope.epoch
-    && accountDirectHosts.value.some(row => directEndpoint(row) === binding);
+    && accountDirectHosts.value.some(row => directEndpoint(row) === binding && !hasManagedMarker(row) && row.local !== true);
   if (pendingBootstrapClose) await pendingBootstrapClose;
   if (await keyVault.platform.accountId() !== scope.accountId || !current()) return;
-  if (!(await dial(host, true)) || !pickerAlive || request !== pickerRequest) return;
-  const sameAccount = await keyVault.platform.accountId() === scope.accountId;
-  if (!pickerAlive || request !== pickerRequest) return;
-  const active = connection.activeHost;
-  if (!sameAccount || !current() || !active || directEndpoint(active) !== binding) {
-    connectError.value = 'Your account or host changed. Connect again.';
-    if (connection.connectionId && active && directEndpoint(active) === binding) {
-      await connection.disconnect().catch(() => undefined);
+  if (!(await dial(admitted, true)) || !pickerAlive || request !== pickerRequest) return;
+  const ownedId = connection.activeHost === admitted ? connection.connectionId : null;
+  const ownsConnection = () => ownedId !== null && connection.connectionId === ownedId && connection.activeHost === admitted;
+  let sameAccount = false;
+  let verificationFailed = false;
+  try {
+    sameAccount = await keyVault.platform.accountId() === scope.accountId;
+  } catch {
+    // A native/backend verification failure is failed admission too. The
+    // successful dial still belongs to this request and must be cleaned up.
+    verificationFailed = true;
+  }
+  if (!sameAccount || !current() || !ownsConnection()) {
+    if (pickerAlive && request === pickerRequest) {
+      connectError.value = verificationFailed
+        ? 'Your account could not be verified. Connect again.'
+        : 'Your account or host changed. Connect again.';
     }
+    // An equivalent endpoint is insufficient: another request may now own a
+    // newer connection to that same server while the account check awaited.
+    if (ownsConnection()) await connection.disconnect().catch(() => undefined);
     return;
   }
-  enterPlainWorkspace(host);
+  enterPlainWorkspace(admitted);
 }
 
 function onTrustedConnect(host: HostEntry): void {
