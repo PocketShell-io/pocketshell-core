@@ -107,62 +107,50 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  /**
-   * The engines this host's `pocketshell agent` actually lists, or null when
-   * we have not been able to ask.
-   *
-   * Null is the initial value AND the failure value, and that is deliberate:
-   * both mean "unknown", and `kindUnavailableReason` in shared/agentLaunch.ts
-   * already knows what to do with unknown — offer the engines the pinned 0.4.44
-   * helper guarantees, refuse the ones it does not. Distinguishing "never
-   * asked" from "asked and failed" would buy a different WORDING at best, and
-   * `agentKindsProbing` already covers the only case where the wording matters
-   * (the answer is still coming).
-   *
-   * Not merged into `profiles`: a host can list profiles and lack an engine,
-   * or the reverse, and the launch dialog needs both answers separately.
-   */
+  /** The available engine IDs from `a engines --json`, or null on failure. */
   const agentKinds = ref<readonly string[] | null>(null);
+  /** True after the current open's engine query finishes, including failure. */
+  const agentKindsResolved = ref(false);
   /**
-   * The launch binaries the host's PATH actually has (`pocketshell` + engine
-   * names), or null when never asked / the probe failed — the same unknown as
-   * {@link agentKinds}' null, refusing nothing. This is the check that greys
-   * out an engine the helper can spell but the host cannot run.
+   * Names found on the host's PATH (`pocketshell` and offline-fallback
+   * executables), or null when the independent path probe failed.
    */
   const agentBinaries = ref<readonly string[] | null>(null);
   /** True while `loadAgentKinds` is in flight — lets "no" be said as "not yet". */
   const agentKindsProbing = ref(false);
   /** @see profilesFor — same stale-response guard, same reason. */
   let agentKindsFor: ConnectionId | null = null;
+  /** Each dialog open is a new query, even when it targets the same connection. */
+  let agentKindsRequestGeneration = 0;
 
   /**
    * Ask the host which engines it can launch.
    *
-   * Re-asked on every open of the launch dialog rather than cached per host,
-   * because the helper is installed and upgraded out from under this app: a
-   * user who runs `uv tool upgrade pocketshell` in one tab should find Grok
-   * offered in the next dialog they open, not after a reconnect. The call is
-   * one `--help` exec, which does no work host-side.
+   * The platform API reads `a engines --json` and returns only available
+   * engine IDs. Re-asked on every open rather than cached per host, because
+   * the host's engine config and installed commands can change while the app
+   * is open.
    *
    * Never rejects. A failure leaves `agentKinds` null, which the dialog reads
-   * as "unknown" and handles by falling back to the pinned baseline — see
-   * shared/agentLaunch.ts. Nothing here needs an error string, because the
-   * sentence the user sees is composed from the kind they picked, not from the
-   * exec's complaint.
+   * as offline and handles with the small static fallback in
+   * shared/agentLaunch.ts.
    */
   async function loadAgentKinds(connectionId: ConnectionId): Promise<void> {
+    const requestGeneration = ++agentKindsRequestGeneration;
     agentKindsProbing.value = true;
+    agentKindsResolved.value = false;
+    agentKinds.value = null;
+    agentBinaries.value = null;
     agentKindsFor = connectionId;
-    // The two probes ride together: what the helper can SPELL (`kinds`) and
-    // what the host can RUN (`binaries`) are both one cheap exec, both re-asked
-    // on every dialog open for the same freshness reason, and both null on a
-    // failure that must refuse nothing.
+    // Keep the catalog result separate from the path probe. A catalog row's
+    // `available` field is authoritative online; the binary list is retained
+    // for the launcher and offline fallback checks.
     try {
       const [kinds, binaries] = await Promise.all([
         api.agent.kinds(connectionId).catch(() => null),
         api.agent.binaries(connectionId).catch(() => null),
       ]);
-      if (agentKindsFor !== connectionId) return;
+      if (agentKindsFor !== connectionId || requestGeneration !== agentKindsRequestGeneration) return;
       // Anything that is not a list is "unknown", which is what null means
       // here. The main process already answers `string[] | null`, so this is
       // the belt to that braces — but the value crosses an IPC boundary and a
@@ -171,7 +159,10 @@ export const useAgentsStore = defineStore('agents', () => {
       agentKinds.value = Array.isArray(kinds) ? kinds : null;
       agentBinaries.value = Array.isArray(binaries) ? binaries : null;
     } finally {
-      if (agentKindsFor === connectionId) agentKindsProbing.value = false;
+      if (agentKindsFor === connectionId && requestGeneration === agentKindsRequestGeneration) {
+        agentKindsProbing.value = false;
+        agentKindsResolved.value = true;
+      }
     }
   }
 
@@ -185,6 +176,7 @@ export const useAgentsStore = defineStore('agents', () => {
     profilesError,
     loadProfiles,
     agentKinds,
+    agentKindsResolved,
     agentBinaries,
     agentKindsProbing,
     loadAgentKinds,

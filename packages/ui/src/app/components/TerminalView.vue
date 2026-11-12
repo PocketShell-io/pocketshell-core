@@ -46,6 +46,7 @@
 // prompt composer and leave as `paste-into-composer` (see onCustomKey). The
 // MIDDLE click does nothing at all (see onTerminalAuxClick): xterm's own
 // middle-click paste would feed the clipboard to the shell silently.
+// Ctrl+Shift+Y / Ctrl+Shift+B copy the pane itself as text — terminalCapture.ts.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -58,6 +59,8 @@ import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks'
 import { PathHighlighter } from '../terminalPathHighlights';
 import { decodeOsc52SetClipboard } from '@pocketshell/core';
 import { forceLocalMouseSelection } from '../terminalMouseSelection';
+import { captureChord, captureTerminalText, type CaptureScope } from '../terminalCapture';
+import { copyToClipboard, pasteFromClipboard } from '../terminalClipboard';
 import { useSettingsStore } from '../stores/settings';
 import { resolveMonoStack } from '@ui/fonts';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
@@ -66,7 +69,7 @@ import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { usePaneIdentity } from '../paneIdentity';
 import { recordDiagDetail } from '../diag';
 import { TerminalPane } from '../terminalPane';
-import { extensionsFor } from '../extensions';
+import { createTerminalInputOwnership, mayRestoreTerminalFocus } from '../terminalInputOwnership';
 import type { ConnectionId } from '@pocketshell/core';
 import '@xterm/xterm/css/xterm.css';
 
@@ -157,8 +160,6 @@ let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 /** View-side xterm disposables: link provider, highlighter, OSC 52 handler. */
 let termDisposables: IDisposable[] = [];
-/** Detach functions of the platform's `terminal.inputAdapter` contributions. */
-let inputAdapterDetaches: Array<() => void> = [];
 /**
  * Set once the component is being torn down. The mount hook's continuation
  * after the join (`await pane.open()`) reads this: the join is seconds long —
@@ -173,24 +174,6 @@ let unmounted = false;
 /** True between mousedown inside the terminal and the mouse-up that ends it. */
 let selecting = false;
 
-/**
- * Re-attaching a PTY must not redirect a keystroke from another surface.
- *
- * A reconnect can finish after the prompt composer has taken focus, and the
- * old unconditional `term.focus()` then made the next character land in the
- * terminal. Only restore focus for a visible pane when it already owns focus,
- * or when the document has no meaningful focused control (the initial mount).
- */
-function mayRestoreTerminalFocus(): boolean {
-  const container = containerEl.value;
-  if (!container || container.clientWidth <= 0 || container.clientHeight <= 0) {
-    return false;
-  }
-  const active = document.activeElement;
-  if (active && container.contains(active)) return true;
-  return active === null || active === document.body || active === document.documentElement;
-}
-
 // The pane's PTY lifecycle controller. The getters keep the controller reading
 // the props that are CURRENT whenever a join or repair runs, so a watcher
 // re-point needs no re-wiring.
@@ -204,7 +187,7 @@ const pane = new TerminalPane({
   getWorkspace: () => props.workspace,
   getAplexerId: () => props.aplexerId,
   isVisible: () => !!containerEl.value?.clientHeight && !!containerEl.value?.clientWidth,
-  mayRestoreFocus: mayRestoreTerminalFocus,
+  mayRestoreFocus: () => mayRestoreTerminalFocus(containerEl.value),
   // Read at exit time, not captured: the store is the one place that knows
   // whether this pane's link is up or its recovery owner is at work.
   isLinkUp: () => {
@@ -214,6 +197,47 @@ const pane = new TerminalPane({
 });
 /** Drives the join veil in the template; the controller arms and clears it. */
 const joinPending = pane.joinPending;
+
+const inputOwnership = createTerminalInputOwnership({
+  getPrefixOwner: currentPrefixOwner,
+  getContainer: () => containerEl.value,
+  getSessionKey: () => registryKey.value,
+  routeKey: routeCustomKey,
+  cancelDetachCandidate: () => pane.cancelDetachCandidate(),
+  expectIntentionalDetach: () => pane.expectIntentionalDetach(),
+});
+const clearPrefix = inputOwnership.clearPrefix;
+const onCustomKey = inputOwnership.onCustomKey;
+
+function prefixConnection(): ReturnType<typeof useConnectionStore> | null {
+  return props.backend === 'aplexer' && !props.bare && props.aplexerId ? useConnectionStore() : null;
+}
+
+function currentPrefixOwner(): string | null {
+  const container = containerEl.value;
+  const shellId = shells.shellIdFor(registryKey.value);
+  const connection = prefixConnection();
+  if (
+    unmounted || props.bare || props.backend !== 'aplexer' || !props.aplexerId ||
+    props.interceptTyping !== true || !shellId ||
+    connection?.connectionId !== props.connectionId || connection.state !== 'connected' ||
+    document.visibilityState === 'hidden' || !container?.clientWidth || !container.clientHeight
+  ) return null;
+  return JSON.stringify([
+    props.connectionId, registryKey.value, targetSession.value, props.sessionKey,
+    props.backend, props.workspace, props.aplexerId, shellId,
+  ]);
+}
+
+// Synchronous resets also catch an away-and-back transition between two keys.
+// Rechecking the receipt at keydown covers geometry and delayed callbacks too.
+watch(
+  () => [props.connectionId, props.sessionKey, targetSession.value, registryKey.value,
+    props.backend, props.workspace, props.aplexerId, props.bare, props.interceptTyping,
+    prefixConnection()?.connectionId, prefixConnection()?.state, shells.shellIdFor(registryKey.value)],
+  clearPrefix,
+  { flush: 'sync' },
+);
 
 /**
  * Terminal look & feel, transcribed from the user's Windows Terminal config.
@@ -265,37 +289,11 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
 };
 
 // ---------------------------------------------------------------------------
-// Clipboard
+// Clipboard — the ROUTES live in terminalClipboard.ts (a design-gate payment,
+// the way useQuickActions left HostWorkspaceView); what fires each one —
+// mouse-up copy, right-click paste, the chords, the capture button — stays
+// here, because the when is a pane decision and the how is not.
 // ---------------------------------------------------------------------------
-
-/** Copy `text` to the system clipboard. Silent on failure — never throws. */
-async function copyToClipboard(text: string): Promise<void> {
-  if (!text) return; // a bare click clears the selection; don't blank the clipboard
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Clipboard permission denied / API unavailable. Nothing useful to do
-    // from the renderer; the selection is still there for a manual Ctrl-C.
-  }
-}
-
-/**
- * Read the system clipboard and feed it to the shell as pasted input.
- *
- * One caller left: the right-click (`onTerminalContextMenu`). Both paste CHORDS
- * go to the composer now, so this is the whole of the shell's paste — see the
- * chord branch in `onCustomKey` for why that is the split.
- */
-async function pasteFromClipboard(): Promise<void> {
-  if (!term) return;
-  try {
-    const text = await navigator.clipboard.readText();
-    if (text) term.paste(text);
-  } catch {
-    // Same as above: degrade quietly. Ctrl-V still works via xterm's own
-    // handling of the browser `paste` event.
-  }
-}
 
 /**
  * Arms the mouse-up copy. Bound in the CAPTURE phase (see the addEventListener
@@ -350,7 +348,11 @@ function onDocumentMouseUp(): void {
 
 function onTerminalContextMenu(e: MouseEvent): void {
   e.preventDefault();
-  void pasteFromClipboard();
+  // The prefix fence clears BEFORE the read, exactly as the pre-extraction
+  // helper ordered it — the receipt must be gone before the paste's bytes land.
+  clearPrefix();
+  const t = term;
+  if (t) void pasteFromClipboard((text) => t.paste(text));
 }
 
 // ---------------------------------------------------------------------------
@@ -399,12 +401,7 @@ function onTerminalDrop(e: DragEvent): void {
   emit('drop-into-composer', files);
 }
 
-/**
- * Intercept the clipboard chords, and (when asked) plain typing, before xterm
- * turns them into input bytes. Returning false tells xterm to leave the event
- * alone.
- */
-function onCustomKey(e: KeyboardEvent): boolean {
+function routeCustomKey(e: KeyboardEvent, prefixSuffix: boolean): boolean {
   if (e.type !== 'keydown') return true;
 
   // THE WORKSPACE'S TAB CHORDS. `Ctrl+[` / `Ctrl+]` step one tab left or right
@@ -470,7 +467,7 @@ function onCustomKey(e: KeyboardEvent): boolean {
   // Typing opens the composer instead of reaching the shell. Everything
   // `isTypingKey` rejects — every chord, every named key, a bare space —
   // falls through to xterm untouched; see its contract for where that line is.
-  if (props.interceptTyping === true && isTypingKey(e)) {
+  if (!prefixSuffix && props.interceptTyping === true && isTypingKey(e)) {
     // preventDefault IS THE FEATURE, not a precaution. Returning false only
     // tells xterm to stop processing (`_keyDown` bails at the custom handler
     // and, unlike `_keyPress`, never calls its own `cancel()`), so without this
@@ -562,6 +559,9 @@ function onCustomKey(e: KeyboardEvent): boolean {
       return false;
     }
   }
+
+  // The capture chords: the pane as plain text for a bug report — terminalCapture.ts.
+  if (term && captureChord(settings.shortcutBindings, e, term, copyToClipboard)) return false;
   return true;
 }
 
@@ -637,7 +637,8 @@ onMounted(async () => {
   // whole lifetime, across session re-points (terminalPane.ts documents why
   // per-shell binding leaked keystrokes).
   pane.attach(term, fitAddon, containerEl.value!);
-  attachInputAdapters(term, containerEl.value!);
+  inputOwnership.attachInputAdapters(term, containerEl.value!);
+  inputOwnership.attachPrefixResets(containerEl.value!);
 
   // Path links, registered AFTER WebLinksAddon above, deliberately: xterm
   // gives an EARLIER provider priority over a later one for the same cells
@@ -721,32 +722,9 @@ onMounted(async () => {
   pane.startProbing();
 });
 
-/**
- * The platform's input filters (extensions.ts `terminal.inputAdapter`), one
- * attach per terminal, on xterm's own helper textarea — where keys, IME
- * composition and paste arrive. None contributed: nothing runs. `sendInput`
- * goes through `term.input`, so an adapter's bytes take exactly the path a
- * keystroke takes (the pane's onData route and its input fence).
- */
-function attachInputAdapters(t: Terminal, element: HTMLElement): void {
-  const textarea = t.textarea;
-  if (!textarea) return;
-  for (const adapter of extensionsFor('terminal.inputAdapter')) {
-    const detach = adapter.attach({
-      textarea,
-      element,
-      // A getter: the terminal outlives session re-points, so a snapshot would go stale.
-      get sessionKey() {
-        return registryKey.value;
-      },
-      sendInput: (data) => t.input(data, true),
-    });
-    if (typeof detach === 'function') inputAdapterDetaches.push(detach);
-  }
-}
-
 /** Bytes into this pane's shell, exactly as typed — the `terminal.dock` route. */
 function sendInput(data: string): void {
+  clearPrefix();
   term?.input(data, true);
 }
 
@@ -756,6 +734,8 @@ function onWindowResize(): void {
 
 onBeforeUnmount(() => {
   unmounted = true;
+  clearPrefix();
+  inputOwnership.disposePrefixResets();
   window.removeEventListener('resize', onWindowResize);
   document.removeEventListener('mouseup', onDocumentMouseUp);
   containerEl.value?.removeEventListener('mousedown', onTerminalMouseDown, true);
@@ -763,8 +743,7 @@ onBeforeUnmount(() => {
   containerEl.value?.removeEventListener('contextmenu', onTerminalContextMenu);
   for (const d of termDisposables) d.dispose();
   termDisposables = [];
-  for (const detach of inputAdapterDetaches) detach();
-  inputAdapterDetaches = [];
+  inputOwnership.disposeInputAdapters();
   pane.detach();
   term?.dispose();
   term = null;
@@ -873,7 +852,15 @@ function resyncDisplay(): void {
   pane.resyncDisplay();
 }
 
-defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput });
+/**
+ * The tab bar's capture button (WorkspaceTabBar's `copyScreen`): this pane's
+ * text, the scope chosen there — the screen; the buffer stays the chord's.
+ */
+function capture(scope: CaptureScope): void {
+  if (term) void copyToClipboard(captureTerminalText(term, scope));
+}
+
+defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, capture });
 </script>
 
 <template>
@@ -967,8 +954,9 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput });
    every refit, and any border/padding borrowed to draw a frame would cost the
    pane a row. Same dashed treatment the composer's card lights up with. */
 .terminal.drop-target {
-  outline: 2px dashed var(--accent);
+  outline: 1px dashed var(--border-strong);
   outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .terminal :deep(.xterm) {
   height: 100%;

@@ -1,265 +1,175 @@
 /**
- * The `pocketshell agent …` launch line, built from the helper's REAL option
- * list rather than a remembered one.
+ * Agent picker catalog and the `pocketshell agent …` launch-line builder.
  *
- * ## What the helper actually accepts
- *
- * Captured from the pinned 0.4.44 fixture image, not from docs — the
- * `--help` output is committed verbatim at
- * `tests/unit/fixtures/v0.4.44-agent-help.txt` and
- * `…-agent-claude-help.txt`, and `tests/unit/agentLaunch.test.ts` asserts
- * this module against those files so a helper bump that moves a flag fails a
- * test instead of a user's terminal:
- *
- *     Usage: pocketshell agent claude [OPTIONS]
- *
- *     Options:
- *       --dir TEXT                      Folder to launch the agent in (its cwd).
- *                                       [required]
- *       --skip-permissions / --no-skip-permissions
- *                                       … [default: skip-permissions]
- *       --config-dir TEXT               … Mutually exclusive with --profile.
- *       --profile TEXT                  Named host profile … Mutually
- *                                       exclusive with --config-dir.
- *
- * Three facts drive every branch below.
- *
- * 1. **`--dir` is REQUIRED.** The desktop used to type a bare
- *    `pocketshell agent claude`, which exits 2 with `Error: Missing option
- *    '--dir'.` — so the session was created, the agent never started, and the
- *    user was left in a plain shell staring at a usage message. That is the
- *    bug this module exists to make unrepeatable.
- * 2. **Skip-permissions defaults to ON host-side.** So the affirmative
- *    `--skip-permissions` is never worth emitting; the only flag that carries
- *    information is the negative `--no-skip-permissions`. This matches the
- *    phone (`SessionTypePickerSheet.kt::buildAgentCommand`), and it means a
- *    host that later changes its default changes ours with it.
- * 3. **`--profile` and `--config-dir` are mutually exclusive** (exit 2). We
- *    only ever emit `--profile`, so the pair can never both appear.
- *
- * ## Grok, and the version boundary
- *
- * `pocketshell agent` on the pinned 0.4.44 image has exactly three
- * subcommands — `claude`, `codex`, `opencode`. There is **no `grok`** there:
- * `pocketshell agent grok` exits 2 with `Error: No such command 'grok'.`
- * (captured at `v0.4.44-agent-no-such-command.stderr.txt`, and still asserted
- * in `agentLaunch.test.ts` so the boundary cannot quietly move). The helper's
- * own repo has since grown a `grok` subcommand, but that work is
- * **unreleased**: no host is known to run it, and this repo therefore has no
- * `pocketshell agent grok --help` capture to pin flag spellings against.
- *
- * This module used to answer that by leaving `grok` out of
- * {@link LAUNCHABLE_KINDS} altogether, and the header used to say flatly that
- * this desktop cannot start one. That is no longer the whole story. Grok IS a
- * launchable kind now and the picker does offer it — but conditionally, per
- * host, and never on the strength of a version number we merely remember:
- *
- * - {@link kindUnavailableReason} is the gate. It is answered from a real
- *   probe of the real host — `pocketshell agent --help`, read by
- *   `PocketshellClient.agentSubcommands` and parsed by
- *   `parsers.ts::parseAgentSubcommands` — for the same reason every flag above
- *   is pinned to a capture: on this repo's record a captured contract has been
- *   right every time a remembered one was wrong.
- * - The direction of the "we don't know" answer differs per kind, on purpose.
- *   Unknown means **yes** for claude/codex/opencode, because those three are
- *   guaranteed by the helper version this app targets
- *   ({@link HELPER_BASELINE_KINDS}) and a probe that merely failed must not
- *   take away three agents that certainly work. Unknown means **no** for grok,
- *   because grok is guaranteed by nothing: launching it on a host that lacks
- *   the subcommand creates the session, exits 2, and leaves the user in a
- *   plain shell reading a usage message. That is precisely the failure the
- *   missing `--dir` produced and precisely what this module exists to make
- *   unrepeatable, so the unknown case has to fall on the refusing side.
- * - The refusal is a *message*, not an absence. It names the version boundary
- *   ({@link HELPER_VERSION_WITHOUT_GROK}) so "why is Grok greyed out" has an
- *   answer the user can act on, rather than a control that silently is not
- *   there.
- *
- * Two things stay conservative until a grok `--help` can actually be captured:
- * {@link supportsSkipPermissions} and {@link supportsProfiles} both say no for
- * grok, so the only line this module will ever build for it is the required
- * `--dir` and nothing else. Emitting a flag we have not seen the subcommand
- * accept is the same mistake as trusting a remembered flag name, and it fails
- * the same way — exit 2, plain shell. See those two functions for the detail.
- *
- * {@link SessionAgentKind} remains wider than {@link LAUNCHABLE_KINDS}, but
- * for a different reason than it used to be: what it carries beyond the four
- * engines — `shell`, `probing`, `exited`, `unknown` — are classifications of a
- * session, not things anyone can ask to start.
+ * Online engine IDs come from the host's `a engines --json` result through the
+ * platform API. The static names in this module are only an offline fallback.
+ * Launch flag spellings still follow the captured `pocketshell agent` help
+ * fixtures below; unknown engines receive only the required `--dir` argument.
  */
 import { shellQuote, shellQuoteRemotePath } from './shellQuote.js';
-import type { SessionAgentKind } from './types.js';
 
 /**
- * The agent kinds this desktop knows how to build a `pocketshell agent` line
- * for, in the order the picker offers them.
- *
- * The first three are the phone's order (claude, codex, opencode) and are the
- * ones the pinned helper certainly has. Grok and Antigravity require a
- * host capability probe — see
- * {@link HELPER_BASELINE_KINDS} and {@link kindUnavailableReason}. Membership
- * here means "we can spell the command", NOT "this host will accept it".
+ * A small offline fallback for hosts whose `a engines --json` query cannot be
+ * completed. The online list is supplied to {@link launchableKindsFor}; it is
+ * the authority whenever it is available.
  */
-export const LAUNCHABLE_KINDS = ['claude', 'codex', 'opencode', 'grok', 'antigravity'] as const;
-
-export type LaunchableKind = (typeof LAUNCHABLE_KINDS)[number];
+export type LaunchableKind = string;
 
 /**
- * The subcommands `pocketshell agent` has on the helper version this app
- * targets, pinned to the captured `--help` (`v0.4.44-agent-help.txt`).
- *
- * This is the floor, and it is what makes a FAILED capability probe survivable
- * rather than crippling: these three exist on every host that can run this app
- * at all, so when the probe cannot answer we still offer them. Anything not in
- * this list — `grok` and `antigravity` — has to be proven present on the
- * host before it is offered.
+ * Display names for the picker. Title-case; the phone uses lowercase CLI names.
+ * Claude is the one word, not "Claude Code": the picker renders each name on
+ * one segment, and the two-word form is the only one that wraps to a second
+ * line at the dialog's width.
  */
-export const HELPER_BASELINE_KINDS = ['claude', 'codex', 'opencode'] as const;
-
-/**
- * The helper version that is known NOT to have `pocketshell agent grok`.
- *
- * Deliberately phrased as the version *without* the subcommand rather than as
- * the first version *with* it. 0.4.44 is a fact this repo can prove — it is
- * the pinned fixture image, and `v0.4.44-agent-no-such-command.stderr.txt` is
- * the receipt. The release number that will FIRST carry grok is not a fact
- * this repo has: the helper is a separately released Python project and the
- * grok work is still unreleased there, so naming "0.4.45" here would be
- * inventing exactly the kind of remembered contract the rest of this file
- * refuses to trust. Messages therefore say "newer than 0.4.44", which stays
- * true whatever number the helper actually ships under.
- */
-export const HELPER_VERSION_WITHOUT_GROK = '0.4.44';
-
-/** Display names for the picker. Title-case; the phone uses lowercase CLI names. */
-export const KIND_LABELS: Record<LaunchableKind, string> = {
-  claude: 'Claude Code',
+export const KIND_LABELS: Readonly<Record<string, string>> = {
+  claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
   grok: 'Grok',
   antigravity: 'Antigravity',
 };
 
-/** Narrow a badge-level {@link SessionAgentKind} to something we can launch. */
-export function isLaunchableKind(kind: SessionAgentKind | null): kind is LaunchableKind {
-  return kind !== null && (LAUNCHABLE_KINDS as readonly string[]).includes(kind);
+/** Engine IDs used only when the live aplexer catalog cannot be read. */
+export const OFFLINE_LAUNCHABLE_KINDS = Object.keys(KIND_LABELS);
+
+/**
+ * Catalog IDs that are one engine spelled twice, mapped to the kind they
+ * collapse onto. `zcodex` is Codex on the z.ai provider — the aplexer lists
+ * both IDs available on the same host — and a picker offering both would be
+ * two Codex chips for one engine.
+ */
+const KIND_ALIASES: Readonly<Record<string, string>> = {
+  zcodex: 'codex',
+};
+
+/**
+ * Current launchable IDs from `a engines --json`; null means offline/failure
+ * and uses the small static fallback. The aplexer catalog also lists `shell`,
+ * which is handled by the separate Shell choice in the launch dialog.
+ *
+ * Alias groups ({@link KIND_ALIASES}) collapse onto one entry at the position
+ * where either spelling appeared, and the canonical spelling wins when the
+ * catalog lists it — so `[…, codex, …, zcodex]` and `[…, zcodex, …, codex]`
+ * both render a single Codex chip. A catalog that only spells it `zcodex`
+ * keeps that spelling: it is the ID `pocketshell agent` accepts on that host,
+ * and substituting `codex` there would trade a launch that works for one that
+ * may not.
+ */
+export function launchableKindsFor(engineIds: readonly string[] | null | undefined): LaunchableKind[] {
+  if (!Array.isArray(engineIds)) return [...OFFLINE_LAUNCHABLE_KINDS];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const raw of engineIds) {
+    if (typeof raw !== 'string') continue;
+    const id = raw.trim();
+    if (!isLaunchableKind(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  interface AliasGroup {
+    /** The ID the picker speaks, and the collapse target. */
+    canonical: string;
+    /** Every spelling the catalog listed for it, host order. */
+    spellings: string[];
+  }
+  const groups: AliasGroup[] = [];
+  const groupOf = new Map<string, AliasGroup>();
+  for (const id of ids) {
+    const canonical = KIND_ALIASES[id] ?? id;
+    let group = groupOf.get(canonical);
+    if (!group) {
+      group = { canonical, spellings: [] };
+      groupOf.set(canonical, group);
+      groups.push(group);
+    }
+    group.spellings.push(id);
+  }
+  return groups.map(({ canonical, spellings }) =>
+    spellings.includes(canonical) ? canonical : spellings[0]!,
+  );
 }
 
 /**
- * Whether the kind needs a helper newer than the one this app pins.
- *
- * The inverse of {@link HELPER_BASELINE_KINDS} membership, given a name
- * because it is the thing every caller actually wants to ask: a kind that
- * needs a newer helper is one whose absence from a host is EXPECTED and worth
- * explaining, rather than a sign that something is broken.
+ * A human label for an engine ID. `a engines --json` owns the catalog and
+ * returns IDs only, so known names keep their familiar spelling and custom
+ * names get a readable title-case fallback.
  */
-export function kindNeedsNewerHelper(kind: LaunchableKind): boolean {
-  return !(HELPER_BASELINE_KINDS as readonly string[]).includes(kind);
+export function kindLabel(kind: LaunchableKind): string {
+  const known = Object.prototype.hasOwnProperty.call(KIND_LABELS, kind) ? KIND_LABELS[kind] : undefined;
+  if (known) return known;
+  return kind
+    .split(/[-_.\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
-/**
- * Whether the kind's per-action approval prompts can be turned off.
- *
- * - **opencode: no.** The helper's own help says the flag is a "No-op for
- *   opencode", so offering the toggle there would be a control that does
- *   nothing. The phone hides the row outright and never emits the flag.
- * - **grok: no, for now, and for a different reason.** `--skip-permissions` is
- *   a per-SUBCOMMAND option — it is documented on `agent claude --help`, not
- *   on the group — and no `agent grok --help` has been captured, because no
- *   released helper has that subcommand to capture from. An unrecognised
- *   option makes click exit 2, which would create the session, fail to start
- *   the agent, and drop the user into a plain shell: the exact failure the
- *   header describes. So grok gets the minimal line — `--dir` and nothing
- *   else — until a capture says more is safe. If that capture shows the flag,
- *   deleting `kind !== 'grok'` here is the whole change.
- */
+/** Whether [kind] is a non-empty engine ID rather than a session state. */
+export function isLaunchableKind(kind: unknown): kind is LaunchableKind {
+  return (
+    typeof kind === 'string' &&
+    kind.trim() !== '' &&
+    !['shell', 'probing', 'exited', 'unknown'].includes(kind.toLowerCase())
+  );
+}
+
+/** Whether this kind has a captured and supported permissions option. */
 export function supportsSkipPermissions(kind: LaunchableKind): boolean {
-  return kind !== 'opencode' && kind !== 'grok';
+  return kind === 'claude' || kind === 'codex' || kind === 'antigravity';
 }
 
 /**
- * Antigravity maps the helper's skip-permissions setting to agy's explicit
- * --dangerously-skip-permissions flag. Profiles are not supported by agy.
- *
- * Whether a profile can be chosen for the kind.
- *
- * `pocketshell profiles list --engine` accepts only `claude|codex`, and
- * `agent --profile` is documented "Ignored for opencode" — opencode has no
- * config-dir env var at all (helper `profiles.py`: "opencode has no profile
- * env var, so it is out of scope").
- *
- * grok is excluded on the same evidence: `profiles list` on 0.4.44 knows two
- * engines and grok is not one of them, so {@link profilesFor} would filter to
- * an empty list for it regardless of what this function said. Saying no
- * explicitly makes the picker hide a control it could never fill, and keeps
- * `--profile` — an option we have never seen `agent grok` accept — out of the
- * launch line. Revisit when a grok `--help` and a `profiles list` that names
- * grok can both be captured.
+ * Whether a profile can be chosen for the kind. Only Claude and Codex have
+ * profile rows in the helper contract; custom engines default to no profile.
  */
 export function supportsProfiles(kind: LaunchableKind): boolean {
   return kind === 'claude' || kind === 'codex';
 }
 
 /**
- * What one host's `pocketshell agent` can start, as far as we were able to
- * ask.
- *
- * `subcommands` is the `Commands:` block of `pocketshell agent --help`, or
- * **null** when we could not read it — the helper is missing, the exec failed,
- * the output did not parse. Null is a genuinely different answer from `[]` and
- * the two must not be collapsed: an empty list would mean a helper that admits
- * to having no agents at all, which no real host produces, while null means we
- * never got to ask. {@link kindUnavailableReason} treats them differently.
+ * Catalog and independent PATH probe for one host. `engineIds` is the
+ * available-engine list from `a engines --json`, or null when the query could
+ * not be completed. An empty list is a successful answer with no launchable
+ * agents. `binaries` remains a separate readiness check for the `pocketshell`
+ * launcher and, when the engine catalog is unavailable, the offline fallback.
  */
 export interface HostAgentSupport {
-  subcommands: readonly string[] | null;
+  engineIds: readonly string[] | null;
   /**
-   * The names found on the host's PATH — `pocketshell` itself and the engine
+   * The names found on the host's PATH — `pocketshell` and the fallback engine
    * CLIs — answered by one `command -v` batch, or null when the probe has not
-   * run or failed. Absent/null reads as "we do not know", which refuses
-   * nothing: a host whose probe failed must not lose the baseline engines.
-   * When the probe HAS answered, it outranks the subcommand list — a helper
-   * that lists `codex` cannot launch it if the `codex` CLI is not installed,
-   * and this is exactly the check that keeps the doomed launch from being
-   * typed into a session shell.
+   * run or failed. A live `a engines` catalog already carries engine
+   * availability, so this probe only checks that the launcher itself is
+   * present in that case.
    */
   binaries?: readonly string[] | null;
-  /**
-   * `pocketshell --version`'s first line, if bootstrap got one. Used only to
-   * make the refusal concrete ("this host has …"); never to decide anything,
-   * because the decision comes from the probe.
-   */
-  helperVersion?: string | null;
-  /** True while the probe is still in flight, so "no" can be said as "not yet". */
+  /** True while the engine query is in flight. */
   probing?: boolean;
 }
 
 /**
  * Why this host cannot start [kind] right now, or null when it can.
  *
- * The whole point is that every branch produces a SENTENCE. A kind the host
- * cannot launch used to be handled by not existing — the `+` menu simply did
- * not list Grok — and the cost of that was a user who could not tell "this app
- * dropped the feature" from "my host is old". So the picker shows the option
- * and this function explains it, in terms the user can act on: which host,
- * which helper version, what to do.
- *
- * Baseline kinds get null unless the probe positively contradicts them. That
- * asymmetry is argued in the header: three agents that certainly work must not
- * disappear because an SSH exec hiccuped, while grok must not be offered on a
- * guess.
+ * The online engine catalog is authoritative. When it is unavailable, the
+ * picker uses its offline fallback and checks the matching executable names.
+ * The independent `pocketshell` check applies in both cases.
  */
 export function kindUnavailableReason(
   kind: LaunchableKind,
   support: HostAgentSupport,
 ): string | null {
-  const label = KIND_LABELS[kind];
-  // The binary probe outranks the subcommand list: `pocketshell agent` can
-  // list `codex` all it likes, but the engine CLIs are programs on the host's
-  // PATH, and a launch typed without one dies in the session shell with the
-  // helper's own "not installed" sentence — exactly the failure this gate
-  // exists to keep in the UI. Array.isArray for the same reason as below: a
-  // null (never asked / probe failed) refuses nothing.
+  const label = kindLabel(kind);
+  const listed = Array.isArray(support.engineIds) ? support.engineIds : null;
+  if (listed !== null && !listed.includes(kind)) {
+    return `This host does not report an available ${label} engine in \`a engines\`.`;
+  }
+  if (listed === null && support.probing) {
+    return `Checking whether this host has an available ${label} engine…`;
+  }
+  // A live catalog reports engine availability independently of executable
+  // names, which also supports custom engine IDs. Keep the `pocketshell` PATH
+  // check in all cases and use per-engine command names only for offline
+  // fallback IDs.
   const found = Array.isArray(support.binaries) ? support.binaries : null;
   if (found !== null) {
     if (!found.includes('pocketshell')) {
@@ -268,50 +178,14 @@ export function kindUnavailableReason(
         'helper first, then reconnect and try again.'
       );
     }
-    if (!found.includes(kind)) {
+    if (listed === null && !found.includes(kind)) {
       return (
         `This host has no \`${kind}\` on its PATH — install the ${label} CLI ` +
         'first, then try again.'
       );
     }
   }
-  // Array.isArray rather than `!== null`: the list arrives over IPC from a
-  // parser that returns `string[] | null`, and anything else that reaches here
-  // — an undefined from a half-built stub, a shape a future helper changes —
-  // is "we did not get an answer", which is the case the branch below already
-  // handles correctly. Treating it as an empty list instead would refuse every
-  // engine on the host.
-  const listed = Array.isArray(support.subcommands) ? support.subcommands : null;
-  if (listed !== null) {
-    if (listed.includes(kind)) return null;
-    // The probe answered, and the answer was no. This is the 0.4.44 case for
-    // grok, and it is the only branch that can name the host's own version.
-    const has = support.helperVersion?.trim();
-    const running = has ? ` This host runs ${has}.` : '';
-    if (kindNeedsNewerHelper(kind)) {
-      return (
-        `This host’s pocketshell helper is too old to start ${label} — its ` +
-        `\`pocketshell agent\` has no \`${kind}\` subcommand. ${label} needs a helper ` +
-        `newer than ${HELPER_VERSION_WITHOUT_GROK}.${running}`
-      );
-    }
-    return (
-      `This host’s \`pocketshell agent\` does not list a \`${kind}\` subcommand, so ` +
-      `${label} cannot be started here.${running}`
-    );
-  }
-  // The probe could not answer. Baseline kinds are pinned and go ahead anyway;
-  // grok does not, because being wrong here costs the user a session that
-  // comes up as a plain shell.
-  if (!kindNeedsNewerHelper(kind)) return null;
-  if (support.probing) {
-    return `Checking whether this host’s pocketshell can start ${label}…`;
-  }
-  return (
-    `Could not ask this host which agents its pocketshell can start, and ${label} ` +
-    `needs a helper newer than ${HELPER_VERSION_WITHOUT_GROK} — so it is not offered here. ` +
-    `Pick another agent, or reconnect and try again.`
-  );
+  return null;
 }
 
 /**
@@ -319,13 +193,12 @@ export function kindUnavailableReason(
  * runs (`for n in pocketshell <kinds>; do command -v ...; done`).
  *
  * The output is the found names, one per line — the loop echoes the NAME, not
- * the resolved path, so no basename guessing. A line that is not a name this
- * module knows is dropped rather than trusted: the list feeds
- * {@link kindUnavailableReason}'s membership checks, and a stray line can only
- * ever make the probe say "present" about something it is not.
+ * the resolved path, so no basename guessing. Only the launcher and the
+ * offline fallback names are accepted here; online catalog IDs use the
+ * catalog's own availability field instead.
  */
 export function parseAgentBinaries(stdout: string): string[] {
-  const known = new Set<string>(['pocketshell', ...LAUNCHABLE_KINDS]);
+  const known = new Set<string>(['pocketshell', ...OFFLINE_LAUNCHABLE_KINDS]);
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -442,7 +315,12 @@ export interface LaunchChoice {
  * it is handed so that what you read here is what the host receives.
  */
 export function buildLaunchCommand(choice: LaunchChoice): string {
-  const parts = ['pocketshell', 'agent', choice.kind, '--dir', shellQuoteRemotePath(choice.dir)];
+  // Keep ordinary engine IDs readable in the terminal preview. Custom IDs can
+  // contain spaces or shell syntax, so quote those as one argument.
+  const kind = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(choice.kind)
+    ? choice.kind
+    : shellQuote(choice.kind);
+  const parts = ['pocketshell', 'agent', kind, '--dir', shellQuoteRemotePath(choice.dir)];
   if (supportsSkipPermissions(choice.kind) && !choice.skipPermissions) {
     parts.push('--no-skip-permissions');
   }

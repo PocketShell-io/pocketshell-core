@@ -227,3 +227,53 @@ describe('saved host store', () => {
     expect(restarted.snapshot()).toEqual({ ...snapshot, hosts: [first, second] });
   });
 });
+
+describe('saved host gateway marker (pocketshell#3086 slice 4)', () => {
+  const gateway = { serverUrl: 'wss://Gateway.PocketShell.io/', deviceId: 'laptop-1' };
+
+  it('round-trips a gateway host through storage, the host-list entry and the controller target', () => {
+    const storage = new MemoryStorage();
+    const store = createStore(storage, () => 'gw-host-1');
+    store.load();
+    const saved = store.add({ ...hostInput('laptop'), hostname: 'laptop-1', gateway });
+    // Canonicalized on the way in (core's one origin grammar).
+    expect(saved.gateway).toEqual({ serverUrl: 'wss://gateway.pocketshell.io', deviceId: 'laptop-1' });
+
+    const reloaded = createStore(storage);
+    reloaded.load();
+    const [host] = reloaded.hosts;
+    expect(host!.gateway).toEqual({ serverUrl: 'wss://gateway.pocketshell.io', deviceId: 'laptop-1' });
+    expect(savedHostEntry(host!).gateway).toEqual(host!.gateway);
+    expect(savedHostSshTarget(host!).gateway).toEqual(host!.gateway);
+    expect(savedHostSshTarget(host!).credential).toEqual({ kind: 'key-handle', handleId: 'vault-key-7' });
+  });
+
+  it('an ordinary host carries no gateway key anywhere', () => {
+    const storage = new MemoryStorage();
+    const store = createStore(storage, () => 'plain-1');
+    store.load();
+    const saved = store.add(hostInput('plain'));
+    expect('gateway' in saved).toBe(false);
+    expect('gateway' in savedHostEntry(saved)).toBe(false);
+    expect('gateway' in savedHostSshTarget(saved)).toBe(false);
+    expect(storage.getItem(SAVED_HOSTS_STORAGE_KEY)).not.toContain('gateway');
+  });
+
+  it('refuses a null or malformed marker instead of saving an ordinary SSH host', () => {
+    const store = createStore(new MemoryStorage(), () => 'bad-1');
+    store.load();
+    for (const bad of [null, {}, { serverUrl: 'wss://gateway.example', deviceId: '../x' }, { serverUrl: 'https://gw.example/path', deviceId: 'dev-1' }]) {
+      expect(() => store.add({ ...hostInput('bad'), gateway: bad as never }), JSON.stringify(bad)).toThrow(SavedHostStoreError);
+    }
+    expect(store.hosts).toEqual([]);
+  });
+
+  it('a stored document whose gateway marker was tampered with is refused, not downgraded', () => {
+    const storage = new MemoryStorage();
+    const store = createStore(storage, () => 'gw-2');
+    store.load();
+    store.add({ ...hostInput('laptop'), gateway });
+    storage.setItem(SAVED_HOSTS_STORAGE_KEY, storage.getItem(SAVED_HOSTS_STORAGE_KEY)!.replace('laptop-1', '../escape'));
+    expect(() => createStore(storage).load()).toThrow(SavedHostStoreError);
+  });
+});

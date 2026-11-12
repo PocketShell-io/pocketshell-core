@@ -378,7 +378,7 @@ h2 {
   align-items: center;
   justify-content: center;
   padding: 0 var(--sp-3);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--accent);
   color: var(--on-accent);
@@ -388,7 +388,7 @@ h2 {
   cursor: pointer;
 }
 .account-primary:hover:not(:disabled) {
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   background: var(--accent-dim);
   color: var(--fg);
 }
@@ -414,7 +414,7 @@ h2 {
   color: var(--fg);
   font: inherit;
 }
-.passphrase-field input:focus {
+.passphrase-field input:focus-visible {
   outline: 2px solid var(--accent-dim);
   outline-offset: 1px;
 }

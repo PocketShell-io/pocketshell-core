@@ -88,7 +88,6 @@ const emit = defineEmits<{
 /* Selection is accent-tinted and railed, the folder rows' own rule. */
 .dir-header.current {
   background: var(--state-selected);
-  border-left-color: var(--accent);
 }
 .label {
   flex: 0 1 auto;

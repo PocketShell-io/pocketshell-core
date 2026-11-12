@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   extensionsFor,
   provideExtensions,
   type TerminalInputAdapter,
 } from '../src/app/extensions';
+import { createTerminalInputOwnership } from '../src/app/terminalInputOwnership';
 
 const adapter = (id: string, order?: number): TerminalInputAdapter => ({ id, order, attach: () => undefined });
 
@@ -33,12 +32,42 @@ describe('terminal.inputAdapter slot', () => {
     expect(() => provideExtensions({ 'terminal.typo': [] } as never)).toThrow(/unknown extension slot/);
   });
 
-  it('is attached by TerminalView on its xterm textarea, sending through term.input, and detached on unmount', () => {
-    const view = readFileSync(resolve(__dirname, '../src/app/components/TerminalView.vue'), 'utf8');
-    expect(view).toMatch(/extensionsFor\('terminal\.inputAdapter'\)/);
-    expect(view).toMatch(/sendInput: \(data\) => t\.input\(data, true\)/);
-    expect(view).toMatch(/get sessionKey\(\) \{\s*return registryKey\.value;/);
-    expect(view).toMatch(/attachInputAdapters\(term, containerEl\.value!\)/);
-    expect(view).toMatch(/for \(const detach of inputAdapterDetaches\) detach\(\);/);
+  it('routes adapter bytes through xterm user input after cancelling prefix intent, with a live identity and owned cleanup', () => {
+    const detach = vi.fn();
+    const attach = vi.fn<import('../src/app/extensions').TerminalInputAdapter['attach']>(() => detach);
+    provideExtensions({ 'terminal.inputAdapter': [{ id: 'ime', attach }] });
+    let key = 'first';
+    const cancel = vi.fn();
+    const input = vi.fn(() => { expect(cancel).toHaveBeenCalledOnce(); });
+    const textarea = {} as HTMLTextAreaElement;
+    const element = {} as HTMLElement;
+    const ownership = createTerminalInputOwnership({ getPrefixOwner: () => null,
+      getContainer: () => null, getSessionKey: () => key, routeKey: () => true,
+      cancelDetachCandidate: cancel, expectIntentionalDetach: vi.fn() });
+    ownership.attachInputAdapters({ textarea, input }, element);
+    expect(attach).toHaveBeenCalledOnce();
+    const target = attach.mock.calls[0]![0];
+    expect(target.textarea).toBe(textarea);
+    expect(target.element).toBe(element);
+    expect(target.sessionKey).toBe('first');
+    key = 'second';
+    expect(target.sessionKey).toBe('second');
+    target.sendInput('Unicode ☃\r');
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(input).toHaveBeenCalledWith('Unicode ☃\r', true);
+    expect(detach).not.toHaveBeenCalled();
+    ownership.disposeInputAdapters();
+    ownership.disposeInputAdapters();
+    expect(detach).toHaveBeenCalledOnce();
+  });
+
+  it('does not attach contributed adapters before xterm creates its textarea', () => {
+    const attach = vi.fn();
+    provideExtensions({ 'terminal.inputAdapter': [{ id: 'ime', attach }] });
+    const ownership = createTerminalInputOwnership({ getPrefixOwner: () => null,
+      getContainer: () => null, getSessionKey: () => 'key', routeKey: () => true,
+      cancelDetachCandidate: vi.fn(), expectIntentionalDetach: vi.fn() });
+    ownership.attachInputAdapters({ textarea: undefined, input: vi.fn() }, {} as HTMLElement);
+    expect(attach).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,8 @@
  */
 
 import type { LinkTransportTarget } from './sshCapability';
-import type { GatewayTransportTarget } from './gatewayTransport';
+import type { GatewayDialFailureKind, GatewayTransportTarget } from './gatewayTransport';
+import type { GatewayAuthPolicy } from './keyVault/types';
 
 /** Opaque handle for a live SSH connection in the main process. */
 export type ConnectionId = string;
@@ -33,6 +34,14 @@ export interface HostEntry {
    * can never vouch for the host.
    */
   gateway?: GatewayTransportTarget;
+  /**
+   * How the gateway path signs in (key vault design s7), MIRRORED from the
+   * encrypted vault index as a non-secret flag so the host agent can choose
+   * its AuthorizedKeysFile without the vault. The index stays the source of
+   * truth; write this with `mirrorGatewayAuth`, read it with
+   * `isGatewayAuthPolicy` (sync carries any value verbatim).
+   */
+  gatewayAuth?: GatewayAuthPolicy;
   /**
    * Stable host identity, for a host whose platform owns its host list (a
    * saved host, see `savedHosts.ts`): the key for the default host, trust
@@ -92,6 +101,14 @@ export interface ConnectResult {
   ok: boolean;
   connectionId?: ConnectionId;
   error?: string;
+  /**
+   * Set on a failed gateway dial whose cause core's gateway matrix knows
+   * (classifyGatewayDialFailure): `sign_in_required`, `pairing_required`,
+   * `account_changed`, `host_offline`, … The picker reads it to prompt for
+   * the right next step — sign in, pair, reconnect, or "the host is offline"
+   * — instead of showing one generic error. Absent for every other failure.
+   */
+  gatewayFailureKind?: GatewayDialFailureKind;
 }
 
 /**

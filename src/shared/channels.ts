@@ -205,10 +205,8 @@ export const ipc = {
     readLocal: 'attachments:readLocal', // bytes of a path pickFiles handed out THIS session
   },
   agent: {
-    kinds: 'agent:kinds', // agent --help -> the engines this host can launch
-    // command -v over pocketshell + the engine CLIs -> the launch binaries on
-    // the host's PATH. The gate that keeps a launch whose engine is not
-    // installed in the UI instead of typed into a session shell.
+    kinds: 'agent:kinds', // available engine IDs from `a engines --json`
+    // Independent command -v probe for pocketshell and offline fallback CLIs.
     binaries: 'agent:binaries',
     profiles: 'agent:profiles', // profiles list --json
     envList: 'agent:envList', // env list --dir --json
@@ -243,6 +241,23 @@ export const ipc = {
     push: 'sync:push', // (slot, plaintext, passphrase) -> SyncPushResult
     accountHosts: 'sync:accountHosts', // () -> HostEntry[] | null — the last copy decrypted this session
     applyHosts: 'sync:applyHosts', // HostEntry[] -> append missing to ~/.ssh/config
+  },
+  /**
+   * The gateway directory (PocketShellApi['gateway'], core #3086): the
+   * account's enrolled gateway devices, this client's pairings, and the SSH
+   * client keys a pairing can pin. A platform that cannot dial through the
+   * gateway or keep the gateway credential itself omits the whole preload
+   * group; the shared tree probes it defensively (gatewayCapability) and
+   * hides the device source when it is absent. Routing tokens and host-key
+   * pins never cross this surface — main keeps them behind the enrollment
+   * file, and a pairing's summary is all the renderer sees.
+   */
+  gateway: {
+    devices: 'gateway:devices', // (serverUrl) -> GatewayDevice[] — the gateway's own last list
+    pairings: 'gateway:pairings', // () -> GatewayPairingSummary[] — this client's saved pairings
+    clientKeys: 'gateway:clientKeys', // () -> GatewayClientKey[] — public halves only
+    createClientKey: 'gateway:createClientKey', // (label) -> GatewayClientKey — generate + keep the private half local
+    addDevice: 'gateway:addDevice', // GatewayAddDeviceRequest -> GatewayAddDeviceResult — write the local enrollment
   },
   /**
    * Update check — the desktop port of the phone's ReleaseChecker: main polls

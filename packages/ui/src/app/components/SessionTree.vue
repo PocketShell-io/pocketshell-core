@@ -967,7 +967,7 @@ defineExpose({ openCreate });
    the quieter of the two is a trap. */
 .stop-confirm .btn-danger {
   background: var(--error);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   color: var(--on-accent);
 }
 .stop-confirm .btn-danger:disabled {

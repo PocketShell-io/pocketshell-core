@@ -652,7 +652,7 @@ function fmtScanTime(epochMs: number | null): string {
 }
 .toggle.on {
   background: var(--accent-soft);
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   color: var(--accent);
 }
 .hint {
@@ -727,7 +727,7 @@ function fmtScanTime(epochMs: number | null): string {
 .add-btn {
   background: var(--accent);
   color: var(--on-accent);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   font-weight: var(--fw-semibold);
 }
 .add-btn:hover {
@@ -860,7 +860,7 @@ function fmtScanTime(epochMs: number | null): string {
   color: var(--fg-muted);
 }
 .cell-input:hover:not(:disabled),
-.cell-input:focus {
+.cell-input:focus-visible {
   background: var(--surface-2);
   /* WCAG 1.4.11: once it looks like a control it needs a >=3:1 boundary. */
   border-color: var(--border-strong);

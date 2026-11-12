@@ -73,7 +73,7 @@ function onKeydown(event: KeyboardEvent): void {
   border-bottom: 1px solid var(--border);
 }
 /* Underline tabs, the session bar's treatment (WorkspaceTabBar): ghost at
-   rest — the underline, not a box, is what marks the selected tab. */
+   rest — a tinted fill and stronger label mark the selected tab. */
 .tab {
   height: var(--control-h);
   padding: 0 var(--sp-3);
@@ -100,6 +100,7 @@ function onKeydown(event: KeyboardEvent): void {
 }
 .tab[aria-selected='true'] {
   color: var(--fg);
-  border-bottom-color: var(--accent);
+  font-weight: var(--fw-semibold);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 </style>

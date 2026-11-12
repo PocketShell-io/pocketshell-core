@@ -42,11 +42,28 @@ non-empty string `name` and `hostname`. It preserves all other fields without
 coercion, including nested arrays and objects, so a client that does not
 understand a field can still carry it forward.
 
+## The gateway auth flag
+
+A host entry may carry `gatewayAuth: 'host' | 'managed' | 'both'`, the key
+vault's per-host gateway policy (key-vault design s7). It is a MIRROR: the
+encrypted vault index is the source of truth, and a client with the vault
+unlocked writes the flag with `mirrorGatewayAuth(hosts, bindings)` before it
+uploads. For sync it is an ordinary host field: a local value wins, an absent
+local value carries the account's, and any value is preserved verbatim.
+Readers check it with `isGatewayAuthPolicy`.
+
 ## The gateway transport marker
 
+A host added from the gateway device list (pocketshell#3086 slice 4: the
+picker's device source, `src/gatewayDevices.ts` and the optional
+`PocketShellApi.gateway` group) is an ordinary saved host carrying this
+marker (`SavedHostInput.gateway`), so it syncs like any other host. Its
+host-key pin and the routing token are NOT part of the entry: they stay with
+the platform that paired it.
+
 A host entry may carry a `gateway` property: the metadata for dialling through
-the PocketShell gateway, a transport that initially ships in the browser only.
-Sync's job is to carry that property, not to understand it:
+the PocketShell gateway (desktop and Android dial it; each client advertises
+its own support). Sync's job is to carry that property, not to understand it:
 
 - `gateway` is an unknown field for every merge and wire rule above, so a valid
   marker survives merge, strict parsing, and a read/merge/write cycle
@@ -57,14 +74,68 @@ Sync's job is to carry that property, not to understand it:
   shape) instead of treating the entry as ordinary SSH. A marker that is null
   or malformed is still gateway intent; coercing it to a plain host would dial
   the wrong transport. An entry that carries both `link` and `gateway` refuses
-  too, rather than falling back to the link transport.
+  too, rather than falling back to the link transport. Every client makes this
+  call through ONE shared decision, `unsupportedTransport(entry,
+  { gateway, link })` in `src/sync.ts`, passing its real transport
+  capabilities, at its dial boundary before any key load or socket; the
+  refusal text comes from the same place (`transportRefusalMessage`) so every
+  client words it identically.
 - The desktop config write-back is the one place a synced entry becomes a file
-  on disk, and an OpenSSH block cannot represent the gateway — so
-  `coerceHostEntries` reports `gateway-unsupported` for such an entry and the
-  desktop refuses the whole apply before touching `~/.ssh/config` (no HostName
-  downgrade, no partial write). The shared connect payload carries the marker
-  to the platform boundary for the same reason: the store preserves, the
-  platform decides.
+  on disk, and an OpenSSH block can represent neither the gateway nor a relay
+  link — so `coerceHostEntries` asks the same `unsupportedTransport` decision
+  with `SSH_CONFIG_TRANSPORTS` (`{ gateway: false, link: false }`), reports
+  `transport-unsupported` (with the shared message) for any `gateway`- or
+  `link`-marked entry, and the desktop refuses the whole apply before touching
+  `~/.ssh/config` (no HostName downgrade, no partial write). The shared connect
+  payload carries the marker to the platform boundary for the same reason: the
+  store preserves, the platform decides.
+- `ConnectionController` (the one dial/trust/reconnect owner) applies the same
+  decision again for a gateway target, with `{ gateway:
+  capability.gatewayTransport === true, link: false }`, so a marker that slips
+  past a platform boundary still refuses before any effect (pocketshell#3086).
+  A gateway dial never uses TOFU: the controller skips the trust store, passes
+  `expectedHostKey: null`, and accepts the connection only when the platform
+  returns `gatewayHostKeyVerified: true` — its receipt that the native pairing
+  pin was checked BEFORE userauth. A missing receipt closes the connection; a
+  pin mismatch (`HOST_KEY_REJECTED`) is an error, never a trust prompt. Both
+  end a reconnect ladder, and every re-dial needs the receipt again.
+  Whenever the controller holds a session — a live connection, or one kept
+  without a transport while reconnecting, in background past grace, released
+  or lost — `connect()` admits a gateway-marked request through that same
+  decision FIRST: a refused one (no capability, malformed, `link` alongside)
+  returns the shared message and leaves the connection, terminals, selected
+  session and any running reconnect untouched. A controller holding nothing
+  refuses through the dial and reports it in the snapshot. An admitted
+  request reuses the live connection only for the same transport: two
+  ordinary targets, or two gateway targets with the same normalized route.
+  Ordinary↔gateway or a different route
+  closes the live transport and dials the requested one, so a gateway connect is
+  never answered without its own receipt and an ordinary connect never keeps
+  riding the gateway.
+- A platform reports a gateway refusal by rejecting `connect()` with code
+  `GATEWAY_CLOSED` and `data.gatewayCloseCode` (the WS close code; an `error`
+  frame is mapped to its documented code). `classifyGatewayDialFailure` in
+  `src/gatewayTransport.ts` is the retry matrix: 4400 (malformed request —
+  update PocketShell), 4401 (sign-in refused), 4403
+  (not shared with this account) and 4404 (unknown device) end the ladder
+  after that attempt; 4408 (timeout), 4429 (quota) and 4503 (host offline)
+  back off within the ordinary retry bounds. Only close codes 4000–4999 are
+  gateway verdicts: a remote 1000/1001/1011 close, an unlisted 4xxx code, or
+  any other code keeps the default.
+- Before asking the gateway, a platform may refuse a gateway dial itself with
+  a native code (Android `SshCapabilityPlugin`, pocketshell#3086). The same
+  matrix ends the ladder after that attempt for each, with its own advice
+  (core#47): `NOT_SIGNED_IN` (signed out — sign in) and
+  `GATEWAY_BROKER_SIGN_IN_REJECTED` (the token broker refused the sign-in —
+  sign in again) are `sign_in_required`; `GATEWAY_UNPAIRED` (no pairing, or a
+  pairing for a different SSH key — pair again) is `pairing_required`;
+  `GATEWAY_ACCOUNT_CHANGED` (the signed-in account changed mid-dial —
+  reconnect as the current account) is `account_changed`. Other native codes
+  (`GATEWAY_BROKER_UNAVAILABLE`, `SYNC_NETWORK_FAILED`, ...) keep the default.
+- The classified failure stays on `ConnectionSnapshot.gatewayFailure`
+  (`kind`, `code`, `closeCode` — null for a native refusal — `retryable`,
+  `userMessage`), so a UI can say "offline" rather than "sign-in failed" and
+  prompt for sign-in or pairing instead of retrying.
 
 ## Selection, merge, and conflicts
 
@@ -76,6 +147,30 @@ Unticking an alias removes it from the replacement list; this format has no
 tombstones and no per-field deletion markers. An empty checked selection is an
 explicit empty replacement, so callers should require the user to select hosts
 before starting a normal sync.
+
+The tick rule is the same on every client (pocketshell#3072, D43): **every
+account host stays selected unless the user explicitly unticked it.** Each
+device persists two alias lists, the selection and its explicit unticks
+(`SyncSelectionState`). Every clean pull applies `applyAccountToSelection`:
+each account alias that is not explicitly unticked joins the selection, even
+when this device's own host list (`~/.ssh/config`, the web's synced list, the
+phone's saved hosts) also has it. So an untouched Sync now never removes a
+host from the account; only an untick does, whether made this session or
+persisted from an earlier one. An untick is **one-shot**, not a standing
+per-device ban: it is spent by the push that removes the host (`runSyncRound`
+reports the remaining unticks as `untickedAliases`), or by a pull that shows
+the account no longer holds the alias, so a host another device later adds
+back is kept by this device's next untouched Sync now. A push that fails
+leaves the untick pending. Signing out forgets all of them: forgetting an
+untick can only keep a host in the account, never drop one.
+
+Because every overlapping alias is ticked, this device's explicit local
+fields win for it on push (see below). Two devices with a same-named but
+different host (two different `nas` boxes) therefore overwrite each other's
+account entry rather than dropping it; rename one of them to keep both. The
+shared `packages/ui` sync store applies the rule to every account copy it
+learns (Check account, the platform's session cache, each round's pulls), so
+the Account view shows "remove on sync" only after an explicit untick.
 
 For an alias on both sides, each explicit local property wins over the account
 copy, while account properties absent or `undefined` on the local object are
@@ -103,7 +198,10 @@ The vector file has its own `fixtureSchemaVersion` for test-fixture evolution;
 that value is not part of the encrypted wire payload. `mergeCases` cover both
 client directions, local-versus-account conflicts, alias-only selection,
 account-only restore, and deletion by omission. `autoCheckCases` pin the
-fresh-device and local-untick behavior. `payloadCases` pin versionless payload
+tick rule: fresh-device auto-tick, an account alias this device also has,
+an explicit untick, and a spent untick. `untickRoundCases` pin the one-shot
+untick through a whole round: the push that carries an untick out spends it,
+and an alias re-added afterwards is kept. `payloadCases` pin versionless payload
 compatibility, valid empty data, and strict refusal of malformed data or an
 explicit unsupported schema version.
 

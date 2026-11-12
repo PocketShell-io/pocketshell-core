@@ -93,7 +93,6 @@ const countLabel = computed(() =>
   position: relative;
   background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 /* Hover keeps the register: the global ghost hover would repaint the fill and
    glyph neutral, and an indicator that vanishes under the cursor is worse than
@@ -114,7 +113,6 @@ const countLabel = computed(() =>
   height: 5px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 5px 0 var(--accent);
 }
 /* The count pill: the dot's corner grown just enough to hold the number of
    live forwards. Solid --accent with --on-accent digits reads as the dot's

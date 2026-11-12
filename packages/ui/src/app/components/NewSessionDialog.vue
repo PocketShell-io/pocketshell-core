@@ -708,7 +708,6 @@ function cancelNameEdit(): void {
 }
 .repo-row.on {
   background: var(--state-selected);
-  border-left-color: var(--accent);
 }
 .folder-mark {
   color: var(--accent);
@@ -918,7 +917,7 @@ function cancelNameEdit(): void {
 .btn-primary {
   background: var(--accent);
   color: var(--on-accent);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-dim);

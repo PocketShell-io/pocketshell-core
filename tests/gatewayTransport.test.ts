@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GATEWAY_CLOSED_ERROR_CODE,
   GATEWAY_DEFAULT_SERVER_URL,
   GATEWAY_SSH_PATH_PREFIX,
   buildGatewayAuthFrame,
   classifyGatewayClose,
+  classifyGatewayDialFailure,
   gatewaySshUrl,
+  isGatewayVerdictCloseCode,
   hostKeyLineBlobB64,
   isValidGatewayDeviceId,
   normalizeGatewayServerUrl,
@@ -23,6 +26,14 @@ import type { HostEntry } from '../src/types';
 // service.go, identity.go).
 
 describe('gateway target validation', () => {
+  it('refuses original credential path and control placements before URL canonicalization', () => {
+    for (const input of [ 'wss://secret@gateway.example', 'wss://gateway.example/secret/..',
+      'wss://gate\tway.example', 'wss://gate\nway.example', 'wss://%67ateway.example',
+      'wss://gateway.example?token=secret', 'wss://gateway.example#secret' ]) {
+      expect(normalizeGatewayServerUrl(input)).toBeNull();
+    }
+  });
+
   it('the canonical production URL normalizes to itself', () => {
     expect(normalizeGatewayServerUrl('wss://gateway.pocketshell.io')).toBe(GATEWAY_DEFAULT_SERVER_URL);
     expect(normalizeGatewayServerUrl('wss://gateway.pocketshell.io/')).toBe(GATEWAY_DEFAULT_SERVER_URL);
@@ -241,5 +252,66 @@ describe('the gateway field rides the sync payload', () => {
     const junk = { ...entry, gateway: { serverUrl: 42 } };
     const parsed = parseSyncPayload(serializeSyncPayload([junk as unknown as HostEntry]))[0]!;
     expect(normalizeGatewayTarget(parsed.gateway)).toBeNull();
+  });
+});
+
+describe('gateway dial failure matrix (pocketshell#3086)', () => {
+  it('classifies the documented close codes with retry and advice', () => {
+    const table = [
+      [4400, 'protocol', false], [4401, 'unauthorized', false], [4403, 'forbidden', false], [4404, 'not_found', false],
+      [4408, 'timeout', true], [4429, 'quota', true], [4503, 'host_offline', true],
+    ] as const;
+    for (const [closeCode, kind, retryable] of table) {
+      expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: closeCode })).toEqual({
+        code: GATEWAY_CLOSED_ERROR_CODE, closeCode, kind, retryable, userMessage: classifyGatewayClose(closeCode).userMessage,
+      });
+    }
+  });
+
+  // core#47: the Android native codes a gateway dial fails with before any
+  // gateway verdict (pocketshell#3086 slice 2, SshCapabilityPlugin @ 9218cdeeb).
+  it.each([
+    ['NOT_SIGNED_IN', 'sign_in_required', 'Sign in to your PocketShell account to connect through the gateway.'],
+    ['GATEWAY_BROKER_SIGN_IN_REJECTED', 'sign_in_required', 'Your sign-in was not accepted for the gateway — sign out, sign in again, then reconnect.'],
+    ['GATEWAY_UNPAIRED', 'pairing_required', 'This device is not paired with that host for this SSH key — pair it again, then reconnect.'],
+    ['GATEWAY_ACCOUNT_CHANGED', 'account_changed', 'The signed-in account changed while connecting — reconnect as the account signed in now.'],
+  ] as const)('classifies native %s as non-retryable %s with its own advice', (code, kind, advice) => {
+    expect(classifyGatewayDialFailure(code, {})).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+    // A stray close code on a native refusal is not a gateway verdict.
+    expect(classifyGatewayDialFailure(code, { gatewayCloseCode: 4503 })).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+  });
+
+  it('gives each native refusal distinct advice', () => {
+    const advice = ['NOT_SIGNED_IN', 'GATEWAY_BROKER_SIGN_IN_REJECTED', 'GATEWAY_UNPAIRED', 'GATEWAY_ACCOUNT_CHANGED']
+      .map((code) => classifyGatewayDialFailure(code, {})?.userMessage);
+    expect(new Set(advice).size).toBe(4);
+  });
+
+  it('leaves other native codes and near-miss spellings to the caller default', () => {
+    for (const code of ['not_signed_in', 'GATEWAY_BROKER_UNAVAILABLE', 'GATEWAY_BROKER_BAD_RESPONSE', 'SYNC_NETWORK_FAILED',
+      'GATEWAY_PAIRING_STORE_FAILED', 'SSH_IO', 'AUTH_FAILED', '']) {
+      expect(classifyGatewayDialFailure(code, {})).toBeNull();
+    }
+  });
+
+  it('isGatewayVerdictCloseCode accepts exactly the integers 4000–4999', () => {
+    for (const closeCode of [4000, 4400, 4503, 4999]) expect(isGatewayVerdictCloseCode(closeCode)).toBe(true);
+    for (const closeCode of [1000, 1001, 1006, 1011, 3999, 5000, 4401.5, Number.NaN]) {
+      expect(isGatewayVerdictCloseCode(closeCode)).toBe(false);
+    }
+  });
+
+  it('counts only close codes 4000–4999 as gateway verdicts', () => {
+    for (const closeCode of [1000, 1001, 1006, 1011, 3000, 3999, 5000, 4401 + 1000]) {
+      expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: closeCode })).toBeNull();
+    }
+  });
+
+  it('returns null outside the matrix so the caller keeps its default', () => {
+    for (const data of [{ gatewayCloseCode: 4000 }, { gatewayCloseCode: 1006 }, { gatewayCloseCode: '4401' },
+      { gatewayCloseCode: 4401.5 }, {}]) {
+      expect(classifyGatewayDialFailure(GATEWAY_CLOSED_ERROR_CODE, data)).toBeNull();
+    }
+    expect(classifyGatewayDialFailure('SSH_IO', { gatewayCloseCode: 4401 })).toBeNull();
   });
 });

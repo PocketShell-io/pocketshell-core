@@ -32,6 +32,7 @@ import type {
   ExecResult,
   FileStat,
   ForwardSpec,
+  GatewayDevice,
   ForwardState,
   GeometryProbe,
   HomeResult,
@@ -73,6 +74,25 @@ export interface InstalledAppInfo {
   /** Package or bundle id, including any per-install suffix; '' when unknown. */
   applicationId: string;
 }
+
+/**
+ * The gateway pairing contract's payloads live in core
+ * (src/gatewayDevices.ts) so a platform's capability implementation and this
+ * shared tree share one typed shape; re-exported here for the
+ * PocketShellApi contract below.
+ */
+import type {
+  GatewayAddDeviceRequest,
+  GatewayAddDeviceResult,
+  GatewayClientKey,
+  GatewayPairingSummary,
+} from '@pocketshell/core';
+export type {
+  GatewayAddDeviceRequest,
+  GatewayAddDeviceResult,
+  GatewayClientKey,
+  GatewayPairingSummary,
+};
 
 /** How a share request ended: handed to a share target, saved locally, or dismissed. */
 export type DiagnosticsShareOutcome = 'shared' | 'saved' | 'cancelled';
@@ -153,6 +173,8 @@ export interface PocketShellApi {
         user: string;
         /** The `~/.ssh/config` `Host` alias (`HostEntry.name`), when there is one. */
         hostAlias?: string;
+        /** The picker explicitly selected a direct endpoint from settings sync. */
+        accountDirect?: true;
         privateKeyPath?: string;
         privateKey?: string;
         passphrase?: string;
@@ -306,6 +328,21 @@ export interface PocketShellApi {
       }) => Promise<boolean>;
     "saveAs": (payload: { connectionId: string; remotePath: string }) => Promise<string | null>;
     "onProgress": (handler: (payload: { transferId: string } & TransferProgress) => void) => Unsubscribe;
+    /**
+     * Optional: what this platform's file transport can do. Absent means
+     * everything above works (desktop, web). A platform that wires only part
+     * of the group says so here, and the Files pane hides or disables what
+     * it cannot do — with the reason — instead of offering it and failing
+     * on use (Android, #3086 slice 4). `maxReadBytes` caps every open: a
+     * larger file is shown as over the limit, never opened truncated.
+     */
+    "capabilities"?: {
+      "write": boolean;
+      "download": boolean;
+      /** Why writes are off, in words the pane shows. */
+      "readOnlyReason"?: string;
+      "maxReadBytes"?: number;
+    };
     };
 
     "preview": {
@@ -352,11 +389,12 @@ export interface PocketShellApi {
     };
 
     "agent": {
+    /** Available engine IDs parsed from the host's `a engines --json`; null means offline/query failure. */
     "kinds": (connectionId: string) => Promise<string[] | null>;
     /**
-     * The launch binaries on the host's PATH (`pocketshell` + the engine
-     * CLIs, from one `command -v` batch), or null when the probe failed —
-     * null reads as "unknown" and refuses nothing, exactly like `kinds`' null.
+     * The names found on the host's PATH from an independent probe. The UI
+     * always uses this for the `pocketshell` launcher and uses engine names
+     * only when the live aplexer catalog was unavailable.
      */
     "binaries": (connectionId: string) => Promise<string[] | null>;
     "profiles": (connectionId: string) => Promise<unknown[]>;
@@ -395,6 +433,12 @@ export interface PocketShellApi {
     // no config file and words the same surfaces around the synced account
     // list. Omitting the group gets neutral wording and no source chip.
     "hosts"?: {
+        /** Supports explicit direct SSH dials from authenticated settings. */
+        accountDirect?: boolean;
+    /** Provenance of ssh.listConfigHosts, asserted by platform code, never
+     * host metadata. Trusted-account mode exposes direct entries only when
+     * this is explicitly local; cloud/account and unknown sources stay hidden. */
+    "provenance"?: 'local' | 'account';
     /** Eyebrow over the local host group in the picker. */
     "groupLabel": string;
     /** The source's name; the picker renders it as code where it cites it. */
@@ -410,6 +454,40 @@ export interface PocketShellApi {
      * route) omit it, and the shared UI then offers no create/edit/delete.
      */
     "store"?: PlatformHostStore;
+    };
+
+    // Optional capability: the account's PocketShell gateway devices (#3086).
+    // Present only on a platform that dials through the gateway AND keeps the
+    // gateway credential and the host-key pins itself (Android today: the
+    // routing token and the pins never reach this tree). The host picker
+    // then lists the account's devices with their last authoritative
+    // presence and offers "Add device"; without the group neither appears.
+    // Every rejection carries the platform's error `code`
+    // (classifyGatewayDirectoryFailure reads it).
+    "gateway"?: {
+    /** The gateway listed until `serverUrl` answers (core GATEWAY_DEFAULT_SERVER_URL). */
+    "defaultServerUrl": string;
+    /**
+     * Optional: the gateway this platform actually lists and dials, from its
+     * own trusted configuration (Android: the native allowlist's build
+     * origin). The UI shows it and never lets anything widen it; a platform
+     * still refuses every other origin itself.
+     */
+    "serverUrl"?: () => Promise<string>;
+    /**
+     * The account's devices on `serverUrl`, from the gateway's own list:
+     * presence is its last observation, never a probe of the device.
+     */
+    "devices": (serverUrl: string) => Promise<GatewayDevice[]>;
+    /** This device's saved pairings for the signed-in account. */
+    "pairings": () => Promise<GatewayPairingSummary[]>;
+    /** Keys this device can offer a host (public halves only). */
+    "clientKeys": () => Promise<GatewayClientKey[]>;
+    /** Optional: create a new key in the platform's key store. */
+    "createClientKey"?: (label: string) => Promise<GatewayClientKey>;
+    /** Optional: hand a client key's public line to the platform's share sheet. */
+    "shareClientKey"?: (keyId: string) => Promise<void>;
+    "addDevice": (request: GatewayAddDeviceRequest) => Promise<GatewayAddDeviceResult>;
     };
 
     // Optional capability: the vscode:// deep link. Remote-SSH resolves the

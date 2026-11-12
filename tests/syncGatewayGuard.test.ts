@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   coerceHostEntries,
   hasGatewayMarker,
+  SSH_CONFIG_TRANSPORTS,
+  transportRefusalMessage,
+  unsupportedTransport,
 } from '../src/sync';
 import {
   assembleSyncSet,
@@ -110,7 +113,7 @@ describe('markers survive the wire round trip', () => {
   });
 });
 
-describe('coerceHostEntries refuses gateway entries instead of coercing them', () => {
+describe('coerceHostEntries refuses transport-marked entries instead of coercing them', () => {
   it('coerces ordinary entries and keeps dropping unusable ones', () => {
     const result = coerceHostEntries([
       host('good'),
@@ -129,34 +132,85 @@ describe('coerceHostEntries refuses gateway entries instead of coercing them', (
 
   it('refuses a valid gateway marker mixed into an ordinary batch, naming the entry', () => {
     const result = coerceHostEntries([host('plain'), host('nat-box', { gateway: VALID_GATEWAY })]);
-    expect(result).toEqual({ kind: 'gateway-unsupported', index: 1, name: 'nat-box' });
+    expect(result).toEqual({
+      kind: 'transport-unsupported',
+      index: 1,
+      name: 'nat-box',
+      reason: 'gateway-unsupported',
+      message: transportRefusalMessage('gateway-unsupported', 'nat-box'),
+    });
   });
 
   it('refuses a null marker — a present marker with no usable shape is still gateway intent', () => {
     const result = coerceHostEntries([host('box', { gateway: null })]);
-    expect(result.kind).toBe('gateway-unsupported');
+    expect(result.kind === 'transport-unsupported' && result.reason).toBe('gateway-unsupported');
   });
 
   it('refuses a malformed marker', () => {
     const result = coerceHostEntries([host('box', { gateway: { device: 'almost' } })]);
-    expect(result.kind).toBe('gateway-unsupported');
+    expect(result.kind === 'transport-unsupported' && result.reason).toBe('gateway-unsupported');
   });
 
   it('refuses an entry that carries BOTH link and gateway — the conflict fails closed, never falls back to link', () => {
     const result = coerceHostEntries([host('both', { link: VALID_LINK, gateway: VALID_GATEWAY })]);
-    expect(result.kind).toBe('gateway-unsupported');
+    expect(result.kind === 'transport-unsupported' && result.reason).toBe('gateway-unsupported');
   });
 
   it('refuses with a null name when the entry has none it can cite', () => {
     const result = coerceHostEntries([{ name: 7, hostname: 'h', gateway: VALID_GATEWAY }]);
-    expect(result).toEqual({ kind: 'gateway-unsupported', index: 0, name: null });
+    expect(result).toEqual({
+      kind: 'transport-unsupported',
+      index: 0,
+      name: null,
+      reason: 'gateway-unsupported',
+      message: transportRefusalMessage('gateway-unsupported', null),
+    });
   });
 
-  it('keeps coercing a link-only entry — legacy Link behavior is unchanged', () => {
-    const result = coerceHostEntries([host('nat-box', { link: VALID_LINK })]);
-    expect(result.kind).toBe('ok');
-    if (result.kind !== 'ok') return;
-    expect(result.hosts).toHaveLength(1);
-    expect(result.hosts[0]!.name).toBe('nat-box');
+  it.each([
+    ['valid', VALID_LINK],
+    ['null', null],
+    ['malformed string', 'wss://relay'],
+    ['malformed object', { relayUrl: '' }],
+  ])('never returns a %s link-marked entry as a plain host — the batch refuses with the shared text', (_l, link) => {
+    const result = coerceHostEntries([host('plain'), host('nat-box', { link })]);
+    expect(result).toEqual({
+      kind: 'transport-unsupported',
+      index: 1,
+      name: 'nat-box',
+      reason: 'link-unsupported',
+      message: transportRefusalMessage('link-unsupported', 'nat-box'),
+    });
+  });
+
+  it('is the SAME decision as unsupportedTransport with the config-file capabilities (one decision in core)', () => {
+    const shapes: Array<Record<string, unknown>> = [
+      {},
+      { gateway: VALID_GATEWAY },
+      { gateway: null },
+      { gateway: 'junk' },
+      { link: VALID_LINK },
+      { link: null },
+      { link: 'junk' },
+      { link: VALID_LINK, gateway: VALID_GATEWAY },
+      { link: null, gateway: null },
+    ];
+    expect(SSH_CONFIG_TRANSPORTS).toEqual({ gateway: false, link: false });
+    for (const extra of shapes) {
+      const entry = host('box', extra);
+      const decision = unsupportedTransport(entry, SSH_CONFIG_TRANSPORTS);
+      const result = coerceHostEntries([entry]);
+      if (decision.refused) {
+        expect(result).toEqual({
+          kind: 'transport-unsupported',
+          index: 0,
+          name: 'box',
+          reason: decision.reason,
+          message: decision.message,
+        });
+      } else {
+        expect(result.kind).toBe('ok');
+      }
+    }
   });
 });

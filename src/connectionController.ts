@@ -1,3 +1,4 @@
+import { classifyGatewayDialFailure, normalizeGatewayTarget, type GatewayDialFailure } from './gatewayTransport';
 import { HostCliCore } from './hostCliCore';
 import { HostCliFailed, type HostCliExecOutcome, type HostCliTransport } from './hostCliCommon';
 import { bytesToBase64 as encodeBase64 } from './knownHostsCore';
@@ -20,6 +21,7 @@ import {
   type SshPtyRef,
   type SshResourceSnapshot,
 } from './sshCapability';
+import { hasGatewayMarker, unsupportedTransport, type TransportDecision } from './sync';
 
 export type ConnectionPhase =
   | 'idle'
@@ -84,6 +86,15 @@ export interface ConnectionSnapshot {
   error: string | null;
   trustDecision: PendingHostKeyDecision | null;
   uncertainMutation: UncertainMutation | null;
+  /**
+   * The classified refusal of the last gateway dial (#3086), so a UI can
+   * tell "host offline" from "sign-in refused", and prompt for sign-in
+   * (`sign_in_required`), pairing (`pairing_required`) or a reconnect as the
+   * current account (`account_changed`) instead of retrying (core#47). Null
+   * for ordinary SSH hosts, after a successful dial, and for failures outside
+   * the gateway dial matrix.
+   */
+  gatewayFailure?: GatewayDialFailure | null;
 }
 
 export type TerminalOutputHandler = (
@@ -187,7 +198,13 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 function sameSession(left: SessionRow, right: SessionRow): boolean {
-  if (left.id && right.id) return left.id === right.id;
+  // An immutable identity never gains or loses continuity through labels.
+  // Generic hosts may match by labels only when BOTH rows have no ID.
+  const leftId = left.id ?? null;
+  const rightId = right.id ?? null;
+  if ((leftId !== null && (typeof leftId !== 'string' || !leftId.trim()))
+    || (rightId !== null && (typeof rightId !== 'string' || !rightId.trim()))) return false;
+  if (leftId !== null || rightId !== null) return leftId === rightId;
   return left.name === right.name && left.workspace === right.workspace;
 }
 
@@ -231,6 +248,9 @@ function isUncertainMutation(error: unknown): boolean {
     .includes(readSshCapabilityError(error).code);
 }
 
+/** A gateway dial the controller itself refused; never retried. */
+class GatewayRefusal extends Error {}
+
 function isRetryableDialError(error: unknown): boolean {
   const nativeError = readSshCapabilityError(error);
   return !['AUTH_FAILED', 'HOST_KEY_REJECTED', 'INVALID_ARGUMENT'].includes(nativeError.code);
@@ -272,6 +292,7 @@ export class ConnectionController {
     error: null,
     trustDecision: null,
     uncertainMutation: null,
+    gatewayFailure: null,
   };
   private host: SshHostTarget | null = null;
   private connection: SshConnectionRef | null = null;
@@ -282,6 +303,11 @@ export class ConnectionController {
   private terminalGeometry: TerminalGeometry = { ...DEFAULT_TERMINAL_GEOMETRY };
   private graceDeadlineEpochMs: number | null = null;
   private reconnectTask: Promise<void> | null = null;
+  private credentialRefreshTask: Promise<ConnectionActionResult> | null = null;
+  private credentialRefreshTarget: SshHostTarget | null = null;
+  private credentialRefreshContext = 0;
+  /** Explicit host changes invalidate queued refreshes, independently of recovery ladder intents. */
+  private hostContext = 0;
   private disposed = false;
   private lastDialRetryable = true;
   private connectIntent = 0;
@@ -339,13 +365,25 @@ export class ConnectionController {
         message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.',
       };
     }
+    // Admission before any effect (#3059, #3086): a gateway-marked request this
+    // platform must refuse never reuses, closes or supersedes what the
+    // controller holds — a live connection, or a session kept without one
+    // (reconnecting, background past grace, released, lost): its terminals,
+    // selection and any running reconnect stay exactly as they were. Only a
+    // controller holding nothing lets the dial below make the same refusal
+    // and report it in the snapshot.
+    if (hasGatewayMarker(host) && this.holdsSession()) {
+      const admission = this.gatewayAdmission(host);
+      if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
+    }
+    this.hostContext += 1;
     const intent = ++this.connectIntent;
     const requestId = this.createId();
     this.pendingConnectRequestId = requestId;
     try {
       await this.listenerReady;
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
-      if (this.connection && this.host?.hostId === host.hostId) {
+      if (this.connection && this.host?.hostId === host.hostId && this.reusesTransport(this.host, host)) {
         try {
           const stateRequestId = this.createId();
           const status = await this.capability.getConnectionState({ ...this.connection, requestId: stateRequestId });
@@ -375,6 +413,7 @@ export class ConnectionController {
         error: null,
         trustDecision: null,
         uncertainMutation: null,
+        gatewayFailure: null,
       });
       const result = await this.dial(host, intent, requestId);
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
@@ -693,10 +732,77 @@ export class ConnectionController {
    * - Otherwise it runs ONE fresh ladder with the full budget, re-attaching
    *   every terminal still open.
    *
+   * An optional freshly authorized target may renew the credential only for
+   * the same host/user/transport binding. Refreshes join one controller-owned
+   * task, supersede obsolete native dials, and retain terminal records.
    * Background grace is not a Retry target: foreground reconciliation owns
    * that transport (`returnToForeground`).
    */
-  async reconnect(): Promise<ConnectionActionResult> {
+  async reconnect(authorizedTarget?: SshHostTarget): Promise<ConnectionActionResult> {
+    this.assertLive();
+    if (!authorizedTarget) return this.credentialRefreshTask ?? this.reconnectCurrent();
+    if (!this.host || !this.sameReconnectBinding(this.host, authorizedTarget)) {
+      return { ok: false, reason: 'failed', message: 'Reconnect cannot change the SSH host, user or transport route.' };
+    }
+    if (isKeyHandleCredential(authorizedTarget.credential) && !isValidSshKeyHandleCredential(authorizedTarget.credential)) {
+      return { ok: false, reason: 'failed', message: 'SSH key handle must have a non-empty handle ID and an optional string passphrase.' };
+    }
+    if (hasGatewayMarker(authorizedTarget)) {
+      const admission = this.gatewayAdmission(authorizedTarget);
+      if (admission.refused) return { ok: false, reason: 'failed', message: admission.message };
+    }
+    const target: SshHostTarget = { ...authorizedTarget, credential: { ...authorizedTarget.credential },
+      ...(authorizedTarget.gateway ? { gateway: { ...authorizedTarget.gateway } } : {}),
+      ...(authorizedTarget.link ? { link: { ...authorizedTarget.link } } : {}),
+    };
+    const context = this.hostContext;
+    const previous = this.credentialRefreshTask;
+    if (previous && this.credentialRefreshContext === context && this.credentialRefreshTarget && this.sameReconnectBinding(this.credentialRefreshTarget, target)
+      && JSON.stringify(this.credentialRefreshTarget.credential) === JSON.stringify(target.credential)) return previous;
+    // Publish the joinable request before its body runs: synchronous snapshot
+    // listeners must never create another transport owner during refresh.
+    const task = Promise.resolve().then(() => this.refreshReconnectCredential(target, previous, context)).finally(() => {
+      if (this.credentialRefreshTask === task) { this.credentialRefreshTask = null; this.credentialRefreshTarget = null; }
+    });
+    this.credentialRefreshTask = task;
+    this.credentialRefreshTarget = target;
+    this.credentialRefreshContext = context;
+    return task;
+  }
+
+  private async refreshReconnectCredential(target: SshHostTarget, previous: Promise<ConnectionActionResult> | null, context: number): Promise<ConnectionActionResult> {
+    if (previous) await previous.catch(() => undefined);
+    if (this.disposed || context !== this.hostContext || !this.host || !this.sameReconnectBinding(this.host, target)) {
+      return { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+    }
+    if (this.snapshot.phase === 'background') return this.reconnectCurrent();
+    const running = this.reconnectTask;
+    if (running) {
+      // Supersede only the obsolete dial. Terminal records/selection survive;
+      // its native result must finish cancellation before the new ladder starts.
+      const intent = ++this.connectIntent;
+      const pending = this.pendingConnectRequestId;
+      if (pending) await this.cancelCapability({ kind: 'connect', targetRequestId: pending });
+      await running;
+      if (!this.isCurrentConnect(intent)) return { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+    }
+    this.host = hostWithoutTransientPassphrase(target);
+    const resumed = this.reconnectCurrent(target);
+    const intent = this.connectIntent;
+    const result = await resumed;
+    return context === this.hostContext && this.isCurrentConnect(intent) ? result : { ok: false, reason: 'superseded', message: 'SSH reconnect was superseded.' };
+  }
+
+  private sameReconnectBinding(a: SshHostTarget, b: SshHostTarget): boolean {
+    if (a.hostId !== b.hostId || a.hostname !== b.hostname || a.port !== b.port || a.username !== b.username) return false;
+    if (JSON.stringify(a.link) !== JSON.stringify(b.link)) return false;
+    if (hasGatewayMarker(a) !== hasGatewayMarker(b)) return false;
+    if (!hasGatewayMarker(a)) return true;
+    const left = normalizeGatewayTarget(a.gateway), right = normalizeGatewayTarget(b.gateway);
+    return left !== null && right !== null && left.serverUrl === right.serverUrl && left.deviceId === right.deviceId;
+  }
+
+  private async reconnectCurrent(firstDialTarget?: SshHostTarget): Promise<ConnectionActionResult> {
     this.assertLive();
     if (!this.host) {
       return { ok: false, reason: 'not-connected', message: 'There is no host to reconnect to.' };
@@ -708,7 +814,7 @@ export class ConnectionController {
     } else if (this.snapshot.phase === 'background') {
       return { ok: false, reason: 'failed', message: 'The connection is in background grace; it reconnects on return.' };
     } else if (!usable) {
-      await this.reconnectAndAttach('reconnect requested');
+      await this.reconnectAndAttach('reconnect requested', firstDialTarget);
     }
     const phase = this.snapshot.phase;
     if (this.connection && phase !== 'lost' && phase !== 'reconnecting') return { ok: true, value: undefined };
@@ -792,6 +898,7 @@ export class ConnectionController {
   async close(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.hostContext += 1;
     this.connectIntent += 1;
     const pendingConnectRequestId = this.pendingConnectRequestId;
     this.pendingConnectRequestId = null;
@@ -952,12 +1059,24 @@ export class ConnectionController {
     // colour this one's give-up message.
     this.lastDialRetryable = true;
     this.setSnapshot({ phase: 'connecting', generationId, error: null });
+    // A gateway dial (#3086) never uses TOFU: the platform must prove it
+    // checked the independently paired pin before userauth, every dial.
+    const gatewayDial = hasGatewayMarker(host);
+    let dialTarget: SshHostTarget = host;
     try {
-      expectedHostKey = (await this.trustStore.get(host.hostId))
-        ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
+      if (gatewayDial) {
+        // The same refusal the platform boundary makes (#3059), so a marker
+        // that slipped past it still never degrades into an ordinary dial.
+        const decision = this.gatewayAdmission(host);
+        if (decision.refused) throw new GatewayRefusal(decision.message);
+        dialTarget = { ...host, gateway: normalizeGatewayTarget(host.gateway)! };
+      } else {
+        expectedHostKey = (await this.trustStore.get(host.hostId))
+          ?? (this.onceTrusted?.hostId === host.hostId ? this.onceTrusted.pin : null);
+      }
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
       const connected = await this.capability.connect({
-        ...host,
+        ...dialTarget,
         requestId,
         generationId,
         expectedHostKey,
@@ -976,7 +1095,11 @@ export class ConnectionController {
         await this.closeReturnedConnection(connected);
         throw new Error('SSH connect returned an invalid host key.');
       }
-      const verdict = verifyHostKeyTrustPin(expectedHostKey, presented);
+      if (gatewayDial && connected.gatewayHostKeyVerified !== true) {
+        await this.closeReturnedConnection(connected);
+        throw new GatewayRefusal('The gateway connection did not prove the host key matched its pairing, so it was closed before use.');
+      }
+      const verdict = gatewayDial ? 'trusted' : verifyHostKeyTrustPin(expectedHostKey, presented);
       if (verdict !== 'trusted') {
         await this.closeReturnedConnection(connected);
         if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
@@ -990,10 +1113,12 @@ export class ConnectionController {
         generationId,
         trustDecision: null,
         error: null,
+        gatewayFailure: null,
       });
       return { ok: true, value: this.connection };
     } catch (error) {
       if (!this.isCurrentConnect(intent)) return this.cancelledConnectResult();
+      if (gatewayDial) return this.failGatewayDial(error, generationId);
       const sshError = readSshCapabilityError(error);
       this.lastDialRetryable = isRetryableDialError(error);
       const presented = this.readPresentedKey(sshError.data);
@@ -1007,6 +1132,65 @@ export class ConnectionController {
       this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null });
       return { ok: false, reason: 'failed', message };
     }
+  }
+
+  /**
+   * Whether a refused request would have anything to disturb. `host` is set
+   * by the first connect and cleared only by `close()`, and it outlives the
+   * transport in every held state (reconnecting, background, released, lost),
+   * so it covers the connection, the terminals and a running reconnect.
+   */
+  private holdsSession(): boolean {
+    return this.host !== null;
+  }
+
+  /** The shared #3059 transport decision for a gateway-marked target on this platform. */
+  private gatewayAdmission(host: SshHostTarget): TransportDecision {
+    return unsupportedTransport(
+      host,
+      { gateway: this.capability.gatewayTransport === true, link: false },
+      host.hostname,
+    );
+  }
+
+  /**
+   * Whether a live connection to `live` may answer a `connect(requested)` for
+   * the same hostId (#3086). Only the same transport: two ordinary targets
+   * (unchanged behaviour), or two gateway targets with the same normalized
+   * route. `connect()` has already admitted a gateway request (capability and
+   * marker shape) before asking, so a refused one never gets here. Any other pairing —
+   * ordinary↔gateway, a different or unusable gateway route — is a new host
+   * context: `connect()` closes the live transport and dials the requested one,
+   * so a gateway connect is never answered without its own pin receipt and an
+   * ordinary connect never keeps riding the gateway.
+   */
+  private reusesTransport(live: SshHostTarget, requested: SshHostTarget): boolean {
+    const liveGateway = hasGatewayMarker(live);
+    const requestedGateway = hasGatewayMarker(requested);
+    if (!liveGateway && !requestedGateway) return true;
+    if (!liveGateway || !requestedGateway) return false;
+    const a = normalizeGatewayTarget(live.gateway);
+    const b = normalizeGatewayTarget(requested.gateway);
+    return a !== null && b !== null && a.serverUrl === b.serverUrl && a.deviceId === b.deviceId;
+  }
+
+  /**
+   * A failed gateway dial. Never a trust prompt: a pin mismatch, a missing
+   * pin-verification receipt and a refused marker all end as errors. Gateway
+   * close codes and the platform's native refusals (signed out, sign-in
+   * rejected, unpaired, account changed) follow the
+   * {@link classifyGatewayDialFailure} matrix; every other failure keeps the
+   * ordinary retry default.
+   */
+  private failGatewayDial(error: unknown, generationId: string): ConnectionActionResult<SshConnectionRef> {
+    const sshError = readSshCapabilityError(error);
+    const gatewayFailure = classifyGatewayDialFailure(sshError.code, sshError.data);
+    this.lastDialRetryable = error instanceof GatewayRefusal
+      ? false
+      : gatewayFailure?.retryable ?? isRetryableDialError(error);
+    const message = gatewayFailure?.userMessage ?? sshError.message;
+    this.setSnapshot({ phase: 'error', error: message, generationId, trustDecision: null, gatewayFailure });
+    return { ok: false, reason: 'failed', message };
   }
 
   private presentHostKeyDecision(
@@ -1104,7 +1288,7 @@ export class ConnectionController {
       const opened = await this.capability.openPty({
         ...connection,
         requestId: openRequestId,
-        command: hostCli.buildAttachCommand(session.name),
+        command: hostCli.buildAttachCommand(session.id ?? session.name),
         cols: record.geometry.cols,
         rows: record.geometry.rows,
         term: 'xterm-256color',
@@ -1230,10 +1414,10 @@ export class ConnectionController {
     }
   }
 
-  private async reconnectAndAttach(reason: string): Promise<void> {
+  private async reconnectAndAttach(reason: string, firstDialTarget?: SshHostTarget): Promise<void> {
     const task = this.reconnectTask;
     if (task) return task;
-    const host = this.host;
+    const host = firstDialTarget ?? this.host;
     if (!host) return;
     const intent = ++this.connectIntent;
     this.reconnectTask = this.runReconnect(host, reason, intent).finally(() => {
@@ -1274,7 +1458,9 @@ export class ConnectionController {
       this.pendingConnectRequestId = requestId;
       let connected: ConnectionActionResult<SshConnectionRef>;
       try {
-        connected = await this.dial(host, intent, requestId);
+        // A newly authorized passphrase is for this first dial only. The
+        // cached host is already stripped; retries also use a stripped target.
+        connected = await this.dial(attempt === 0 ? host : hostWithoutTransientPassphrase(host), intent, requestId);
       } finally {
         if (this.pendingConnectRequestId === requestId) this.pendingConnectRequestId = null;
       }
@@ -1298,7 +1484,7 @@ export class ConnectionController {
       // Name the dials actually made: a refused login (not retryable) ends
       // the ladder early, and says why.
       const attempts = this.snapshot.retryAttempt;
-      const refusal = !this.lastDialRetryable ? this.snapshot.error?.trim() : '';
+      const refusal = !this.lastDialRetryable || this.snapshot.gatewayFailure ? this.snapshot.error?.trim() : '';
       const cause = refusal ? ` ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}` : '';
       this.setSnapshot({
         phase: 'lost',

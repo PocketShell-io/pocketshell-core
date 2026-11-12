@@ -46,3 +46,4 @@ declare const WebSocket: {
     close(code?: number, reason?: string): void;
   };
 };
+

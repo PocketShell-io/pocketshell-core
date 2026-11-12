@@ -487,7 +487,7 @@ export async function runConnectionControllerContract(Core: any): Promise<string
   equal(capability.connectCalls.length, 1, 'attaching another session reuses SSH connection');
   equal(capability.closePtyCalls.length, 0, 'attaching another session keeps the previous PTY');
   equal(capability.ptys.size, 2, 'one PTY per attached session');
-  check(capability.openPtyCalls[1].command.includes("'beta'"), 'HostCliCore safely builds attach command');
+  check(capability.openPtyCalls[1].command.includes("'beta-id'"), 'HostCliCore safely builds attach command');
 
   const activePtys = [...capability.ptys.values()];
   const activePty = activePtys[activePtys.length - 1];

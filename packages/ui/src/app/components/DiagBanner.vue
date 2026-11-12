@@ -36,7 +36,7 @@ import { diagErrors, dismissDiagError } from '../diag';
   z-index: 50; /* overlays, including overlays: an error report outranks them */
   width: min(640px, calc(100vw - var(--sp-6)));
   background: var(--surface-3);
-  border: 1px solid var(--error);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-overlay);
   overflow: hidden;

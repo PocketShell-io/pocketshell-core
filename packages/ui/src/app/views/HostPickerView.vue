@@ -1,3 +1,11 @@
+<script lang="ts">
+// Admission provenance survives picker remounts; the existing store/platform
+// retain lifecycle ownership. Missing metadata can never authorize reuse.
+const directAdmissions = new WeakMap<object, {
+  accountId: string; vaultId: string; epoch: number; binding: string; connectionId: string;
+}>();
+</script>
+
 <script setup lang="ts">
 // Host picker: reads ~/.ssh/config, lists hosts, and connects on click.
 // After a successful connect it navigates to the host workspace, where the
@@ -28,7 +36,7 @@
 //   - A FAILED AUTO-CONNECT LEAVES THE DEFAULT ALONE. The error is shown on the
 //     picker; the setting stays set, because a host being down is not a reason
 //     to forget which host the user wants.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
@@ -45,15 +53,36 @@ import {
 } from '../autoConnect';
 import AppIcon from '@ui/components/AppIcon.vue';
 import OverlayPanel from '../components/OverlayPanel.vue';
+import GatewayDevicesSection from '../components/GatewayDevicesSection.vue';
+import GatewayAddDevicePanel from '../components/GatewayAddDevicePanel.vue';
+import GatewayDialErrorActions from '../components/GatewayDialErrorActions.vue';
+import HostRowDetail from '../components/HostRowDetail.vue';
+import TrustedServersSection from '../components/TrustedServersSection.vue';
+import { useKeyVault } from '../keyVault';
+import { openTrustedServerWorkspace } from '../trustedServerWorkspace';
+import { useSessionsStore } from '../stores/sessions';
 import SettingsView from './SettingsView.vue';
 import { readLastFolder } from '../workspaceState';
-import { hostEntryId, type HostEntry } from '@pocketshell/core';
+import { useGatewayPickerSource } from '../useGatewayPickerSource';
+import { hostEntryId, normalizeGatewayTarget, type GatewayDialFailureKind, type HostEntry } from '@pocketshell/core';
 
 const router = useRouter();
 const connection = useConnectionStore();
 const hostList = useHostsStore();
 const sync = useSyncStore();
+const keyVault = useKeyVault();
+const trustedAccountMode = Boolean(keyVault?.platform.accountId && keyVault.platform.installTrustedHost && keyVault.platform.trustedHostRevisions);
+const localSetupAllowed = computed(() => !trustedAccountMode || keyVault?.view?.localOnly === true);
 const connectError = ref<string | null>(null);
+/**
+ * Why {@link connectError}'s dial failed, when it was a gateway dial core
+ * classified: the error line then carries the matching next step (sign in,
+ * pair the device, connect again as the current account) and an offline
+ * device reads as offline — never as a failed login.
+ */
+const connectErrorKind = ref<GatewayDialFailureKind | null>(null);
+/** The host whose dial produced {@link connectError}, for its follow-up action. */
+const failedHost = shallowRef<HostEntry | null>(null);
 /** The dialling host's display name, for the banner. */
 const connectingTo = ref<string | null>(null);
 /** The dialling host's identity ({@link hostEntryId}), for the row it marks. */
@@ -106,6 +135,32 @@ const canOpenNewWindow = (() => {
 const hostSource = api.hosts ?? null;
 /** The platform's noun for its host source, for load-failure copy. */
 const sourceName = hostSource?.sourceName ?? 'the host list';
+/** Local provenance belongs to the platform source, not fromConfig or other
+ * server-supplied row metadata. Even a local cache cannot bypass managed
+ * gateway trust: any transport/policy marker excludes the alternate path. */
+const hasManagedMarker = (host: HostEntry) => ['gateway','gatewayAuth','link','trustedVault'].some(key => Object.prototype.hasOwnProperty.call(host,key));
+const localDirectHosts = computed(() => hostSource?.provenance === 'local'
+  ? connection.hosts.filter(host => !hasManagedMarker(host))
+  : []);
+function isLocalDirectHost(host: HostEntry): boolean {
+  return localDirectHosts.value.some(row => row === host);
+}
+
+interface LocalHostAdmission { readonly binding: string }
+/** This comparison stays private: identity-file paths are never diagnostics. */
+function localDialBinding(host: HostEntry): string {
+  const forwards = (rows: HostEntry['localForwards']) => rows.map(row => [row.kind,row.listenHost,row.listenPort,row.destHost,row.destPort]);
+  return JSON.stringify([hostEntryId(host),host.name,host.hostname,host.port,host.user,host.identityFile,
+    host.proxyJump,host.forwardAgent,host.local ?? false,forwards(host.localForwards),forwards(host.remoteForwards)]);
+}
+/** Admission must originate in the platform's current local row, not an alias supplied by an account row. */
+function admitLocalHost(host: HostEntry): LocalHostAdmission | null {
+  return isLocalDirectHost(host) ? {binding:localDialBinding(host)} : null;
+}
+function currentLocalAdmission(host: HostEntry, admission: LocalHostAdmission): boolean {
+  return hostSource?.provenance === 'local' && !hasManagedMarker(host) && localDialBinding(host) === admission.binding
+    && localDirectHosts.value.some(row => localDialBinding(row) === admission.binding);
+}
 
 /**
  * The empty list's copy, split on the source's name so the name keeps the
@@ -135,7 +190,27 @@ const autoConnecting = ref(false);
  * verdict leaks into the next one. Each dial closes over its own token, so a
  * Cancel press can only ever mean the dial whose banner was on screen.
  */
-let activeDial: { cancelled: boolean } | null = null;
+let activeDial: { cancelled: boolean; accountDirect: boolean; finished: Promise<void>; cancel: () => void } | null = null;
+interface WorkspaceBootstrap { cancelled: boolean; navigating: boolean; connectionId: string; hostKey: string; request: number }
+let activeBootstrap: WorkspaceBootstrap | null = null;
+let pendingBootstrapClose: Promise<void> | null = null;
+let pickerRequest = 0;
+let pickerAlive = true;
+
+function cancelWorkspaceBootstrap(): void {
+  const token = activeBootstrap;
+  if (!token) return;
+  token.cancelled = true;
+  activeBootstrap = null;
+  if (!token.navigating && connection.connectionId === token.connectionId
+    && connection.activeHost && hostEntryId(connection.activeHost) === token.hostKey) {
+    // Finish closing this owned connection before a new picker dial starts:
+    // disconnect's final state reset must not erase a subsequent connection.
+    const closing = connection.disconnect().catch(() => undefined);
+    pendingBootstrapClose = closing;
+    void closing.finally(() => {if(pendingBootstrapClose === closing) pendingBootstrapClose = null;});
+  }
+}
 
 const defaultMissing = computed(
   () => defaultHostStatus(hostList.defaultHostKey, connection.hosts) === 'missing',
@@ -182,7 +257,53 @@ interface HostGroup {
   hosts: HostEntry[];
 }
 
+/**
+ * Verified Gateway server aliases the signed-in vault lists (reported by
+ * TrustedServersSection). An account settings row may never reuse one: a
+ * direct dial would otherwise inherit that alias's vault binding.
+ */
+const directAccountScope = ref<{ accountId: string; vaultId: string; epoch: number; aliases: string[] } | null>(null);
+
+/**
+ * Trusted-account mode: the account's direct SSH rows (settings rows, NOT
+ * verified Gateway descriptors) this phone does not already have. Offered only
+ * while the signed-in account's vault is unlocked, only for the platform's
+ * explicit local source, and never for a row carrying any Gateway/link/policy
+ * marker, a local-machine flag, an unusable endpoint, or an alias taken by a
+ * local host or a verified server. Their origin stays "account": picking one
+ * starts an explicit direct dial, see {@link onAccountDirectConnect}.
+ */
+const accountDirectHosts = computed<HostEntry[]>(() => {
+  if (!trustedAccountMode || hostSource?.provenance !== 'local' || !hostSource.accountDirect || keyVault?.view?.localOnly === true) return [];
+  if (keyVault?.view?.state !== 'unlocked' || !accountSignedIn.value) return [];
+  const rows = sync.accountHosts;
+  const scope = directAccountScope.value;
+  if (rows === null || !scope || keyVault.store.vaultId !== scope.vaultId || keyVault.store.epoch !== scope.epoch) return [];
+  const taken = new Set([...connection.hosts.map(host => host.name), ...scope.aliases]);
+  const seen = new Set<string>();
+  return rows.filter((host) => {
+    if (hasManagedMarker(host) || host.local === true || taken.has(host.name) || seen.has(host.name)) return false;
+    if (!host.name || !host.hostname || !host.user || !Number.isInteger(host.port) || host.port < 1 || host.port > 65535) return false;
+    if (connection.hosts.some(local => local.hostname === host.hostname && local.port === host.port)) return false;
+    seen.add(host.name);
+    return true;
+  });
+});
+function isAccountDirectHost(host: HostEntry): boolean {
+  return trustedAccountMode && accountDirectHosts.value.some(row => row === host);
+}
+
 const hostGroups = computed<HostGroup[]>(() => {
+  if (trustedAccountMode) {
+    const groups: HostGroup[] = [];
+    if (hostSource?.provenance === 'local') {
+      groups.push({kind:'config',label:localDirectHosts.value.length ? hostSource.groupLabel : '',hosts:localDirectHosts.value});
+    }
+    if (accountDirectHosts.value.length > 0) {
+      groups.push({kind:'account',label:'In your account · direct SSH',hosts:accountDirectHosts.value});
+    }
+    return groups;
+  }
   if (!accountSignedIn.value) {
     return [{ kind: 'config', label: '', hosts: connection.hosts }];
   }
@@ -197,6 +318,28 @@ const hostGroups = computed<HostGroup[]>(() => {
 function onAccountAction(): void {
   void api.win.openAccount();
 }
+
+/**
+ * The gateway device source and the add/pair flow (useGatewayPickerSource):
+ * both follow the signed-in account; the picker only supplies its hosts and
+ * its one dialling path.
+ */
+const {
+  gateway,
+  addingDevice,
+  listedHosts,
+  hostPresence,
+  openAddDevice,
+  openRepair,
+  onDeviceSaved,
+  onConnectAdded,
+} = useGatewayPickerSource({
+  account: computed(() => (accountSignedIn.value ? sync.status?.email ?? '' : null)),
+  listedHosts: computed(() => [...connection.hosts, ...accountOnlyHosts.value]),
+  reloadHosts: () => connection.loadHosts(),
+  connect: (host) => onConnect(host),
+  hostByName: (name) => connection.hosts.find((candidate) => candidate.name === name),
+});
 
 /** Open another workspace window on this platform (see {@link canOpenNewWindow}). */
 function onNewWindow(): void {
@@ -249,7 +392,7 @@ onMounted(async () => {
   }
   const decision = decideAutoConnect({
     defaultHost: launchDefaultHost(launch, hostList.defaultHostKey),
-    hosts: connection.hosts,
+    hosts: trustedAccountMode ? localDirectHosts.value : connection.hosts,
     attempted: autoConnectAttempted(),
     connected: connection.connectionId !== null,
   });
@@ -257,10 +400,16 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  pickerAlive = false;
+  pickerRequest++;
+  if (activeDial) activeDial.cancel();
+  cancelWorkspaceBootstrap();
   window.removeEventListener('focus', refreshAccountStatus);
 });
 
 async function runAutoConnect(host: HostEntry): Promise<void> {
+  const localAdmission = trustedAccountMode ? admitLocalHost(host) : null;
+  if (trustedAccountMode && !localAdmission) {connectError.value = 'Local host changed. Connect again.';return;}
   // Latch BEFORE dialling: whatever happens next — success, failure, cancel,
   // a hang that the user escapes — this launch has had its one attempt. This
   // is what stops Back from the workspace bouncing straight back in.
@@ -277,7 +426,7 @@ async function runAutoConnect(host: HostEntry): Promise<void> {
     // still lift or the picker's rows stay disabled until remount.
     autoConnecting.value = false;
   }
-  if (ok) enterWorkspace(host);
+  if (ok) await enterWorkspace(host,localAdmission);
 }
 
 /** Re-read ~/.ssh/config without disturbing an existing connection or dial. */
@@ -287,6 +436,7 @@ async function onReloadHosts(): Promise<void> {
   hostReloadError.value = null;
   try {
     await connection.loadHosts();
+    if (gateway.available && accountSignedIn.value) void gateway.load();
   } catch (error) {
     const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
     hostReloadError.value = `Could not reload ${sourceName}${detail}`;
@@ -302,21 +452,148 @@ async function onReloadHosts(): Promise<void> {
  * attempt finally resolves and clean up whatever it produced.
  */
 function onCancelConnect(): void {
-  if (activeDial) activeDial.cancelled = true;
+  pickerRequest++;
+  if (activeDial) {
+    const token = activeDial;
+    token.cancel();
+    if (token.accountDirect) {
+      // The store still owns the native attempt until it settles and the
+      // cancelled result closes. Queue another selection behind that cleanup
+      // instead of letting the old completion overwrite its connection ID.
+      pendingBootstrapClose = token.finished;
+      void token.finished.finally(() => {
+        if (pendingBootstrapClose === token.finished) pendingBootstrapClose = null;
+      });
+    }
+  }
+  cancelWorkspaceBootstrap();
   autoConnecting.value = false;
   connectingTo.value = null;
   connectingKey.value = null;
 }
 
-async function onConnect(host: HostEntry): Promise<void> {
-  // Already connected to this host: go back in, don't dial again. A second
-  // dial would open a second connection and orphan the first — the session
-  // panel, terminal pool and forwards all key off the old id.
-  if (hostEntryId(host) === connectedKey.value) {
-    enterWorkspace(host);
+async function onConnect(host: HostEntry, trusted = false): Promise<void> {
+  if (!trusted && isAccountDirectHost(host)) return onAccountDirectConnect(host);
+  const localAdmission = !trusted ? admitLocalHost(host) : null;
+  if (trustedAccountMode && (trusted
+    ? host.gatewayAuth !== 'managed' || normalizeGatewayTarget(host.gateway) === null
+    : !localAdmission)) {
+    connectError.value = 'Open this server from the verified account server list.';
     return;
   }
-  if (await dial(host)) enterWorkspace(host);
+  const request = ++pickerRequest;
+  if (pendingBootstrapClose) await pendingBootstrapClose;
+  if (!pickerAlive || request !== pickerRequest) return;
+  if (localAdmission && !currentLocalAdmission(host,localAdmission)) {connectError.value = 'Local host changed. Connect again.';return;}
+  // Already connected to this host: go back in without asking the platform
+  // to reconnect. The platform owns its host connection pool and forwards.
+  if (hostEntryId(host) === connectedKey.value) {
+    await enterWorkspace(host,localAdmission);
+    return;
+  }
+  if (await dial(host) && pickerAlive && request === pickerRequest) await enterWorkspace(host,localAdmission);
+}
+
+/**
+ * An account-only direct SSH row. The row is an unverified settings record, so
+ * nothing about it is trusted here: the platform's own dial decides the
+ * credential from the account vault's binding for that alias, and the usual
+ * host-key prompt still gates the first contact. The verified account and
+ * unlocked vault captured here must still be the same ones when the dial
+ * lands, else the connection is closed and nothing opens.
+ */
+async function onAccountDirectConnect(host: HostEntry): Promise<void> {
+  const scope = directAccountScope.value;
+  if (!keyVault?.platform.accountId || !scope) return;
+  const request = ++pickerRequest;
+  const directEndpoint = (row: HostEntry) => JSON.stringify([row.name, row.hostname, row.port, row.user]);
+  // Account rows are reactive and may be edited in place while native SSH is
+  // pending. The dial and its ownership must retain the admitted endpoint.
+  let admitted = { ...host };
+  const binding = directEndpoint(admitted);
+  const current = () => pickerAlive && request === pickerRequest && directAccountScope.value === scope
+    && keyVault.store.state === 'unlocked' && keyVault.store.vaultId === scope.vaultId && keyVault.store.epoch === scope.epoch
+    && accountDirectHosts.value.some(row => directEndpoint(row) === binding && !hasManagedMarker(row) && row.local !== true);
+  if (pendingBootstrapClose) {
+    connectingTo.value = host.name;
+    connectingKey.value = hostEntryId(host);
+    try {
+      await pendingBootstrapClose;
+    } finally {
+      if (pickerAlive && request === pickerRequest) {
+        connectingTo.value = null;
+        connectingKey.value = null;
+      }
+    }
+    if (!current()) return;
+  }
+  const previousHost = connection.activeHost;
+  const previousId = connection.connectionId;
+  const previousState = connection.state;
+  try {
+    if (await keyVault.platform.accountId() !== scope.accountId || !current()) return;
+  } catch {
+    if (pickerAlive && request === pickerRequest) connectError.value = 'Your account could not be verified. Connect again.';
+    return;
+  }
+  // A newer/foreign result arriving during verification belongs to its own
+  // request: neither reuse it nor replace it with this request's dial.
+  if (connection.activeHost !== previousHost || connection.connectionId !== previousId
+    || connection.state !== previousState) return;
+  let resumed = false;
+  if (previousHost && previousId) {
+    const proof = directAdmissions.get(previousHost);
+    const sameScope = proof?.connectionId === previousId && proof.accountId === scope.accountId
+      && proof.vaultId === scope.vaultId && proof.epoch === scope.epoch;
+    const admittedPrevious = sameScope && proof.binding === directEndpoint(previousHost) && previousState === 'connected'
+      && !hasManagedMarker(previousHost) && previousHost.local !== true;
+    if (admittedPrevious && proof.binding === binding) {
+      admitted = previousHost;
+      resumed = true;
+    }
+    // Changed/missing admission takes the normal platform path below. The
+    // adapter owns host pooling, reconnect and active forwards; selecting a
+    // different row must not close the previously displayed host here.
+  } else if (previousId || previousState === 'connecting') {
+    return;
+  }
+  if (!resumed && (!(await dial(admitted, true)) || !pickerAlive || request !== pickerRequest)) return;
+  const ownedId = connection.activeHost === admitted ? connection.connectionId : null;
+  const ownsConnection = () => ownedId !== null && connection.connectionId === ownedId && connection.activeHost === admitted;
+  let sameAccount = false;
+  let verificationFailed = false;
+  try {
+    sameAccount = await keyVault.platform.accountId() === scope.accountId;
+  } catch {
+    // A native/backend verification failure is failed admission too. The
+    // successful dial still belongs to this request and must be cleaned up.
+    verificationFailed = true;
+  }
+  if (!sameAccount || !current() || !ownsConnection()) {
+    if (pickerAlive && request === pickerRequest) {
+      connectError.value = verificationFailed
+        ? 'Your account could not be verified. Connect again.'
+        : 'Your account or host changed. Connect again.';
+    }
+    // An equivalent endpoint is insufficient: another request may now own a
+    // newer connection to that same server while the account check awaited.
+    if (ownsConnection()) {
+      const closing = connection.disconnect().catch(() => undefined);
+      pendingBootstrapClose = closing;
+      await closing;
+      if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
+    }
+    return;
+  }
+  directAdmissions.set(admitted, {accountId: scope.accountId, vaultId: scope.vaultId, epoch: scope.epoch,
+    binding, connectionId: ownedId!});
+  enterPlainWorkspace(admitted);
+}
+
+function onTrustedConnect(host: HostEntry): void {
+  // TrustedServersSection revalidates the descriptor and installs account-
+  // bound native trust before emitting. Cached/manual rows never use this.
+  void onConnect(host,true);
 }
 
 /** Hang up. Stays on the picker — the row's dot going grey is the feedback. */
@@ -337,52 +614,139 @@ async function onDisconnect(): Promise<void> {
  * FALSE whatever the transport eventually said, which is the one bit both
  * callers act on — neither can navigate to a workspace the user walked out of.
  */
-async function dial(host: HostEntry): Promise<boolean> {
+async function dial(host: HostEntry, accountDirect = false): Promise<boolean> {
+  if (activeBootstrap) {activeBootstrap.cancelled = true;activeBootstrap = null;}
   connectError.value = null;
+  connectErrorKind.value = null;
+  failedHost.value = null;
   connectingTo.value = host.name;
   connectingKey.value = hostEntryId(host);
-  const token = { cancelled: false };
+  let finish!: () => void;
+  const request = pickerRequest;
+  const token = { cancelled: false, accountDirect, finished: new Promise<void>(resolve => { finish = resolve; }),
+    cancel: () => { token.cancelled = true; rejectOwnedTrust(); } };
+  const rejectOwnedTrust = () => {
+    const question = connection.pendingTrust;
+    if (accountDirect && token.cancelled && activeDial === token && connection.activeHost === host
+      && question?.hostLabel === host.name && question.hostname === host.hostname
+      && question.port === host.port && question.user === host.user) connection.answerTrust('reject');
+  };
   activeDial = token;
-  const ok = await connection.connect(host);
-  // Only put the picker back if a newer dial has not claimed it: after a
-  // cancel the rows re-enable, so by the time this resolves `connectingTo`
-  // and the error slot may belong to a dial the user started since, and a
-  // slow failure here must not wipe that dial's banner or its diagnostic.
-  if (activeDial === token) {
-    activeDial = null;
-    connectingTo.value = null;
-    connectingKey.value = null;
-    if (!ok && !token.cancelled) connectError.value = connection.error ?? 'Connection failed';
-  }
-  if (token.cancelled) {
-    // The dial won the race with the Cancel click. Hang up rather than leaving
-    // a connection the user explicitly abandoned — but only if this is still
-    // the connection in hand. `connect()` claims `activeHost` synchronously, so
-    // a different host here means the user already started dialling somewhere
-    // else in the meantime and tearing "the" connection down would tear down
-    // theirs. The abandoned link then survives until the app exits, which is
-    // the cheaper of the two failures by a wide margin.
-    if (ok && connection.activeHost && hostEntryId(connection.activeHost) === hostEntryId(host)) {
-      await connection.disconnect();
+  // Also reject this cancelled attempt's question if native KEX finishes after
+  // Cancel/unmount. The watcher drains only this token's admitted host, then
+  // is explicitly disposed with its native attempt, never a newer question.
+  const stopTrustWatch = accountDirect
+    ? watch(() => connection.pendingTrust, rejectOwnedTrust, {flush: 'post'})
+    : () => undefined;
+  try {
+    const ok = await connection.connect(host, undefined, undefined, accountDirect);
+    // Only put the picker back if a newer dial has not claimed it: after a
+    // cancel the rows re-enable, so by the time this resolves `connectingTo`
+    // and the error slot may belong to a dial the user started since, and a
+    // slow failure here must not wipe that dial's banner or its diagnostic.
+    if (activeDial === token) {
+      activeDial = null;
+      if (request === pickerRequest) {
+        connectingTo.value = null;
+        connectingKey.value = null;
+        if (!ok && !token.cancelled) {
+          connectError.value = connection.error ?? 'Connection failed';
+          connectErrorKind.value = connection.errorKind;
+          failedHost.value = host;
+        }
+      }
     }
-    return false;
+    if (token.cancelled) {
+      // The dial won the race with the Cancel click. Hang up rather than leaving
+      // a connection the user explicitly abandoned — but only if this is still
+      // the connection in hand. `connect()` claims `activeHost` synchronously, so
+      // a different host here means the user already started dialling somewhere
+      // else in the meantime and tearing "the" connection down would tear down
+      // theirs. A different result remains with the platform's host connection
+      // lifecycle rather than closing the connection the user selected next.
+      // Account rows can share an alias with a newer object. Only this
+      // request's admitted snapshot can authorize its cancellation cleanup.
+      const stillOwnsHost = accountDirect
+        ? connection.activeHost === host
+        : connection.activeHost && hostEntryId(connection.activeHost) === hostEntryId(host);
+      if (ok && stillOwnsHost) await connection.disconnect();
+      return false;
+    }
+    return ok;
+  } finally {
+    stopTrustWatch();
+    finish();
   }
-  return ok;
 }
 
-function enterWorkspace(host: HostEntry): void {
+async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmission | null): Promise<void> {
+  if (trustedAccountMode && localAdmission) {
+    // A source refresh replaces objects while native SSH is pending. Preserve
+    // the admitted local origin, but recheck the complete current binding.
+    // A changed target/source/policy is refused, never reclassified as account.
+    if (!currentLocalAdmission(host,localAdmission)) {
+      connectError.value = 'Local host changed while connecting. Connect again.';
+      if (connection.connectionId && connection.activeHost === host) {
+        const closing = connection.disconnect().catch(() => undefined);
+        pendingBootstrapClose = closing;
+        await closing;
+        if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
+      }
+      return;
+    }
+    if (!connection.activeHost || hasManagedMarker(connection.activeHost)
+      || localDialBinding(connection.activeHost) !== localAdmission.binding) return;
+  } else if (trustedAccountMode && keyVault?.platform.accountId) {
+    const id = connection.connectionId;
+    if (!id) return;
+    if (activeBootstrap) activeBootstrap.cancelled = true;
+    const token: WorkspaceBootstrap = {cancelled:false,navigating:false,connectionId:id,hostKey:hostEntryId(host),request:pickerRequest};
+    activeBootstrap = token;
+    connectingTo.value = host.name;
+    try {
+      const account = await keyVault.platform.accountId();
+      const owns = () => pickerAlive && !token.cancelled && activeBootstrap === token && token.request === pickerRequest
+        && connection.connectionId === id && connection.activeHost !== null && hostEntryId(connection.activeHost) === token.hostKey
+        && keyVault.store.state === 'unlocked';
+      const current = async () => {
+        if (!owns() || !account) return false;
+        const now = await keyVault.platform.accountId!();
+        return owns() && now === account;
+      };
+      if (!await current()) return;
+      const sessions = useSessionsStore();
+      const route = await openTrustedServerWorkspace({
+        current,
+        lastFolder:readLastFolder(host.name),
+        list:async () => typeof api.helper.sessionsListing === 'function'
+          ? api.helper.sessionsListing(id,'activity') : {sessions:await api.helper.sessionsList(id,'activity'),errors:[]},
+        home:() => api.sftp.realPath(id,'.'),
+        start:folder => api.projects.startSession(id,{folder,namePolicy:'reuse'}),
+        pending:(result,folder) => {const summary = sessions.summaryFromStartResult(result,folder); if(summary) sessions.addPending(summary);},
+      });
+      if (!await current()) return;
+      token.navigating = true;
+      await router.push({name:'folder',params:{name:host.name,folder:route.folder},
+        ...(route.session ? {query:{tab:route.session}} : {})});
+    } catch(e) { if(pickerAlive && activeBootstrap === token && !token.cancelled) connectError.value = (e as Error).message; }
+    finally { if(activeBootstrap === token) {activeBootstrap = null;connectingTo.value = null;connectingKey.value = null;} }
+    return;
+  }
   // Land in the folder this host was last open on, when there is one — the
   // whole point of relaunching into the same tabs. The workspace restores the
   // rest of its own state (Files tabs, selection) from the same store, so the
   // folder route alone is the entire handoff. A host never opened, or a
   // record that names nothing, keeps the old landing below.
+  enterPlainWorkspace(host);
+}
+
+/** Land in the host's last folder, else its session list (no managed bootstrap). */
+function enterPlainWorkspace(host: HostEntry): void {
   const folder = readLastFolder(host.name);
   if (folder) {
     void router.push({ name: 'folder', params: { name: host.name, folder } });
     return;
   }
-  // Land on the host's default view: the session list. `void`: vue-router
-  // rejects on aborted/redirected navigation, neither of which is an error.
   void router.push({ name: 'host-sessions', params: { name: host.name } });
 }
 
@@ -498,7 +862,8 @@ function onClearDefault(): void {
       <p v-if="hostReloadError" class="error">{{ hostReloadError }}</p>
       <!-- Signed in but the account copy is still encrypted to this session:
            say how to reveal it rather than reading as an empty account. -->
-      <p v-if="accountSignedIn && !accountUnlocked" class="muted locked-note">
+      <TrustedServersSection v-if="trustedAccountMode" :busy="connectingTo !== null" @connect="onTrustedConnect" @loaded="directAccountScope = $event" />
+      <p v-if="!trustedAccountMode && accountSignedIn && !accountUnlocked" class="muted locked-note">
         Your account's hosts show up here once Account &amp; sync has checked the account.
         <!-- The unlock lives behind the account action; a note alone would
              send a first-run reader hunting through chrome for it. -->
@@ -532,12 +897,9 @@ function onClearDefault(): void {
                 }"
               />
               <span class="host-name">{{ host.name }}</span>
-              <!-- A local host dials nothing, so the user@host:port spelling
-                   would read as a bug ("self@self:0"). One honest line instead. -->
-              <span v-if="host.local" class="host-detail">This computer — local, no SSH</span>
-              <span v-else class="host-detail">
-                {{ host.user || '(default user)' }}@{{ host.hostname }}:{{ host.port }}
-              </span>
+              <!-- local / gateway / plain detail, then a gateway host's
+                   presence chip — one chain, in its own component. -->
+              <HostRowDetail :host="host" :presence="host.gateway ? hostPresence(host) : null" />
               <span v-if="connectingKey === hostEntryId(host)" class="muted">connecting…</span>
               <!-- A list row that goes somewhere gets a chevron, not an arrow
                    (VS Code / macOS convention). Kept on the connected row too:
@@ -571,7 +933,7 @@ function onClearDefault(): void {
           </li>
         </ul>
         <p
-          v-if="group.kind === 'config' && !connection.hosts.length && !connection.error && !hostReloadError"
+          v-if="localSetupAllowed && group.kind === 'config' && !group.hosts.length && !connection.error && !hostReloadError"
           class="muted"
         >
           <span>{{ emptyHint.before }}</span><code v-if="emptyHint.source">{{ emptyHint.source }}</code><span>{{ emptyHint.after }}</span>
@@ -592,7 +954,29 @@ function onClearDefault(): void {
           </button>
         </p>
       </template>
-      <p v-if="connectError" class="error">{{ connectError }}</p>
+      <!-- The gateway device source: only where the platform provides it,
+           and only for a signed-in account (the list is the account's). -->
+      <GatewayDevicesSection
+        v-if="!trustedAccountMode && gateway.available && accountSignedIn"
+        :hosts="listedHosts"
+        :busy="connectingTo !== null"
+        @add="openAddDevice"
+        @sign-in="onAccountAction"
+      />
+      <p v-if="connectError" class="error" :data-kind="connectErrorKind ?? undefined">{{ connectError }}</p>
+      <!-- The next step for a classified gateway refusal, beside (not inside)
+           the message: an offline host is offline, a missing pairing asks to
+           pair, a sign-in problem asks to sign in. -->
+      <GatewayDialErrorActions
+        v-if="!trustedAccountMode && connectError && connectErrorKind"
+        :kind="connectErrorKind"
+        :host="failedHost"
+        :gateway-available="gateway.available"
+        @sign-in="onAccountAction"
+        @repair="openRepair"
+        @connect-again="onConnect"
+        @reload-devices="gateway.load()"
+      />
     </main>
 
     <!-- Settings remains reachable here with no connection: default-host is
@@ -600,6 +984,23 @@ function onClearDefault(): void {
          SSH alias before editing its instance-specific roots. -->
     <OverlayPanel v-if="settingsOpen" title="Settings" size="md" @close="settingsOpen = false">
       <SettingsView />
+    </OverlayPanel>
+    <OverlayPanel
+      v-if="addingDevice"
+      :title="addingDevice.prefill ? 'Pair a gateway device' : 'Add a gateway device'"
+      size="md"
+      @close="addingDevice = null"
+    >
+      <GatewayAddDevicePanel
+        :device="addingDevice.device"
+        :prefill="addingDevice.prefill"
+        :account="addingDevice.account"
+        :server-url="gateway.serverUrl"
+        @saved="onDeviceSaved"
+        @connect="onConnectAdded"
+        @sign-in="onAccountAction"
+        @close="addingDevice = null"
+      />
     </OverlayPanel>
   </div>
 </template>
@@ -658,12 +1059,12 @@ h1 {
     color var(--dur-fast) var(--ease);
 }
 .account-action:not(.signed-in) {
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   background: var(--accent-soft);
   color: var(--accent);
 }
 .account-action:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   background: var(--state-hover);
   color: var(--fg);
 }
@@ -828,12 +1229,6 @@ h1 {
   font-size: var(--fs-400);
   line-height: var(--lh-400);
   font-weight: var(--fw-semibold);
-}
-.host-detail {
-  color: var(--fg-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-200);
-  flex: 1;
 }
 /* A 2px nudge on row hover — the smallest possible "this row goes somewhere"
    cue. Colour and transform only; the row's own tint does the rest. */

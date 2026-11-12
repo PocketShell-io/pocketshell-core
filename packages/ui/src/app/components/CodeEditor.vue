@@ -79,8 +79,10 @@ const props = withDefaults(
     modelValue: string;
     /** Path or name of the open file — the only input to language choice. */
     filename?: string | null;
+    /** No edits: the platform cannot write this file back (`sftp.capabilities.write`). */
+    readOnly?: boolean;
   }>(),
-  { filename: null },
+  { filename: null, readOnly: false },
 );
 
 const emit = defineEmits<{
@@ -221,6 +223,7 @@ onMounted(() => {
         ...baseExtensions,
         language.of([]),
         appearance.of(codeThemeFor(themeAppearance.value)),
+        ...(props.readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
       ],
     }),
   });

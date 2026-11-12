@@ -34,6 +34,8 @@ import {
   type SshPtyWriteOptions,
   type SshResourceSnapshot,
 } from '../src/sshCapability';
+import { GATEWAY_CLOSED_ERROR_CODE } from '../src/gatewayTransport';
+import { transportRefusalMessage, unsupportedTransport } from '../src/sync';
 
 const HOST_KEY = { keyType: 'ssh-ed25519', keyB64: 'AQIDBA==', fingerprintSha256: 'SHA256:abc123' } as const;
 const PIN = { kind: 'wire-key', ...HOST_KEY } as const;
@@ -568,7 +570,7 @@ describe('JS connection and session policy', () => {
     const firstPty = controller.getSnapshot().selectedSession;
     expect(firstPty?.name).toBe('alpha');
     expect(capability.openPtyCalls[0]?.command).toContain('pocketshell sessions attach --');
-    expect(capability.openPtyCalls[0]?.command).toContain("'alpha'");
+    expect(capability.openPtyCalls[0]?.command).toContain("'alpha-id'");
 
     expect((await controller.attachSession(session('beta'))).ok).toBe(true);
     // Attaching beta keeps alpha's PTY (#2955).
@@ -577,7 +579,233 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('beta');
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
     expect(capability.connectCalls).toHaveLength(connectedCount);
-    expect(capability.openPtyCalls[1]?.command).toContain("'beta'");
+    expect(capability.openPtyCalls[1]?.command).toContain("'beta-id'");
+  });
+
+  it('immutable selector uses the authoritative id despite a stale display label', async () => {
+    const capability = new FakeCapability();
+    const authoritative = { ...session('renamed'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, authoritative);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession({ ...authoritative, name: 'old-label' })).ok).toBe(true);
+    expect(capability.openPtyCalls[0]?.command).toBe(`exec pocketshell sessions attach -- '${authoritative.id}'`);
+  });
+
+  it('immutable selector keeps colliding display names on distinct session ids', async () => {
+    const capability = new FakeCapability();
+    const first = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    const second = { ...first, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d', workspace: '/another' };
+    capability.sessions.splice(0, capability.sessions.length, first, second);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(first)).ok).toBe(true);
+    expect((await controller.attachSession(second)).ok).toBe(true);
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${first.id}'`,
+      `exec pocketshell sessions attach -- '${second.id}'`,
+    ]);
+  });
+
+  it('immutable selector reconnects to the same UUID after its label changes', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('before-rename'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, name: 'after-rename' };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(controller.getSnapshot().selectedSession?.name).toBe('after-rename');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable selector does not replace a missing UUID with a same-name session', async () => {
+    const capability = new FakeCapability();
+    const stale = { ...session('reused-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    const replacement = { ...stale, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' };
+    capability.sessions.splice(0, capability.sessions.length, replacement);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect(await controller.attachSession(stale)).toMatchObject({ ok: false, reason: 'not-found' });
+    expect(capability.openPtyCalls).toHaveLength(0);
+  });
+
+  it('immutable selector refuses a same-name replacement after reconnect loses the selected UUID', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('reused-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'lost');
+    expect(controller.getSnapshot().error).toContain('no longer exists');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it.each([null, undefined])('immutable identity refuses initial UUID selection against listing id %s', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    // Undefined is deliberately omitted on the wire; the real parser yields null.
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id: id as null });
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect(await controller.attachSession(selected)).toMatchObject({ ok: false, reason: 'not-found' });
+    expect(capability.openPtyCalls).toHaveLength(0);
+  });
+
+  it.each([null, undefined])('immutable identity never downgrades to listing id %s on reconnect', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions[0] = { ...selected, id: id as null };
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && ['lost', 'live'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().phase).toBe('lost');
+    expect(controller.getSnapshot().terminals).toHaveLength(0);
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable identity skips colliding null and other-ID metadata when refreshing terminals', async () => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id: null },
+      { ...selected, id: 'bb36c5c4-c72c-4bce-a0b5-2cce0c8b6a3d' }, { ...selected, name: 'renamed' });
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(controller.getSnapshot().selectedSession).toMatchObject({ id: selected.id, name: 'renamed' });
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it('immutable identity does not let a null-ID consumer control an established UUID terminal', async () => {
+    const capability = new FakeCapability();
+    const selected = session('same-label');
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    const generic = { ...selected, id: null };
+    expect(controller.focusSession(generic)).toBe(false);
+    expect((await controller.writeTerminalBytes(generic, new Uint8Array([120]))).ok).toBe(false);
+    expect((await controller.resizeTerminal(generic, { cols: 70, rows: 20 })).ok).toBe(false);
+    await controller.detachSession(generic);
+    expect(controller.getSnapshot().terminals).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect(capability.writeCalls).toHaveLength(0);
+    expect(capability.resizeCalls).toHaveLength(0);
+  });
+
+  it('immutable identity does not infer legacy null to UUID continuity at initial selection or reconnect', async () => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('same-label'), id: null };
+    const modern = { ...legacy, id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, modern);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(legacy)).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    capability.sessions[0] = legacy;
+    await controller.refreshSessions();
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    capability.sessions[0] = modern;
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && ['lost', 'live'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().phase).toBe('lost');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual(["exec pocketshell sessions attach -- 'same-label'"]);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank identity %j fails the initial parser boundary across colliding workspaces', async (id) => {
+    const capability = new FakeCapability();
+    const first = { ...session('same-label'), id };
+    const second = { ...first, workspace: '/another' };
+    capability.sessions.splice(0, capability.sessions.length, first, second);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(false);
+    expect(controller.getSnapshot().sessions).toHaveLength(0);
+    expect((await controller.attachSession(second)).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    expect(controller.getSnapshot().terminals).toHaveLength(0);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank identity %j cannot replace an established UUID on reconnect', async (id) => {
+    const capability = new FakeCapability();
+    const selected = { ...session('same-label'), id: '8d4ac7c8-7eb8-4b9a-a66c-5f9988cb9332' };
+    capability.sessions.splice(0, capability.sessions.length, selected);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(selected)).ok).toBe(true);
+    capability.sessions.splice(0, capability.sessions.length, { ...selected, id }, { ...selected, id, workspace: '/another' });
+    capability.emitLost();
+    await waitFor(() => ['error', 'lost'].includes(controller.getSnapshot().phase));
+    expect(controller.getSnapshot().error).toContain('non-empty');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      `exec pocketshell sessions attach -- '${selected.id}'`,
+    ]);
+  });
+
+  it.each(['', ' ', '\t\r\n'])('immutable blank public request %j cannot bootstrap or reuse a generic terminal', async (id) => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('same-label'), id: null };
+    capability.sessions.splice(0, capability.sessions.length, legacy);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession({ ...legacy, id })).ok).toBe(false);
+    expect(capability.openPtyCalls).toHaveLength(0);
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    expect((await controller.attachSession({ ...legacy, id })).ok).toBe(false);
+    expect(controller.getSnapshot().terminals).toHaveLength(1);
+    expect(capability.openPtyCalls).toHaveLength(1);
+  });
+
+  it('immutable selector preserves the explicitly id-null generic host contract', async () => {
+    const capability = new FakeCapability();
+    const legacy = { ...session('legacy host'), id: null };
+    capability.sessions.splice(0, capability.sessions.length, legacy);
+    const { controller } = controllerFor(capability, trustStore(PIN));
+    controllers.push(controller);
+    await connectAndList(controller);
+    expect((await controller.attachSession(legacy)).ok).toBe(true);
+    expect(capability.openPtyCalls[0]?.command).toBe("exec pocketshell sessions attach -- 'legacy host'");
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(capability.openPtyCalls.map((call) => call.command)).toEqual([
+      "exec pocketshell sessions attach -- 'legacy host'",
+      "exec pocketshell sessions attach -- 'legacy host'",
+    ]);
   });
 
   it('does not let old queued operations or resize errors poison a fresh attach of the same session', async () => {
@@ -707,8 +935,8 @@ describe('JS connection and session policy', () => {
     capability.emitLost();
     await waitFor(() => capability.openPtyCalls.length === 4 && controller.getSnapshot().phase === 'live');
     const reopened = capability.openPtyCalls.slice(2);
-    expect(reopened.find((call) => call.command.includes("'alpha'"))).toMatchObject({ cols: 60, rows: 20 });
-    expect(reopened.find((call) => call.command.includes("'beta'"))).toMatchObject({ cols: 70, rows: 25 });
+    expect(reopened.find((call) => call.command.includes("'alpha-id'"))).toMatchObject({ cols: 60, rows: 20 });
+    expect(reopened.find((call) => call.command.includes("'beta-id'"))).toMatchObject({ cols: 70, rows: 25 });
   });
 
   it('detaches the attached PTY so re-selecting the same session attaches afresh', async () => {
@@ -1720,7 +1948,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
 
   /** The newest channel attached to `name`. */
   function channelOf(capability: FakeCapability, name: string): string {
-    const index = capability.openPtyCalls.map((call) => call.command.includes(`'${name}'`)).lastIndexOf(true);
+    const index = capability.openPtyCalls.map((call) => call.command.includes(`'${name}-id'`)).lastIndexOf(true);
     if (index < 0) throw new Error(`no PTY opened for ${name}`);
     return `pty-${index + 1}`;
   }
@@ -1828,7 +2056,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
     for (const name of ['alpha', 'beta', 'gamma']) {
-      expect(reopened.filter((command) => command.includes(`'${name}'`)), name).toHaveLength(1);
+      expect(reopened.filter((command) => command.includes(`'${name}-id'`)), name).toHaveLength(1);
     }
     expect(reopened).toHaveLength(3);
     expect(recorder.ladders(), recorder.phases.join(' -> ')).toBe(1);
@@ -1990,13 +2218,13 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await controller.detachSession(session('beta'));
     connectGate.resolve();
     await waitFor(() => controller.getSnapshot().phase === 'live' && capability.connectCalls.length === 2);
-    expect(capability.openPtyCalls.slice(opensBefore).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+    expect(capability.openPtyCalls.slice(opensBefore).map((call) => call.command.includes("'alpha-id'"))).toEqual([true]);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha']);
 
     // The detach belonged to THAT reconnect only: the next one re-attaches alpha.
     capability.emitLost();
     await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'live');
-    expect(capability.openPtyCalls.slice(opensBefore + 1).map((call) => call.command.includes("'alpha'"))).toEqual([true]);
+    expect(capability.openPtyCalls.slice(opensBefore + 1).map((call) => call.command.includes("'alpha-id'"))).toEqual([true]);
   });
 
   it('drops a terminal whose session vanished during the reconnect and keeps the others live', async () => {
@@ -2065,12 +2293,12 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     expect((await controller.attachSession(session('s1'))).ok).toBe(true);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's6', 's7', 's8', 's1']);
     expect(capability.openPtyCalls).toHaveLength(9);
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s1-id'");
     expect(capability.ptys.size).toBe(5);
     expect(await controller.runHostCommand('true', 1_000)).toMatchObject({ ok: true });
     // The evicted terminal re-attaches (a fresh PTY) when it is looked at again.
     expect((await controller.attachSession(session('s5'))).ok).toBe(true);
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'s5-id'");
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['s4', 's7', 's8', 's1', 's5']);
     expect((await controller.writeTerminalBytes(session('s5'), new TextEncoder().encode('x'))).ok).toBe(true);
   });
@@ -2099,7 +2327,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     const openPty = capability.openPty;
     let generation = 0;
     capability.openPty = async (options) => {
-      if (options.command.includes("'beta'") && generation === 1) await betaGate.promise;
+      if (options.command.includes("'beta-id'") && generation === 1) await betaGate.promise;
       return openPty(options);
     };
     const opensBefore = capability.openPtyCalls.length;
@@ -2108,7 +2336,7 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     // alpha is re-opened; beta's open is held on the wire (not yet recorded).
     await waitFor(() => capability.openPtyCalls.length === opensBefore + 1);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha'");
+    expect(capability.openPtyCalls.at(-1)?.command).toContain("'alpha-id'");
     expect(controller.getSnapshot().phase).toBe('attaching');
     // alpha is already open on the new generation: re-selecting it opens nothing.
     expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
@@ -2117,8 +2345,8 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await waitFor(() => controller.getSnapshot().phase === 'live');
     await new Promise((resolve) => setTimeout(resolve, 20));
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
-    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
-    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'alpha-id'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta-id'"))).toHaveLength(1);
   });
 
   it('keeps a terminal whose read failed while backgrounded, and re-attaches it exactly once when grace expired', async () => {
@@ -2143,8 +2371,8 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     await controller.returnToForeground();
     await waitFor(() => controller.getSnapshot().phase === 'live');
     const reopened = capability.openPtyCalls.slice(opensBefore).map((call) => call.command);
-    expect(reopened.filter((command) => command.includes("'alpha'"))).toHaveLength(1);
-    expect(reopened.filter((command) => command.includes("'beta'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'alpha-id'"))).toHaveLength(1);
+    expect(reopened.filter((command) => command.includes("'beta-id'"))).toHaveLength(1);
     expect(controller.getSnapshot().terminals.map((row) => row.name)).toEqual(['alpha', 'beta']);
   });
 
@@ -2167,4 +2395,801 @@ describe('one PTY per attached session (pocketshell#2955)', () => {
     expect(await attachAll(tight)).toBe(1);
     expect(await attachAll(new FakeCapability(), { maxOpenPtys: 3 })).toBe(3);
   });
+});
+
+const GATEWAY = { serverUrl: 'wss://gateway.example', deviceId: 'device-a' } as const;
+const gatewayHost: SshHostTarget = { ...host, gateway: { ...GATEWAY } };
+
+/**
+ * A platform that dials gateway targets the way the contract asks
+ * (#3086): it verifies the native pairing pin before userauth and says so
+ * with `gatewayHostKeyVerified`, or refuses with a gateway close code.
+ */
+class GatewayCapability extends FakeCapability {
+  gatewayTransport: boolean | undefined = true;
+  /** False models a platform that dialled without proving the pin. */
+  receipt = true;
+  /** While set every gateway dial is refused with this close code. */
+  closeCode: number | null = null;
+  /** While true every gateway dial is refused as a pin mismatch, before userauth. */
+  pinMismatch = false;
+  /** While set every gateway dial fails with this native code before any gateway verdict (core#47). */
+  nativeRefusal: { code: string; message: string } | null = null;
+  readonly gatewayConnections: string[] = [];
+  private gatewayOrdinal = 0;
+
+  constructor() {
+    super();
+    const ordinary = this.connect;
+    this.connect = async (options) => {
+      if (!Object.prototype.hasOwnProperty.call(options, 'gateway')) return ordinary(options);
+      this.connectCalls.push(options);
+      if (this.closeCode !== null) {
+        throw new SshCapabilityError(`gateway closed ${this.closeCode}`, GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: this.closeCode });
+      }
+      if (this.pinMismatch) throw new SshCapabilityError('Paired host key mismatch.', 'HOST_KEY_REJECTED', HOST_KEY);
+      if (this.nativeRefusal) throw new SshCapabilityError(this.nativeRefusal.message, this.nativeRefusal.code);
+      const connectionId = `gateway-${++this.gatewayOrdinal}`;
+      this.connections.set(connectionId, options.generationId);
+      this.gatewayConnections.push(connectionId);
+      return {
+        requestId: options.requestId,
+        connectionId,
+        generationId: options.generationId,
+        hostKey: HOST_KEY,
+        ...(this.receipt ? { gatewayHostKeyVerified: true as const } : {}),
+      };
+    };
+  }
+}
+
+describe('gateway dials require native pin proof (pocketshell#3086)', () => {
+  const controllers: ConnectionController[] = [];
+
+  afterEach(async () => {
+    await Promise.all(controllers.splice(0).map((controller) => controller.close()));
+  });
+
+  function gatewayController(capability: GatewayCapability, trusted = trustStore(PIN), retryDelaysMs: readonly number[] = [0]) {
+    const built = controllerFor(capability, trusted, { retryDelaysMs });
+    controllers.push(built.controller);
+    return built;
+  }
+
+  it('dials a gateway target with the pin receipt and never touches ordinary TOFU trust', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    expect(trusted.store.record).not.toHaveBeenCalled();
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.connectCalls[0]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'connected', trustDecision: null, gatewayFailure: null });
+    expect((await controller.refreshSessions()).ok).toBe(true);
+  });
+
+  it('hands the capability the normalized gateway target', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    const sloppy = { ...host, gateway: { serverUrl: ' https://Gateway.Example/ ', deviceId: ' device-a ' } };
+    expect((await controller.connect(sloppy)).ok).toBe(true);
+    expect(capability.connectCalls[0]!.gateway).toEqual(GATEWAY);
+  });
+
+  it('refuses a gateway dial without the pin receipt: closes it before any host command and offers no TOFU', async () => {
+    const capability = new GatewayCapability();
+    capability.receipt = false;
+    const { controller, trusted } = gatewayController(capability);
+    const result = await controller.connect(gatewayHost);
+    expect(result).toMatchObject({ ok: false, reason: 'failed' });
+    expect(capability.closedConnectionIds).toContain('gateway-1');
+    expect(capability.execCommands).toHaveLength(0);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', trustDecision: null, connectionId: null });
+    expect(controller.getSnapshot().error).toMatch(/did not prove the host key/);
+    expect(trusted.store.record).not.toHaveBeenCalled();
+    expect((await controller.acceptPresentedHostKey()).ok).toBe(false);
+  });
+
+  it('refuses a pin mismatch as an error, never as a trust decision, and never records it', async () => {
+    const capability = new GatewayCapability();
+    capability.pinMismatch = true;
+    const { controller, trusted } = gatewayController(capability, trustStore(null));
+    const result = await controller.connect(gatewayHost);
+    expect(result).toMatchObject({ ok: false, reason: 'failed', message: 'Paired host key mismatch.' });
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', trustDecision: null });
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    expect(trusted.store.record).not.toHaveBeenCalled();
+    expect((await controller.acceptPresentedHostKey({ persist: true })).ok).toBe(false);
+    expect((await controller.acceptPresentedHostKey({ persist: false })).ok).toBe(false);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('refuses every gateway target on a platform without gateway capability, before any effect', async () => {
+    for (const flag of [undefined, false]) {
+      const capability = new GatewayCapability();
+      capability.gatewayTransport = flag;
+      const { controller, trusted } = gatewayController(capability);
+      for (const target of [gatewayHost, { ...host, gateway: null }, { ...gatewayHost, link: { relayUrl: 'wss://r', hostId: 'h' } }]) {
+        const result = await controller.connect(target as unknown as SshHostTarget);
+        expect(result).toMatchObject({ ok: false, message: transportRefusalMessage('gateway-unsupported', '127.0.0.1') });
+      }
+      expect(capability.connectCalls).toHaveLength(0);
+      expect(trusted.store.get).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ['null', { ...host, gateway: null }, 'gateway-invalid'],
+    ['undefined', { ...host, gateway: undefined }, 'gateway-invalid'],
+    ['malformed', { ...host, gateway: { serverUrl: 'wss://secret@gateway.example', deviceId: 'device-a' } }, 'gateway-invalid'],
+    ['bad device', { ...host, gateway: { serverUrl: 'wss://gateway.example', deviceId: '!' } }, 'gateway-invalid'],
+    ['link and gateway', { ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['undefined link and gateway', { ...gatewayHost, link: undefined }, 'link-and-gateway'],
+  ] as const)('refuses a %s marker with the shared #3059 reason before any effect', async (_name, target, reason) => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability);
+    const result = await controller.connect(target as unknown as SshHostTarget);
+    expect(result).toMatchObject({ ok: false, reason: 'failed', message: transportRefusalMessage(reason, '127.0.0.1') });
+    expect(unsupportedTransport(target, { gateway: true, link: true })).toMatchObject({ refused: true, reason });
+    expect(capability.connectCalls).toHaveLength(0);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+  });
+
+  it('requires the receipt again on every reconnect dial and ends the ladder when it is missing', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    await controller.attachSession(session('alpha'));
+
+    // A healthy re-dial: proof again, the gateway target again, still no trust store.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 2 && controller.getSnapshot().phase === 'live');
+    expect(capability.connectCalls[1]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+
+    // The next re-dial comes back unproven: closed, not retried, not trusted.
+    capability.receipt = false;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(3);
+    expect(capability.closedConnectionIds).toContain('gateway-3');
+    expect(controller.getSnapshot().trustDecision).toBeNull();
+    expect(controller.getSnapshot().error).toMatch(/after 1 attempt\. The gateway connection did not prove the host key/);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    expect(trusted.store.record).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [4400, 'protocol', 'The gateway rejected the request — update PocketShell.'],
+    [4401, 'unauthorized', 'Your sign-in expired — sign in again and retry.'],
+    [4403, 'forbidden', 'This PocketShell account cannot reach that host.'],
+    [4404, 'not_found', 'That host is not registered on the gateway.'],
+  ] as const)('stops after one attempt on gateway %i (%s) and keeps its code and advice', async (closeCode, kind, advice) => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0, 0, 0]);
+    expect(await controller.connect({ ...gatewayHost })).toMatchObject({ ok: true });
+    capability.closeCode = closeCode;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 1);
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code: GATEWAY_CLOSED_ERROR_CODE, closeCode, kind, retryable: false, userMessage: advice });
+    expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${advice}`);
+  });
+
+  it.each([
+    [4408, 'timeout', 'The gateway took too long to answer.'],
+    [4429, 'quota', 'Too many open sessions — close one and retry.'],
+    [4503, 'host_offline', 'The host is not connected to the gateway right now — check that its agent is running.'],
+  ] as const)('backs off within the ordinary bounds on gateway %i (%s)', async (closeCode, kind, advice) => {
+    const capability = new GatewayCapability();
+    const delays: number[] = [];
+    const built = controllerFor(capability, trustStore(PIN), {
+      retryDelaysMs: [0, 250, 500],
+      delay: async (ms) => { delays.push(ms); },
+    });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.closeCode = closeCode;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(delays).toEqual([250, 500]);
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code: GATEWAY_CLOSED_ERROR_CODE, closeCode, kind, retryable: true, userMessage: advice });
+    expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 3 attempts. ${advice}`);
+  });
+
+  it('keeps an offline device distinguishable from a refused sign-in on the first connect', async () => {
+    const offline = new GatewayCapability();
+    offline.closeCode = 4503;
+    const signIn = new GatewayCapability();
+    signIn.closeCode = 4401;
+    const a = gatewayController(offline).controller;
+    const b = gatewayController(signIn).controller;
+    await a.connect(gatewayHost);
+    await b.connect(gatewayHost);
+    expect(a.getSnapshot()).toMatchObject({ phase: 'error', gatewayFailure: { kind: 'host_offline', retryable: true } });
+    expect(b.getSnapshot()).toMatchObject({ phase: 'error', gatewayFailure: { kind: 'unauthorized', retryable: false } });
+    expect(a.getSnapshot().error).not.toBe(b.getSnapshot().error);
+  });
+
+  it.each([4000, 1000, 1001, 1006, 1011, 4999, 5401, '4401', undefined])('falls back to the ordinary retry default for unclassified gateway code %s', async (closeCode) => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.connect = async (options) => {
+      capability.connectCalls.push(options);
+      throw new SshCapabilityError('gateway went away', GATEWAY_CLOSED_ERROR_CODE, { gatewayCloseCode: closeCode });
+    };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(controller.getSnapshot().gatewayFailure).toBeNull();
+    expect(controller.getSnapshot().error).toBe('Could not reconnect to 127.0.0.1 after 3 attempts.');
+  });
+
+  // core#47: the Android native refusals a gateway dial reports before any
+  // gateway verdict (pocketshell#3086 slice 2 @ 9218cdeeb). Each ends the
+  // ladder after one attempt and names what the user must do.
+  const NATIVE_REFUSALS = [
+    ['NOT_SIGNED_IN', 'Sign in with Google first.', 'sign_in_required',
+      'Sign in to your PocketShell account to connect through the gateway.'],
+    ['GATEWAY_BROKER_SIGN_IN_REJECTED', 'Your sign-in was not accepted for a gateway credential — sign in again.', 'sign_in_required',
+      'Your sign-in was not accepted for the gateway — sign out, sign in again, then reconnect.'],
+    ['GATEWAY_UNPAIRED', 'Pair this device with the host before connecting through the gateway.', 'pairing_required',
+      'This device is not paired with that host for this SSH key — pair it again, then reconnect.'],
+    ['GATEWAY_ACCOUNT_CHANGED', 'The signed-in account changed.', 'account_changed',
+      'The signed-in account changed while connecting — reconnect as the account signed in now.'],
+  ] as const;
+
+  it.each(NATIVE_REFUSALS)('stops the reconnect ladder after one attempt on native %s', async (code, message, kind, advice) => {
+    const capability = new GatewayCapability();
+    const delays: number[] = [];
+    const built = controllerFor(capability, trustStore(PIN), {
+      retryDelaysMs: [0, 250, 500, 750, 1000],
+      delay: async (ms) => { delays.push(ms); },
+    });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.nativeRefusal = { code, message };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    // Settle any stray timer: a reconnect loop would keep dialling.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(capability.connectCalls).toHaveLength(1 + 1);
+    expect(delays).toEqual([]);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', trustDecision: null });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+    expect(controller.getSnapshot().error).toBe(`Could not reconnect to 127.0.0.1 after 1 attempt. ${advice}`);
+  });
+
+  it.each(NATIVE_REFUSALS)('reports native %s on a first connect as one attempt with its kind and advice', async (code, message, kind, advice) => {
+    const capability = new GatewayCapability();
+    capability.nativeRefusal = { code, message };
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect(await controller.connect(gatewayHost)).toEqual({ ok: false, reason: 'failed', message: advice });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', error: advice, trustDecision: null });
+    expect(controller.getSnapshot().gatewayFailure).toEqual({ code, closeCode: null, kind, retryable: false, userMessage: advice });
+    expect(trusted.store.record).not.toHaveBeenCalled();
+  });
+
+  it('keeps sign-in needed, pairing needed and account changed distinguishable in the snapshot', async () => {
+    const kinds = new Set<string>();
+    for (const [code, message] of NATIVE_REFUSALS) {
+      const capability = new GatewayCapability();
+      capability.nativeRefusal = { code, message };
+      const { controller } = gatewayController(capability);
+      await controller.connect(gatewayHost);
+      kinds.add(controller.getSnapshot().gatewayFailure!.kind);
+    }
+    expect([...kinds].sort()).toEqual(['account_changed', 'pairing_required', 'sign_in_required']);
+  });
+
+  it('leaves an ordinary SSH dial that fails with a native gateway code on the ordinary default', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    await connectAndList(controller);
+    capability.refuseLogins = { code: 'NOT_SIGNED_IN', message: 'not a gateway dial' };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(controller.getSnapshot().gatewayFailure).toBeNull();
+  });
+
+  it('leaves ordinary SSH dials on a gateway-capable platform to TOFU, unchanged', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(null));
+    const first = await controller.connect(host);
+    expect(first).toMatchObject({ ok: false, reason: 'trust-required' });
+    expect(trusted.store.get).toHaveBeenCalledWith('fixture-host');
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'awaiting-trust', gatewayFailure: null });
+    expect((await controller.acceptPresentedHostKey()).ok).toBe(true);
+    expect(trusted.store.record).toHaveBeenCalled();
+    expect(capability.connectCalls.every((call) => !Object.prototype.hasOwnProperty.call(call, 'gateway'))).toBe(true);
+  });
+
+  it('reviewer probe P2: a gateway connect never reuses a live ordinary connection to the same host', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.connectCalls[1]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    expect(capability.closedConnectionIds).toContain('connection-1');
+    expect(controller.getSnapshot().connectionId).toBe('gateway-1');
+    expect(trusted.store.get).toHaveBeenCalledTimes(1);
+
+    // The reconnect stays on the gateway, still without the trust store.
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls[2]).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    expect(trusted.store.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a gateway connect without the receipt instead of handing back the live ordinary connection', async () => {
+    const capability = new GatewayCapability();
+    capability.receipt = false;
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(host)).ok).toBe(true);
+    const result = await controller.connect(gatewayHost);
+    expect(result).toMatchObject({ ok: false, reason: 'failed' });
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.closedConnectionIds).toEqual(expect.arrayContaining(['connection-1', 'gateway-1']));
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', connectionId: null, trustDecision: null });
+    expect((await controller.refreshSessions()).ok).toBe(false);
+  });
+
+  it('an ordinary connect never keeps riding a live gateway connection to the same host', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(Object.prototype.hasOwnProperty.call(capability.connectCalls[1], 'gateway')).toBe(false);
+    expect(capability.connectCalls[1]!.expectedHostKey).toEqual(PIN);
+    expect(capability.closedConnectionIds).toContain('gateway-1');
+
+    capability.emitLost();
+    await waitFor(() => capability.connectCalls.length === 3 && controller.getSnapshot().phase === 'connected');
+    expect(Object.prototype.hasOwnProperty.call(capability.connectCalls[2], 'gateway')).toBe(false);
+    expect(trusted.store.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a live gateway connection only for the same normalized gateway route', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    // Same route, spelled differently: the live, receipted connection answers.
+    const same = { ...host, gateway: { serverUrl: 'https://GATEWAY.example/', deviceId: ' device-a ' } };
+    expect((await controller.connect(same)).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+    // A different device behind the same hostId is a fresh gateway dial.
+    expect((await controller.connect({ ...host, gateway: { ...GATEWAY, deviceId: 'device-b' } })).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(2);
+    expect(capability.connectCalls[1]!.gateway).toEqual({ ...GATEWAY, deviceId: 'device-b' });
+    expect(capability.closedConnectionIds).toContain('gateway-1');
+    // An unusable marker never reuses the live gateway connection: it refuses.
+    const refused = await controller.connect({ ...host, gateway: null } as unknown as SshHostTarget);
+    expect(refused).toMatchObject({ ok: false, message: transportRefusalMessage('gateway-invalid', '127.0.0.1') });
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('still reuses a live ordinary connection for an ordinary connect on a gateway-capable platform', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    expect((await controller.connect(host)).ok).toBe(true);
+    expect((await controller.connect({ ...host })).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  it('refuses the reconnect after one attempt with no dial when gateway capability switches off mid-session', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    capability.gatewayTransport = false;
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(controller.getSnapshot().retryAttempt).toBe(1);
+    expect(controller.getSnapshot().error).toBe(
+      `Could not reconnect to 127.0.0.1 after 1 attempt. ${transportRefusalMessage('gateway-unsupported', '127.0.0.1')}`,
+    );
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    // A fresh connect to the same route on the now-incapable platform refuses too, never reusing anything.
+    expect((await controller.connect(gatewayHost)).ok).toBe(false);
+    expect(capability.connectCalls).toHaveLength(1);
+  });
+
+  async function liveGatewayWithTerminal(capability: GatewayCapability, trusted = trustStore(PIN)) {
+    const built = controllerFor(capability, trusted, { retryDelaysMs: [0, 0, 0] });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    const before = controller.getSnapshot();
+    expect(before).toMatchObject({ phase: 'live', connectionId: 'gateway-1' });
+    return { controller, trusted, before };
+  }
+
+  function expectLiveUntouched(controller: ConnectionController, capability: GatewayCapability, before: ReturnType<ConnectionController['getSnapshot']>) {
+    const after = controller.getSnapshot();
+    expect(after.phase).toBe(before.phase);
+    expect(after.connectionId).toBe(before.connectionId);
+    expect(after.generationId).toBe(before.generationId);
+    expect(after.terminals.map((row) => row.name)).toEqual(before.terminals.map((row) => row.name));
+    expect(after.selectedSession?.name).toBe(before.selectedSession?.name);
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closedConnectionIds).toEqual([]);
+    expect(capability.closePtyCalls).toHaveLength(0);
+  }
+
+  it.each([
+    ['a relay link', { ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['an undefined link', { ...gatewayHost, link: undefined }, 'link-and-gateway'],
+    ['a null link', { ...gatewayHost, link: null }, 'link-and-gateway'],
+    ['a sloppy same route plus link', { ...host, gateway: { serverUrl: 'https://GATEWAY.example/', deviceId: ' device-a ' },
+      link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['a null gateway marker', { ...host, gateway: null }, 'gateway-invalid'],
+    ['a malformed device id', { ...host, gateway: { ...GATEWAY, deviceId: '!' } }, 'gateway-invalid'],
+    ['a credential-bearing route', { ...host, gateway: { ...GATEWAY, serverUrl: 'wss://user@gateway.example' } }, 'gateway-invalid'],
+  ] as const)('warm: refuses the live route with %s before any effect, leaving the session alone', async (_name, target, reason) => {
+    const capability = new GatewayCapability();
+    const { controller, trusted, before } = await liveGatewayWithTerminal(capability);
+    const result = await controller.connect(target as unknown as SshHostTarget);
+    expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage(reason, '127.0.0.1') });
+    expect(unsupportedTransport(target, { gateway: true, link: false })).toMatchObject({ refused: true, reason });
+    expectLiveUntouched(controller, capability, before);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+    // The live session still serves.
+    expect((await controller.refreshSessions()).ok).toBe(true);
+  });
+
+  it('warm: does not reuse the live gateway connection once the platform stops reporting gateway capability', async () => {
+    const capability = new GatewayCapability();
+    const { controller, trusted, before } = await liveGatewayWithTerminal(capability);
+    capability.gatewayTransport = false;
+    const result = await controller.connect(gatewayHost);
+    expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage('gateway-unsupported', '127.0.0.1') });
+    expectLiveUntouched(controller, capability, before);
+    expect(trusted.store.get).not.toHaveBeenCalled();
+  });
+
+  const REFUSED_WHILE_HELD = [
+    ['link and gateway', { ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } }, 'link-and-gateway'],
+    ['a null gateway marker', { ...host, gateway: null }, 'gateway-invalid'],
+  ] as const;
+
+  type HeldState = 'reconnecting' | 'background-past-grace' | 'released' | 'lost';
+
+  /**
+   * A gateway session with `alpha` attached, driven into a state where the
+   * controller holds the session but no transport. `recover` finishes the
+   * state's own way back (release the pending re-dial, return to foreground,
+   * or an explicit Retry).
+   */
+  async function heldGatewaySession(state: HeldState) {
+    const capability = new GatewayCapability();
+    let now = 1_000;
+    const trusted = trustStore(PIN);
+    const built = controllerFor(capability, trusted, { now: () => now, retryDelaysMs: state === 'lost' ? [0, 0] : [0] });
+    controllers.push(built.controller);
+    const controller = built.controller;
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    expect((await controller.refreshSessions()).ok).toBe(true);
+    expect((await controller.attachSession(session('alpha'))).ok).toBe(true);
+    const live = controller.getSnapshot();
+    let recover: () => Promise<void>;
+    let dialAttempts = () => capability.connectCalls.length;
+    if (state === 'reconnecting') {
+      const original = capability.connect;
+      const pending: Array<() => void> = [];
+      let wrapped = 0;
+      capability.connect = (options) => {
+        wrapped += 1;
+        return new Promise((resolve, reject) => { pending.push(() => { original(options).then(resolve, reject); }); });
+      };
+      dialAttempts = () => capability.connectCalls.length + pending.length;
+      capability.emitLost();
+      // The ladder's re-dial is on the wire (dial() reports it as `connecting`).
+      await waitFor(() => wrapped === 1);
+      expect(['reconnecting', 'connecting']).toContain(controller.getSnapshot().phase);
+      recover = async () => {
+        capability.connect = original;
+        for (const release of pending.splice(0)) release();
+        await waitFor(() => controller.getSnapshot().phase === 'live');
+      };
+    } else if (state === 'background-past-grace') {
+      await controller.enterBackground(10_000);
+      capability.emitGraceExpired({ connectionId: live.connectionId!, generationId: live.generationId! });
+      await waitFor(() => controller.getSnapshot().connectionId === null);
+      expect(controller.getSnapshot().phase).toBe('background');
+      recover = async () => {
+        now += 10_001;
+        await controller.returnToForeground();
+      };
+    } else if (state === 'released') {
+      await controller.enterBackground(10_000);
+      now += 10_001;
+      await controller.returnToForeground({ reconnect: false });
+      expect(controller.getSnapshot()).toMatchObject({ phase: 'lost', error: RECONNECT_DECLINED_MESSAGE });
+      recover = async () => { expect((await controller.reconnect()).ok).toBe(true); };
+    } else {
+      capability.closeCode = 4503;
+      capability.emitLost();
+      await waitFor(() => controller.getSnapshot().phase === 'lost');
+      recover = async () => {
+        capability.closeCode = null;
+        expect((await controller.reconnect()).ok).toBe(true);
+      };
+    }
+    const held = controller.getSnapshot();
+    expect(held.connectionId).toBeNull();
+    expect(held.terminals.map((row) => row.name)).toEqual(['alpha']);
+    expect(held.selectedSession?.name).toBe('alpha');
+    return { capability, controller, trusted, held, recover, dialAttempts };
+  }
+
+  describe.each(['reconnecting', 'background-past-grace', 'released', 'lost'] as const)('held without a transport: %s', (state) => {
+    it.each(REFUSED_WHILE_HELD)('refuses %s with no effect, and the session still recovers alpha', async (_name, target, reason) => {
+      const { capability, controller, trusted, held, recover, dialAttempts } = await heldGatewaySession(state);
+      const attemptsBefore = dialAttempts();
+      const closedBefore = [...capability.closedConnectionIds];
+      const ptyClosesBefore = capability.closePtyCalls.length;
+      const ptyOpensBefore = capability.openPtyCalls.length;
+
+      const result = await controller.connect(target as unknown as SshHostTarget);
+      expect(result).toEqual({ ok: false, reason: 'failed', message: transportRefusalMessage(reason, '127.0.0.1') });
+
+      const after = controller.getSnapshot();
+      expect(after.phase).toBe(held.phase);
+      expect(after.error).toBe(held.error);
+      expect(after.connectionId).toBeNull();
+      expect(after.terminals.map((row) => row.name)).toEqual(['alpha']);
+      expect(after.selectedSession?.name).toBe('alpha');
+      expect(dialAttempts()).toBe(attemptsBefore);
+      expect(capability.closedConnectionIds).toEqual(closedBefore);
+      expect(capability.closePtyCalls).toHaveLength(ptyClosesBefore);
+      expect(trusted.store.get).not.toHaveBeenCalled();
+
+      // The held session's own recovery still runs and re-attaches alpha over the gateway.
+      await recover();
+      const recovered = controller.getSnapshot();
+      expect(recovered.phase).toBe('live');
+      expect(recovered.terminals.map((row) => row.name)).toEqual(['alpha']);
+      expect(recovered.selectedSession?.name).toBe('alpha');
+      expect(capability.openPtyCalls.length).toBeGreaterThan(ptyOpensBefore);
+      expect(capability.connectCalls.at(-1)).toMatchObject({ gateway: GATEWAY, expectedHostKey: null });
+    });
+  });
+
+  it('cold: a controller holding nothing still reports a refused gateway request in its snapshot', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability);
+    const message = transportRefusalMessage('link-and-gateway', '127.0.0.1');
+    const result = await controller.connect({ ...gatewayHost, link: { relayUrl: 'wss://relay.example', hostId: 'h' } });
+    expect(result).toEqual({ ok: false, reason: 'failed', message });
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'error', error: message, connectionId: null });
+    expect(capability.connectCalls).toHaveLength(0);
+  });
+
+  it('ignores a GATEWAY_CLOSED shape from an ordinary SSH dial', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = gatewayController(capability, trustStore(PIN), [0, 0, 0]);
+    await connectAndList(controller);
+    capability.refuseLogins = { code: GATEWAY_CLOSED_ERROR_CODE, message: 'not a gateway' };
+    capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    expect(capability.connectCalls).toHaveLength(1 + 3);
+    expect(controller.getSnapshot().gatewayFailure).toBeNull();
+  });
+});
+
+describe('authorized reconnect credential refresh', () => {
+  const controllers: ConnectionController[] = [];
+  afterEach(async () => { await Promise.all(controllers.splice(0).map(controller => controller.close())); });
+  const leasedHost = (handleId: string): SshHostTarget => ({ ...host, credential: { kind: 'key-handle', handleId } });
+
+  it('replaces an erased lease while preserving the same selected terminal and one recovery owner', async () => {
+    const capability = new FakeCapability();
+    const original = capability.connect;
+    let erased = false;
+    capability.connect = async options => {
+      if (erased && options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease') {
+        capability.connectCalls.push(options);
+        throw new SshCapabilityError('Key lease erased', 'AUTH_FAILED');
+      }
+      return original(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    expect((await controller.connect(leasedHost('old-lease'))).ok).toBe(true);
+    await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    const selected = controller.getSnapshot().selectedSession;
+    erased = true; capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    const [a,b] = await Promise.all([controller.reconnect(leasedHost('fresh-lease')), controller.reconnect(leasedHost('fresh-lease'))]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(3); // Initial + erased retry + ONE fresh retry.
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+    expect(controller.getSnapshot().selectedSession).toEqual(selected);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('after-reauth'))).ok).toBe(true);
+  });
+
+  it('cancels and joins an obsolete in-flight dial before one refreshed ladder reattaches the terminal', async () => {
+    const capability = new FakeCapability();
+    const original = capability.connect;
+    const entered = deferred<void>();
+    const blocked = deferred<SshConnectResult>();
+    let staleRequest: string | null = null;
+    capability.connect = async options => {
+      if (options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease' && capability.connectCalls.length > 0) {
+        capability.connectCalls.push(options); staleRequest = options.requestId; entered.resolve(); return blocked.promise;
+      }
+      return original(options);
+    };
+    let cancellations = 0;
+    const cancel = capability.cancelOperation;
+    capability.cancelOperation = async options => {
+      if (options.target.kind === 'connect' && options.target.targetRequestId === staleRequest) {
+        cancellations++; blocked.reject(new SshCapabilityError('Cancelled obsolete dial', 'CANCELLED'));
+      }
+      return cancel(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions();
+    await controller.attachSession(session('alpha'));
+    const selected = controller.getSnapshot().selectedSession;
+    capability.emitLost(); await entered.promise;
+    const a = controller.reconnect(leasedHost('fresh-lease'));
+    const b = controller.reconnect(leasedHost('fresh-lease'));
+    expect((await a).ok && (await b).ok).toBe(true);
+    expect(cancellations).toBe(1);
+    expect(capability.connectCalls).toHaveLength(3);
+    expect(capability.openPtyCalls).toHaveLength(2);
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'live', selectedSession: selected });
+  });
+
+  it('rejects changed gateway authority or malformed handles before disturbing a live terminal', async () => {
+    const capability = new GatewayCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    expect((await controller.connect(gatewayHost)).ok).toBe(true);
+    await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    const before = controller.getSnapshot();
+    for (const target of [
+      { ...gatewayHost, hostId: 'other' }, { ...gatewayHost, hostname: 'elsewhere' },
+      { ...gatewayHost, username: 'other-user' }, { ...gatewayHost, port: 23 },
+      { ...gatewayHost, gateway: { ...GATEWAY, deviceId: 'other-device' } },
+      { ...gatewayHost, gateway: { ...GATEWAY, serverUrl: 'wss://other.example' } },
+      { ...host }, { ...gatewayHost, credential: { kind: 'key-handle', handleId: '' } },
+    ]) {
+      expect((await controller.reconnect(target as SshHostTarget)).ok).toBe(false);
+      expect(controller.getSnapshot()).toEqual(before);
+    }
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('still-live'))).ok).toBe(true);
+  });
+
+  it('refreshes a healthy connection lease for its next reconnect without closing its live PTY', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions();
+    await controller.attachSession(session('alpha'));
+    expect((await controller.reconnect(leasedHost('fresh-lease'))).ok).toBe(true);
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(capability.closePtyCalls).toHaveLength(0);
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'live');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+  });
+
+  it('does not apply a queued credential refresh after the controller closes', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const refreshed = controller.reconnect(leasedHost('fresh-lease'));
+    await controller.close();
+    expect(await refreshed).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(capability.connectCalls).toHaveLength(1);
+    expect(await capability.resourceSnapshot('closed')).toMatchObject({ connections:0, ptys:0 });
+  });
+  it('supersedes a queued refresh when a newer connect enters before the refresh body', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const obsolete = controller.reconnect(leasedHost('fresh-lease'));
+    const newer = controller.connect({ ...host, hostId: 'newer-host', hostname: 'newer.example' });
+    expect((await newer).ok).toBe(true);
+    expect(await obsolete).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(controller.getSnapshot().hostId).toBe('newer-host');
+    expect(capability.connectCalls).toHaveLength(2);
+  });
+
+  it('supersedes serialized refreshes when a newer explicit connect keeps the same host binding', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const first = controller.reconnect(leasedHost('queued-first'));
+    const second = controller.reconnect(leasedHost('queued-second'));
+    expect((await controller.connect(leasedHost('explicit-newer'))).ok).toBe(true);
+    expect(await first).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(await second).toMatchObject({ ok: false, reason: 'superseded' });
+    expect(capability.connectCalls).toHaveLength(1); // Explicit connect reused the healthy transport.
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'old-lease' });
+  });
+
+  it('serializes different fresh credentials within the same host context without superseding either', async () => {
+    const capability = new FakeCapability();
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    const first = controller.reconnect(leasedHost('queued-first'));
+    const second = controller.reconnect(leasedHost('queued-second'));
+    expect((await first).ok).toBe(true);
+    expect((await second).ok).toBe(true);
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'queued-second' });
+  });
+
+  it('uses a fresh transient passphrase for only the first replacement dial and never caches it', async () => {
+    const capability = new FakeCapability(); const original = capability.connect;
+    const { controller } = controllerFor(capability, trustStore(PIN), { retryDelaysMs: [0, 0] }); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease'));
+    capability.refuseDials = true; capability.emitLost();
+    await waitFor(() => controller.getSnapshot().phase === 'lost');
+    capability.refuseDials = false;
+    const start = capability.connectCalls.length;
+    capability.connect = async options => {
+      if (capability.connectCalls.length === start) {
+        capability.connectCalls.push(options);
+        throw new SshCapabilityError('First replacement transport dropped', 'CONNECTION_LOST');
+      }
+      return original(options);
+    };
+    expect((await controller.reconnect({ ...leasedHost('fresh-lease'), credential: {
+      kind: 'key-handle', handleId: 'fresh-lease', passphrase: 'fixture passphrase',
+    } })).ok).toBe(true);
+    expect(capability.connectCalls[start]?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease', passphrase: 'fixture passphrase' });
+    expect(capability.connectCalls[start + 1]?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+    capability.emitLost(); await waitFor(() => controller.getSnapshot().phase === 'connected');
+    expect(capability.connectCalls.at(-1)?.credential).toEqual({ kind: 'key-handle', handleId: 'fresh-lease' });
+  });
+
+  it('never overwrites a newer host connect while an obsolete dial cancellation finishes', async () => {
+    const capability = new FakeCapability(); const original = capability.connect;
+    const entered = deferred<void>(), cancelEntered = deferred<void>(), releaseCancel = deferred<void>();
+    const blocked = deferred<SshConnectResult>(); let obsolete: string | null = null;
+    capability.connect = async options => {
+      if (options.credential.kind === 'key-handle' && options.credential.handleId === 'old-lease' && capability.connectCalls.length > 0) {
+        capability.connectCalls.push(options); obsolete = options.requestId; entered.resolve(); return blocked.promise;
+      }
+      return original(options);
+    };
+    const originalCancel = capability.cancelOperation;
+    capability.cancelOperation = async options => {
+      if (options.target.kind === 'connect' && options.target.targetRequestId === obsolete) {
+        cancelEntered.resolve(); await releaseCancel.promise;
+        blocked.reject(new SshCapabilityError('Cancelled old dial', 'CANCELLED'));
+      }
+      return originalCancel(options);
+    };
+    const { controller } = controllerFor(capability, trustStore(PIN)); controllers.push(controller);
+    await controller.connect(leasedHost('old-lease')); await controller.refreshSessions(); await controller.attachSession(session('alpha'));
+    capability.emitLost(); await entered.promise;
+    const refresh = controller.reconnect(leasedHost('fresh-lease'));
+    try {
+      await cancelEntered.promise;
+      expect((await controller.connect({ ...host, hostId: 'new-host', hostname: 'new.example' })).ok).toBe(true);
+      releaseCancel.resolve();
+      expect(await refresh).toMatchObject({ ok: false, reason: 'superseded' });
+      expect(controller.getSnapshot()).toMatchObject({ hostId: 'new-host', phase: 'connected' });
+      expect(capability.connectCalls).toHaveLength(3);
+      expect(capability.connectCalls.at(-1)?.hostId).toBe('new-host');
+    } finally { releaseCancel.resolve(); await refresh; }
+  });
+
 });

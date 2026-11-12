@@ -1,0 +1,26 @@
+{
+  "ed25519": {
+    "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdOUe/RL4ueMiTai8tfQmeSP2yvIwF0WKOjWMHwB0gp",
+    "fingerprint": "SHA256:7AOMbhNlZOz/pEUTfQCxrsSKD+vxsnSMSUCZsHun1X0"
+  },
+  "ecdsab256": {
+    "line": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBBxEd9veMZ74FTLzE14rSAWAdXkJhq8ckm076/SGfwu1nlc/BlZvzMUhePfWb5p/lOy4zLaYwsGBe+AzqLIl+xk=",
+    "fingerprint": "SHA256:Wvsgqid7BsOMBRDn+x8q7J7lotFxIvSpebiorUskhUY"
+  },
+  "ecdsab384": {
+    "line": "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBM4A3SbCTegbs1Ip+6A1JiusiQwR88RNsnoi7XPuwvkFo0AuiLH0OV+zCMRtLjmCmQVN3/iKctXLs38NxkepG7MuF/dpiBfUemkyOF/2YDWbFkHHP8J8bVfl151tTWfpSA==",
+    "fingerprint": "SHA256:sILZIVx5cuVQ2cS4LJ5tyt6Wl5wYUfDDBBpEuo+JZC4"
+  },
+  "ecdsab521": {
+    "line": "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAG4eiFLS4xGb/XOhb52JsJKHL2QmYxDHd0xCOjMaG2D27IbNTpkrQ/9+ltZNU0NASXrvMj0pG1K71tBvwdwjTItNAG2KSHsk+HwnUDopFDxsAQwgd+G3lxcsHprpI/tNhM4NAuLGR68FCy1mhW+j4MppdnJkDhT6aaFvdZvuLRF5gzERg==",
+    "fingerprint": "SHA256:G4m6Rg555O6nsTR37akcC+GE2WXG7MUDWx2v5MGnnJc"
+  },
+  "rsab3072": {
+    "line": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCmxkkL8ifVIV9cl8Ws1timvD783Ghfhl0nUCwunGiPDZiIivIxvD9fyERAmYMPVBNgZFHYV6DRPcThg8c+lCnlpF+UGeYVkgZnPCnd7KKsAZdNUSGfBz8KmWT1fasmguCpWfg7Fgr1JeLKbmghRrXiW4r5Dn48m8o23EB35klFHTv6UJAIcsAxwvwoi/Azj9C4q8Ro5blV2Bn3TXcMA4cG6isN7PeIXWZrtAX/oivM2pzbmEIyHyY8sThIFl9qur6t85zMOtwSsUdbXY/X3Y+EkjtaBNJTJ43jNeE379pzssJw93sECXKYQ2C5zS7AQRKpFwCGo27/ZeWp4aRP4vwQ2zpO5dJhTQXnnTdVaUupm0SdZRQYjYm7U9Rg75SnTo+vuk/fBmcrL+Rn8AlD4QhzS2+S7Gata2nLPnaU0GTeJQbWJXGrfQlzKw7/Ic480Y4Ha/YTjzEIkND1T6uxrmKnoFAwoZF8RaOipt1bYqi+kEyPG5XgtFRXiQ8+xUcWTUs=",
+    "fingerprint": "SHA256:i0Za4sa7JxSUcwN1oLDjj8b20ofQP+c88Ez7wXFzyms"
+  },
+  "rsab1024": {
+    "line": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQDx9Pm5ODpRHWERV1gq2G+QSk9ANSOVqaHWRzj5FcCTCU1z013UyMlIxj3LomSB+NLiOX672PirhhMNKAcc8JgFOYr/7XzQOffUnfrRoSSXH2hHuJWxE9H6EcfPCRWevbbGX/0wypVWzzZFpH9MMRO7u36CK3clbIKKAg9Y1Wa3Sw==",
+    "fingerprint": "SHA256:Ba6DW5FaihckmgHdoHJM8YmxBJoEvv0rKS/iyJNVJiQ"
+  }
+}

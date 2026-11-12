@@ -137,13 +137,14 @@ onMounted(() => rejectEl.value?.focus({ preventScroll: true }));
   width: min(480px, 100%);
   padding: var(--sp-4);
   background: var(--surface);
-  border: 1px solid var(--warning);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   color: var(--fg);
   box-shadow: var(--shadow-card);
 }
 .trust-card.changed {
-  border-color: var(--error);
+  border-color: var(--border-strong);
+  background-color: color-mix(in srgb, var(--error) 10%, transparent);
 }
 .trust-card.changed .trust-title {
   color: var(--error);
@@ -202,7 +203,7 @@ onMounted(() => rejectEl.value?.focus({ preventScroll: true }));
 .btn-primary {
   background: var(--accent);
   color: var(--on-accent);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
 }
 .btn-secondary {
   background: var(--surface-2);

@@ -177,12 +177,13 @@ const emit = defineEmits<{
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .discard:hover {
-  border-color: var(--error);
+  border-color: var(--border-strong);
   color: var(--error);
+  background-color: color-mix(in srgb, var(--error) 10%, transparent);
 }
 .discard.armed {
   background: var(--error);
-  border-color: var(--error);
+  border-color: var(--border-strong);
   color: var(--on-accent);
 }
 .send {
@@ -190,7 +191,7 @@ const emit = defineEmits<{
   height: var(--control-h);
   padding: 0 var(--sp-4);
   background: var(--accent);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   color: var(--on-accent);
   font-family: var(--font-ui);

@@ -296,7 +296,7 @@ function onSortChange(event: Event): void {
 }
 .add-btn:hover:not(:disabled) {
   color: var(--accent);
-  border-color: var(--accent-dim);
+  border-color: var(--border-strong);
   background: var(--accent-soft);
 }
 .add-btn:disabled,

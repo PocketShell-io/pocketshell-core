@@ -464,3 +464,329 @@ describe('LinkCapability connection lifecycle', () => {
     expect(snapshot).toMatchObject({ connections: 1, ptys: 1, sftpClients: 0, forwards: 0 });
   });
 });
+
+describe('LinkCapability exec semantics', () => {
+  const encoder = new TextEncoder();
+
+  interface SentDataFrame {
+    channel: number;
+    bytes: Uint8Array;
+    text: string;
+  }
+
+  /** Client->host data frames, split back into channel id + payload. */
+  function sentDataFrames(host: FakeLinkHost): SentDataFrame[] {
+    return host.sent
+      .filter((data): data is Uint8Array => typeof data !== 'string')
+      .map((data) => {
+        const channel = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, false);
+        const bytes = data.slice(4);
+        return { channel, bytes, text: new TextDecoder().decode(bytes) };
+      });
+  }
+
+  /** Let the openChannel resolution (and everything it chains) settle. */
+  function flushMicrotasks(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it('rides stdin as main-channel data, then a client eof, once the spawn is confirmed', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'pocketshell env set',
+      timeoutMs: 15000,
+      stdinBase64: btoa('{"THEME":"dark"}'),
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    await flushMicrotasks();
+    const data = sentDataFrames(host);
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({ channel: 1, text: '{"THEME":"dark"}' });
+    const controls = host.controlFrames();
+    expect(controls[controls.length - 1]).toMatchObject({ t: 'eof', ch: 1 });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 0 }));
+    await expect(pending).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+  });
+
+  it('carries binary-exact stdin bytes through the base64 round trip', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const payload = new Uint8Array([0x00, 0x01, 0x0a, 0x80, 0xff, 0xee]);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'cat > ~/blob',
+      timeoutMs: 15000,
+      stdinBase64: btoa(String.fromCharCode(...payload)),
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    await flushMicrotasks();
+    const data = sentDataFrames(host);
+    expect(data).toHaveLength(1);
+    expect(Array.from(data[0]?.bytes ?? [])).toEqual(Array.from(payload));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 0 }));
+    await expect(pending).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it('still closes the stdin pipe when the payload is empty', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'pocketshell env set',
+      timeoutMs: 15000,
+      stdinBase64: '',
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    await flushMicrotasks();
+    const data = sentDataFrames(host);
+    expect(data).toHaveLength(1);
+    expect(data[0]?.bytes.byteLength).toBe(0);
+    const controls = host.controlFrames();
+    expect(controls[controls.length - 1]).toMatchObject({ t: 'eof', ch: 1 });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 0 }));
+    await expect(pending).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it('sends no stdin frames when stdinBase64 is omitted', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'pocketshell tree --json',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    await flushMicrotasks();
+    expect(sentDataFrames(host)).toHaveLength(0);
+    expect(host.controlFrames().some((frame) => frame.t === 'eof')).toBe(false);
+    host.hostSendBinary(1, encoder.encode('tree-json'));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 0 }));
+    await expect(pending).resolves.toMatchObject({ stdout: 'tree-json', exitCode: 0 });
+  });
+
+  it('treats timeoutMs 0 as unbounded: open omits timeout_ms and exit still wins', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'pocketshell repos clone slow',
+      timeoutMs: 0,
+    });
+    const open = host.controlFrames().find((frame) => frame.t === 'open');
+    expect(open).toMatchObject({ mode: 'exec', cmd: 'pocketshell repos clone slow' });
+    expect('timeout_ms' in (open ?? {})).toBe(false);
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendBinary(1, encoder.encode('cloned'));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 3 }));
+    await expect(pending).resolves.toMatchObject({ exitCode: 3, timedOut: false, stdout: 'cloned' });
+    expect(host.controlFrames().some((frame) => frame.t === 'close')).toBe(false);
+  });
+
+  it('rejects with the daemon spawn error when opened carries ok=false', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'definitely-missing-binary',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(
+      JSON.stringify({
+        v: 1,
+        t: 'opened',
+        ch: 1,
+        ok: false,
+        code: 'EXEC_SPAWN_FAILED',
+        message: 'spawn definitely-missing-binary ENOENT',
+      }),
+    );
+    await expect(pending).rejects.toMatchObject({
+      code: 'EXEC_SPAWN_FAILED',
+      message: expect.stringContaining('ENOENT'),
+    });
+  });
+
+  it('rejects a ch_error arriving on the err-channel alias', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'sleep 100',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendText(
+      JSON.stringify({
+        v: 1,
+        t: 'ch_error',
+        ch: 0x40000001,
+        code: 'EXEC_HOST_ABORT',
+        message: 'host watchdog killed the command',
+      }),
+    );
+    await expect(pending).rejects.toMatchObject({ code: 'EXEC_HOST_ABORT' });
+  });
+
+  it('resolves a null exit code when the exit frame omits exit_code', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'sh -c kill-term',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, timed_out: false }));
+    await expect(pending).resolves.toMatchObject({ exitCode: null, timedOut: false });
+  });
+
+  it('keeps chunked stdout in arrival order across frames', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'pocketshell tree',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendBinary(1, encoder.encode('A'.repeat(70000)));
+    host.hostSendBinary(1, encoder.encode('B'.repeat(70000)));
+    host.hostSendBinary(1, encoder.encode('|tail|'));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 0 }));
+    await expect(pending).resolves.toMatchObject({
+      stdout: `${'A'.repeat(70000)}${'B'.repeat(70000)}|tail|`,
+      exitCode: 0,
+    });
+  });
+
+  it('muxes concurrent execs by channel, stdout and stderr apart', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const makeExec = (requestId: string, command: string) =>
+      capability.exec({
+        connectionId: result.connectionId,
+        generationId: 'gen-1',
+        requestId,
+        command,
+        timeoutMs: 15000,
+      });
+    const pendingA = makeExec('req-a', 'a exec --no-status s1');
+    const pendingB = makeExec('req-b', 'pocketshell env set');
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 2, ok: true, err_ch: 0x40000002 }));
+    host.hostSendBinary(1, encoder.encode('A-out'));
+    host.hostSendBinary(2, encoder.encode('B-out'));
+    host.hostSendBinary(0x40000002, encoder.encode('B-err'));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 1 }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 2, exit_code: 2 }));
+    const [a, b] = await Promise.all([pendingA, pendingB]);
+    expect(a).toMatchObject({ requestId: 'req-a', stdout: 'A-out', stderr: '', exitCode: 1 });
+    expect(b).toMatchObject({ requestId: 'req-b', stdout: 'B-out', stderr: 'B-err', exitCode: 2 });
+    const openChannels = host
+      .controlFrames()
+      .filter((frame) => frame.t === 'open')
+      .map((frame) => frame.ch)
+      .sort();
+    expect(openChannels).toEqual([1, 2]);
+  });
+
+  it('refuses a new exec after the link dropped with CONNECTION_LOST', async () => {
+    const host = new FakeLinkHost();
+    const { capability, result } = await connectThrough(host);
+    host.dropSocket();
+    await expect(
+      capability.exec({
+        connectionId: result.connectionId,
+        generationId: 'gen-1',
+        requestId: 'req-exec',
+        command: 'true',
+        timeoutMs: 15000,
+      }),
+    ).rejects.toMatchObject({ code: 'CONNECTION_LOST' });
+    expect(host.controlFrames().some((frame) => frame.t === 'open')).toBe(false);
+  });
+
+  it('rejects execs on an unknown connection with NO_SUCH_CONNECTION', async () => {
+    const host = new FakeLinkHost();
+    const { capability } = await connectThrough(host);
+    await expect(
+      capability.exec({
+        connectionId: 'link-none',
+        generationId: 'gen-1',
+        requestId: 'req-exec',
+        command: 'true',
+        timeoutMs: 15000,
+      }),
+    ).rejects.toMatchObject({ code: 'NO_SUCH_CONNECTION' });
+  });
+
+  it('ignores unknown control types while an exec is in flight', async () => {
+    const host = new FakeLinkHost();
+    host.autoExec = false;
+    const { capability, result } = await connectThrough(host);
+    const pending = capability.exec({
+      connectionId: result.connectionId,
+      generationId: 'gen-1',
+      requestId: 'req-exec',
+      command: 'true',
+      timeoutMs: 15000,
+    });
+    host.hostSendText(JSON.stringify({ v: 1, t: 'opened', ch: 1, ok: true, err_ch: 0x40000001 }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'ch_note', ch: 1, note: 'future' }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'wobble', ch: 1 }));
+    host.hostSendText(JSON.stringify({ v: 1, t: 'exit', ch: 1, exit_code: 2 }));
+    await expect(pending).resolves.toMatchObject({ exitCode: 2 });
+  });
+
+  it('still bounds the spawn confirmation at 10s when timeoutMs is 0', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeLinkHost();
+      host.autoExec = false;
+      const { capability, result } = await connectThrough(host);
+      const pending = capability.exec({
+        connectionId: result.connectionId,
+        generationId: 'gen-1',
+        requestId: 'req-exec',
+        command: 'pocketshell repos clone slow',
+        timeoutMs: 0,
+      });
+      const rejection = expect(pending).rejects.toMatchObject({ code: 'TIMED_OUT' });
+      await vi.advanceTimersByTimeAsync(10000);
+      await rejection;
+      expect(host.controlFrames().some((frame) => frame.t === 'close')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

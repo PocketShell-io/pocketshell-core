@@ -1,3 +1,4 @@
+import { normalizeGatewayTarget, type GatewayTransportTarget } from './gatewayTransport';
 import { MAX_PORT } from './net';
 import { isValidTcpPort } from './portForwardPolicy';
 import type { SshHostTarget, SshKeyHandleCredential } from './sshCapability';
@@ -43,6 +44,16 @@ type SavedHostEndpoint = Pick<SshHostTarget, 'hostname' | 'port' | 'username'>;
 export interface SavedHostInput<C = SavedHostKeyRef> extends SavedHostEndpoint {
   name: string;
   credentialRef: C | null;
+  /**
+   * Set when the host is reached through the PocketShell gateway (#3086): the
+   * canonical gateway origin and the enrolled device id, exactly
+   * {@link HostEntry.gateway}. `hostname`/`port` are then display labels the
+   * gateway transport never resolves or dials. Absent for an ordinary host —
+   * the key is omitted, never `undefined` or `null`, so a stored document
+   * reads the same as before for every non-gateway host. Neither field is a
+   * secret: the host-key pin and the route token live with the platform.
+   */
+  gateway?: GatewayTransportTarget;
 }
 
 export interface SavedHost<C = SavedHostKeyRef> extends SavedHostInput<C> {
@@ -122,7 +133,21 @@ export function validateSavedHostInput<C>(
   if (username.length === 0 || username.length > 128 || /[\s\u0000-\u001f\u007f]/.test(username)) {
     throw new SavedHostStoreError('Enter a valid SSH user name.');
   }
-  return { name, hostname, port: input.port, username, credentialRef: validateCredential(input.credentialRef) };
+  const normalized: SavedHostInput<C> = { name, hostname, port: input.port, username, credentialRef: validateCredential(input.credentialRef) };
+  // Presence, not truthiness: a null or malformed marker is refused, never
+  // silently dropped into an ordinary SSH host (core #3059). Only an absent
+  // (or `undefined`) member means "not a gateway host".
+  if (input.gateway !== undefined) normalized.gateway = validateGatewayMarker(input.gateway);
+  return normalized;
+}
+
+/** A saved host's gateway marker, canonical, or a refusal. */
+function validateGatewayMarker(value: unknown): GatewayTransportTarget {
+  const target = normalizeGatewayTarget(value);
+  if (target === null) {
+    throw new SavedHostStoreError('Enter the gateway address as a wss:// origin and the device id the gateway enrolled.');
+  }
+  return target;
 }
 
 function validateHost<C>(value: unknown, validateCredential: SavedHostCredentialValidator<C>): SavedHost<C> {
@@ -143,6 +168,7 @@ function validateHost<C>(value: unknown, validateCredential: SavedHostCredential
     port: value.port,
     username: value.username,
     credentialRef: (value.credentialRef ?? null) as C | null,
+    ...(value.gateway !== undefined ? { gateway: value.gateway as GatewayTransportTarget } : {}),
   }, validateCredential);
   return { id: value.id, ...input };
 }
@@ -208,7 +234,8 @@ function sameHost<C>(left: SavedHost<C>, right: SavedHost<C>): boolean {
     && left.hostname === right.hostname
     && left.port === right.port
     && left.username === right.username
-    && JSON.stringify(left.credentialRef) === JSON.stringify(right.credentialRef);
+    && JSON.stringify(left.credentialRef) === JSON.stringify(right.credentialRef)
+    && JSON.stringify(left.gateway ?? null) === JSON.stringify(right.gateway ?? null);
 }
 
 function cloneHost<C>(host: SavedHost<C>): SavedHost<C> {
@@ -418,7 +445,14 @@ export function savedHostSshTarget(
     handleId: host.credentialRef.handleId,
     ...(host.credentialRef.passphraseRequired && passphrase ? { passphrase } : {}),
   };
-  return { hostId: host.id, hostname: host.hostname, port: host.port, username: host.username, credential };
+  return {
+    hostId: host.id,
+    hostname: host.hostname,
+    port: host.port,
+    username: host.username,
+    credential,
+    ...(host.gateway ? { gateway: { ...host.gateway } } : {}),
+  };
 }
 
 /**
@@ -439,6 +473,7 @@ export function savedHostEntry<C>(host: SavedHost<C>): HostEntry {
     localForwards: [],
     remoteForwards: [],
     fromConfig: false,
+    ...(host.gateway ? { gateway: { ...host.gateway } } : {}),
   };
 }
 

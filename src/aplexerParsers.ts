@@ -252,3 +252,43 @@ export function aplexerRecordToSummary(record: AplexerSessionRecord): SessionSum
     ...(record.phase ? { aplexerPhase: record.phase } : {}),
   };
 }
+
+/**
+ * Parse `a engines --json` into the AVAILABLE engine IDs for the launch
+ * picker. The contract is a bare JSON array of engine rows, each carrying at
+ * least `name` (the engine ID the picker and `pocketshell agent <engine>`
+ * speak) and `available` (whether this host can run it now); unknown fields
+ * (`command`, `env_unset`, …) are the host's business and are ignored.
+ *
+ * Unusable output answers null — NOT [] — because the two mean different
+ * things to the picker: [] is a successful query on a host with no available
+ * engine ("no engines here"), null is a query that could not be answered and
+ * hands the picker its small static fallback. A well-formed row that merely
+ * is not available is a real answer and stays dropped, and one corrupt row
+ * among good ones never refuses the batch; but when EVERY row came back
+ * malformed — no usable name, no `available` boolean, not an object — the
+ * shape itself is unreadable and the answer is null. An emptied picker must
+ * mean an empty catalog, never a misread one.
+ */
+export function parseAplexerEngineIds(stdout: string): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const out: string[] = [];
+  let wellFormed = 0;
+  for (const row of parsed) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) continue;
+    const doc = row as Record<string, unknown>;
+    const name = doc['name'];
+    const available = doc['available'];
+    if (typeof name !== 'string' || name.trim() === '' || typeof available !== 'boolean') continue;
+    wellFormed += 1;
+    if (available === true) out.push(name);
+  }
+  if (wellFormed === 0 && parsed.length > 0) return null;
+  return out;
+}
