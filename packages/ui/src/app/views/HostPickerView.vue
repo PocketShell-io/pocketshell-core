@@ -1,3 +1,11 @@
+<script lang="ts">
+// Admission provenance survives picker remounts; the existing store/platform
+// retain lifecycle ownership. Missing metadata can never authorize reuse.
+const directAdmissions = new WeakMap<object, {
+  accountId: string; vaultId: string; epoch: number; binding: string; connectionId: string;
+}>();
+</script>
+
 <script setup lang="ts">
 // Host picker: reads ~/.ssh/config, lists hosts, and connects on click.
 // After a successful connect it navigates to the host workspace, where the
@@ -28,7 +36,7 @@
 //   - A FAILED AUTO-CONNECT LEAVES THE DEFAULT ALONE. The error is shown on the
 //     picker; the setting stays set, because a host being down is not a reason
 //     to forget which host the user wants.
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
@@ -182,7 +190,7 @@ const autoConnecting = ref(false);
  * verdict leaks into the next one. Each dial closes over its own token, so a
  * Cancel press can only ever mean the dial whose banner was on screen.
  */
-let activeDial: { cancelled: boolean } | null = null;
+let activeDial: { cancelled: boolean; accountDirect: boolean; finished: Promise<void>; cancel: () => void } | null = null;
 interface WorkspaceBootstrap { cancelled: boolean; navigating: boolean; connectionId: string; hostKey: string; request: number }
 let activeBootstrap: WorkspaceBootstrap | null = null;
 let pendingBootstrapClose: Promise<void> | null = null;
@@ -394,7 +402,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   pickerAlive = false;
   pickerRequest++;
-  if (activeDial) activeDial.cancelled = true;
+  if (activeDial) activeDial.cancel();
   cancelWorkspaceBootstrap();
   window.removeEventListener('focus', refreshAccountStatus);
 });
@@ -445,7 +453,19 @@ async function onReloadHosts(): Promise<void> {
  */
 function onCancelConnect(): void {
   pickerRequest++;
-  if (activeDial) activeDial.cancelled = true;
+  if (activeDial) {
+    const token = activeDial;
+    token.cancel();
+    if (token.accountDirect) {
+      // The store still owns the native attempt until it settles and the
+      // cancelled result closes. Queue another selection behind that cleanup
+      // instead of letting the old completion overwrite its connection ID.
+      pendingBootstrapClose = token.finished;
+      void token.finished.finally(() => {
+        if (pendingBootstrapClose === token.finished) pendingBootstrapClose = null;
+      });
+    }
+  }
   cancelWorkspaceBootstrap();
   autoConnecting.value = false;
   connectingTo.value = null;
@@ -465,9 +485,8 @@ async function onConnect(host: HostEntry, trusted = false): Promise<void> {
   if (pendingBootstrapClose) await pendingBootstrapClose;
   if (!pickerAlive || request !== pickerRequest) return;
   if (localAdmission && !currentLocalAdmission(host,localAdmission)) {connectError.value = 'Local host changed. Connect again.';return;}
-  // Already connected to this host: go back in, don't dial again. A second
-  // dial would open a second connection and orphan the first — the session
-  // panel, terminal pool and forwards all key off the old id.
+  // Already connected to this host: go back in without asking the platform
+  // to reconnect. The platform owns its host connection pool and forwards.
   if (hostEntryId(host) === connectedKey.value) {
     await enterWorkspace(host,localAdmission);
     return;
@@ -490,14 +509,55 @@ async function onAccountDirectConnect(host: HostEntry): Promise<void> {
   const directEndpoint = (row: HostEntry) => JSON.stringify([row.name, row.hostname, row.port, row.user]);
   // Account rows are reactive and may be edited in place while native SSH is
   // pending. The dial and its ownership must retain the admitted endpoint.
-  const admitted = { ...host };
+  let admitted = { ...host };
   const binding = directEndpoint(admitted);
   const current = () => pickerAlive && request === pickerRequest && directAccountScope.value === scope
     && keyVault.store.state === 'unlocked' && keyVault.store.vaultId === scope.vaultId && keyVault.store.epoch === scope.epoch
     && accountDirectHosts.value.some(row => directEndpoint(row) === binding && !hasManagedMarker(row) && row.local !== true);
-  if (pendingBootstrapClose) await pendingBootstrapClose;
-  if (await keyVault.platform.accountId() !== scope.accountId || !current()) return;
-  if (!(await dial(admitted, true)) || !pickerAlive || request !== pickerRequest) return;
+  if (pendingBootstrapClose) {
+    connectingTo.value = host.name;
+    connectingKey.value = hostEntryId(host);
+    try {
+      await pendingBootstrapClose;
+    } finally {
+      if (pickerAlive && request === pickerRequest) {
+        connectingTo.value = null;
+        connectingKey.value = null;
+      }
+    }
+    if (!current()) return;
+  }
+  const previousHost = connection.activeHost;
+  const previousId = connection.connectionId;
+  const previousState = connection.state;
+  try {
+    if (await keyVault.platform.accountId() !== scope.accountId || !current()) return;
+  } catch {
+    if (pickerAlive && request === pickerRequest) connectError.value = 'Your account could not be verified. Connect again.';
+    return;
+  }
+  // A newer/foreign result arriving during verification belongs to its own
+  // request: neither reuse it nor replace it with this request's dial.
+  if (connection.activeHost !== previousHost || connection.connectionId !== previousId
+    || connection.state !== previousState) return;
+  let resumed = false;
+  if (previousHost && previousId) {
+    const proof = directAdmissions.get(previousHost);
+    const sameScope = proof?.connectionId === previousId && proof.accountId === scope.accountId
+      && proof.vaultId === scope.vaultId && proof.epoch === scope.epoch;
+    const admittedPrevious = sameScope && proof.binding === directEndpoint(previousHost) && previousState === 'connected'
+      && !hasManagedMarker(previousHost) && previousHost.local !== true;
+    if (admittedPrevious && proof.binding === binding) {
+      admitted = previousHost;
+      resumed = true;
+    }
+    // Changed/missing admission takes the normal platform path below. The
+    // adapter owns host pooling, reconnect and active forwards; selecting a
+    // different row must not close the previously displayed host here.
+  } else if (previousId || previousState === 'connecting') {
+    return;
+  }
+  if (!resumed && (!(await dial(admitted, true)) || !pickerAlive || request !== pickerRequest)) return;
   const ownedId = connection.activeHost === admitted ? connection.connectionId : null;
   const ownsConnection = () => ownedId !== null && connection.connectionId === ownedId && connection.activeHost === admitted;
   let sameAccount = false;
@@ -517,9 +577,16 @@ async function onAccountDirectConnect(host: HostEntry): Promise<void> {
     }
     // An equivalent endpoint is insufficient: another request may now own a
     // newer connection to that same server while the account check awaited.
-    if (ownsConnection()) await connection.disconnect().catch(() => undefined);
+    if (ownsConnection()) {
+      const closing = connection.disconnect().catch(() => undefined);
+      pendingBootstrapClose = closing;
+      await closing;
+      if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
+    }
     return;
   }
+  directAdmissions.set(admitted, {accountId: scope.accountId, vaultId: scope.vaultId, epoch: scope.epoch,
+    binding, connectionId: ownedId!});
   enterPlainWorkspace(admitted);
 }
 
@@ -554,37 +621,62 @@ async function dial(host: HostEntry, accountDirect = false): Promise<boolean> {
   failedHost.value = null;
   connectingTo.value = host.name;
   connectingKey.value = hostEntryId(host);
-  const token = { cancelled: false };
+  let finish!: () => void;
+  const request = pickerRequest;
+  const token = { cancelled: false, accountDirect, finished: new Promise<void>(resolve => { finish = resolve; }),
+    cancel: () => { token.cancelled = true; rejectOwnedTrust(); } };
+  const rejectOwnedTrust = () => {
+    const question = connection.pendingTrust;
+    if (accountDirect && token.cancelled && activeDial === token && connection.activeHost === host
+      && question?.hostLabel === host.name && question.hostname === host.hostname
+      && question.port === host.port && question.user === host.user) connection.answerTrust('reject');
+  };
   activeDial = token;
-  const ok = await connection.connect(host, undefined, undefined, accountDirect);
-  // Only put the picker back if a newer dial has not claimed it: after a
-  // cancel the rows re-enable, so by the time this resolves `connectingTo`
-  // and the error slot may belong to a dial the user started since, and a
-  // slow failure here must not wipe that dial's banner or its diagnostic.
-  if (activeDial === token) {
-    activeDial = null;
-    connectingTo.value = null;
-    connectingKey.value = null;
-    if (!ok && !token.cancelled) {
-      connectError.value = connection.error ?? 'Connection failed';
-      connectErrorKind.value = connection.errorKind;
-      failedHost.value = host;
+  // Also reject this cancelled attempt's question if native KEX finishes after
+  // Cancel/unmount. The watcher drains only this token's admitted host, then
+  // is explicitly disposed with its native attempt, never a newer question.
+  const stopTrustWatch = accountDirect
+    ? watch(() => connection.pendingTrust, rejectOwnedTrust, {flush: 'post'})
+    : () => undefined;
+  try {
+    const ok = await connection.connect(host, undefined, undefined, accountDirect);
+    // Only put the picker back if a newer dial has not claimed it: after a
+    // cancel the rows re-enable, so by the time this resolves `connectingTo`
+    // and the error slot may belong to a dial the user started since, and a
+    // slow failure here must not wipe that dial's banner or its diagnostic.
+    if (activeDial === token) {
+      activeDial = null;
+      if (request === pickerRequest) {
+        connectingTo.value = null;
+        connectingKey.value = null;
+        if (!ok && !token.cancelled) {
+          connectError.value = connection.error ?? 'Connection failed';
+          connectErrorKind.value = connection.errorKind;
+          failedHost.value = host;
+        }
+      }
     }
-  }
-  if (token.cancelled) {
-    // The dial won the race with the Cancel click. Hang up rather than leaving
-    // a connection the user explicitly abandoned — but only if this is still
-    // the connection in hand. `connect()` claims `activeHost` synchronously, so
-    // a different host here means the user already started dialling somewhere
-    // else in the meantime and tearing "the" connection down would tear down
-    // theirs. The abandoned link then survives until the app exits, which is
-    // the cheaper of the two failures by a wide margin.
-    if (ok && connection.activeHost && hostEntryId(connection.activeHost) === hostEntryId(host)) {
-      await connection.disconnect();
+    if (token.cancelled) {
+      // The dial won the race with the Cancel click. Hang up rather than leaving
+      // a connection the user explicitly abandoned — but only if this is still
+      // the connection in hand. `connect()` claims `activeHost` synchronously, so
+      // a different host here means the user already started dialling somewhere
+      // else in the meantime and tearing "the" connection down would tear down
+      // theirs. A different result remains with the platform's host connection
+      // lifecycle rather than closing the connection the user selected next.
+      // Account rows can share an alias with a newer object. Only this
+      // request's admitted snapshot can authorize its cancellation cleanup.
+      const stillOwnsHost = accountDirect
+        ? connection.activeHost === host
+        : connection.activeHost && hostEntryId(connection.activeHost) === hostEntryId(host);
+      if (ok && stillOwnsHost) await connection.disconnect();
+      return false;
     }
-    return false;
+    return ok;
+  } finally {
+    stopTrustWatch();
+    finish();
   }
-  return ok;
 }
 
 async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmission | null): Promise<void> {
