@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, inject, onMounted } from 'vue';
+import { RouterLink, routerKey } from 'vue-router';
 import { api } from '../ipc';
+import { cliSessionsTarget } from '../cliSessionsLink';
 import { useConnectionStore } from '../stores/connection';
 import { useSettingsStore } from '../stores/settings';
 import { useSyncStore } from '../stores/sync';
@@ -14,6 +16,10 @@ const accountUnavailable = computed(
   () => sync.status !== null && !sync.status.keychainAvailable,
 );
 const accountLoaded = computed(() => sync.accountHosts !== null);
+// The CLI sessions page: an in-app route on the web, the system browser
+// elsewhere (see cliSessionsLink.ts). `inject` rather than `useRouter` so a
+// mount without a router (a test, a bare window) falls back quietly.
+const cliSessions = cliSessionsTarget(inject(routerKey, undefined));
 const accountCheckLabel = computed(() => (accountLoaded.value ? 'Refresh account' : 'Check account'));
 
 interface HostRow {
@@ -138,6 +144,33 @@ function onCheckAccount(): void {
             This system does not have an OS keychain available, so PocketShell
             cannot store sign-in tokens safely.
           </p>
+        </div>
+      </section>
+
+      <section class="account-card" data-testid="account-cli-sessions">
+        <div class="card-heading host-heading">
+          <div>
+            <h2>CLI sessions</h2>
+            <p class="card-copy">
+              Review or revoke <code>pocketshell login</code> sessions.
+            </p>
+          </div>
+          <RouterLink
+            v-if="cliSessions.kind === 'route'"
+            class="btn-ghost cli-sessions-link"
+            :to="cliSessions.to"
+          >
+            Manage CLI sessions
+          </RouterLink>
+          <a
+            v-else
+            class="btn-ghost cli-sessions-link"
+            :href="cliSessions.href"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Manage CLI sessions
+          </a>
         </div>
       </section>
 
@@ -397,6 +430,9 @@ h2 {
 }
 .host-heading .btn-ghost {
   flex: none;
+}
+.cli-sessions-link {
+  text-decoration: none;
 }
 .account-note {
   margin: var(--sp-3) 0 0;
