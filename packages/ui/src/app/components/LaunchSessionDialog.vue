@@ -357,14 +357,15 @@ function onConfirm(): void {
 
 /* Same segmented register as NewSessionDialog's route selector. */
 .segmented {
-  display: flex;
   flex: 1;
   /* A catalog with every engine installed does not fit one row at the `sm`
-     panel width, and a flex child floors at its label's width — so the row
-     once forced the whole dialog to scroll sideways. Overflowing segments
-     wrap to a second line instead; the two-segment Shell|Agent row still
-     fills one line, because `flex: 1` grows what fits. */
-  flex-wrap: wrap;
+     panel width — the row once forced the whole dialog to scroll sideways.
+     Segments wrap instead, on a grid so every line keeps the same equal
+     columns: no lone engine dangles on its own row, stretched across it.
+     The two-segment Shell|Agent row still fills one line, because auto-fit
+     collapses the tracks nothing occupies. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
   gap: var(--sp-1);
   padding: var(--sp-1);
   background: var(--surface-2);
@@ -372,7 +373,6 @@ function onConfirm(): void {
   border-radius: var(--r-md);
 }
 .segment {
-  flex: 1;
   white-space: nowrap;
   height: var(--control-h);
   background: transparent;
