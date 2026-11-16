@@ -466,7 +466,9 @@ function onConfirm(): void {
 }
 
 /* The exact line that gets typed. A launch the user cannot read is a launch
-   they cannot report when it goes wrong. */
+   they cannot report when it goes wrong. Soft-wrapped rather than scrolled:
+   `overflow-x` on Windows draws a full scrollbar with arrow buttons just to
+   reach the tail of the command. */
 .preview {
   margin: 0;
   padding: var(--sp-2);
@@ -475,8 +477,8 @@ function onConfirm(): void {
   border: 1px solid var(--border);
   color: var(--fg-secondary);
   font-size: var(--fs-200);
-  overflow-x: auto;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .actions {
