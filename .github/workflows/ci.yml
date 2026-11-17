@@ -35,6 +35,9 @@ jobs:
       # toolchain, then build + typecheck against that.
       - name: Gate @pocketshell/ui
         working-directory: packages/ui
+        env:
+          # tests/settingsLayoutBrowser.test.ts lays Settings out in real Chromium.
+          CHROMIUM_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
           npm ci --no-fund --no-audit
           npm run build
