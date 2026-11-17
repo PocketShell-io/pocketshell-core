@@ -10,12 +10,30 @@
 import HostKeyTrustPrompt from './HostKeyTrustPrompt.vue';
 import { api } from '../ipc';
 import { useConnectionStore } from '../stores/connection';
+import { registerDismissLayer } from '../extensions';
+import { onBeforeUnmount, watch } from 'vue';
 
 // Only a client that advertises the hook has anything to ask; on the others
 // the gate stays inert and does not even create the connection store, so
 // mounting it in AppRoot changes nothing for them (desktop, web, a client
 // window without an `ssh` group).
 const connection = typeof api.ssh?.onTrustDecision === 'function' ? useConnectionStore() : null;
+
+// Platform Back (app.dismissLayers) answers the pending question with the same
+// decision as the Reject button: it never trusts a key. The layer is held only
+// while a question is showing, so Back is otherwise not intercepted here.
+if (connection) {
+  let unregister: (() => void) | null = null;
+  watch(
+    () => connection.pendingTrust !== null,
+    (pending) => {
+      unregister?.();
+      unregister = pending ? registerDismissLayer(() => connection.answerTrust('reject')) : null;
+    },
+    { immediate: true },
+  );
+  onBeforeUnmount(() => unregister?.());
+}
 </script>
 
 <template>

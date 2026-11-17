@@ -59,7 +59,7 @@
 // machine and keyboard to useComposerVisibility, the move/resize machinery to
 // useComposerGeometry, the draw-or-annotate overlay to DoodleSheet.vue, and
 // the control row to ComposerControls.vue.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useComposerStore } from '../stores/composer';
 import { useSettingsStore } from '../stores/settings';
 import { useShellsStore } from '../stores/shells';
@@ -77,6 +77,7 @@ import { useComposerDraft } from '../useComposerDraft';
 import { useComposerSend } from '../useComposerSend';
 import { useComposerClipboard } from '../useComposerClipboard';
 import { useComposerVisibility } from '../useComposerVisibility';
+import { registerDismissLayer } from '../extensions';
 import { useComposerGeometry } from '../useComposerGeometry';
 
 const props = defineProps<{
@@ -200,6 +201,7 @@ const {
 const {
   openComposer,
   hideComposer,
+  backFromComposer,
   onToggleRail,
   typeInto,
   toggleExpanded,
@@ -276,7 +278,21 @@ onMounted(() => {
   if (mode.value !== 'hidden') focusDraft();
 });
 
+// Platform Back (app.dismissLayers): an open composer is the topmost layer,
+// so Back collapses it first and keeps the draft (see backFromComposer).
+let unregisterBackLayer: (() => void) | null = null;
+watch(
+  () => mode.value !== 'hidden',
+  (open) => {
+    unregisterBackLayer?.();
+    unregisterBackLayer = open ? registerDismissLayer(backFromComposer) : null;
+  },
+  { immediate: true },
+);
+
 onBeforeUnmount(() => {
+  unregisterBackLayer?.();
+  unregisterBackLayer = null;
   window.removeEventListener('keydown', onGlobalKey, { capture: true });
   window.removeEventListener('mousedown', onOutsidePointerDown, { capture: true });
 });
