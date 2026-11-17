@@ -1,7 +1,9 @@
-import { computed, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { formatBytes } from '@pocketshell/core';
 import { resolveTheme } from '@ui/themes';
 import { usePaneWidth } from './usePaneWidth';
+import { useLayoutClass } from './layoutClass';
+import { registerDismissLayer } from './extensions';
 import type { useConnectionStore } from './stores/connection';
 import type { useFilesStore } from './stores/files';
 import type { useSettingsStore } from './stores/settings';
@@ -26,6 +28,12 @@ export interface FilesPaneDeps {
  */
 export function useFilesPane(deps: FilesPaneDeps): {
   treeStyle: Ref<{ flex: string }>;
+  /** True on a phone-width layout, where the tree and the editor take turns. */
+  compact: ComputedRef<boolean>;
+  /** Compact only: a file or the env editor is open, so the detail pane has the screen. */
+  detailOpen: ComputedRef<boolean>;
+  /** Leave the detail pane for the tree (the editor's back chevron, Android Back). */
+  closeDetail: () => void;
   onTreeDragStart: (e: MouseEvent) => void;
   /** The folder the docked env editor is editing, or null when closed. */
   envDir: Ref<string | null>;
@@ -180,6 +188,47 @@ export function useFilesPane(deps: FilesPaneDeps): {
     envDir.value = null;
   }
 
+  // -------------------------------------------------------------------------
+  // Compact: one pane at a time
+  // -------------------------------------------------------------------------
+  /**
+   * On a phone the tree and the editor never share the screen. Opening a file
+   * (or the env editor) hands the screen to that detail pane; the editor's
+   * back chevron, or the platform's dismiss gesture, hands it back. The tree
+   * stays MOUNTED underneath - hidden, not destroyed - so its scroll position
+   * and listing survive the round trip. Presentation only: which file is open
+   * is still the store's decision, and expanded layouts never read these.
+   */
+  const layoutClass = useLayoutClass();
+  const compact = computed(() => layoutClass.value === 'compact');
+  const detailOpen = computed(() => compact.value && (envDir.value !== null || files.openPath != null));
+
+  function closeDetail(): void {
+    if (envDir.value !== null) envDir.value = null;
+    else files.closeFile();
+  }
+
+  // The detail pane is a dismissable layer only while it covers the tree
+  // (extensions.ts `app.dismissLayers`): Android Back then returns to the tree
+  // instead of leaving the workspace. With nothing open the layer is absent,
+  // so Back keeps its own meaning.
+  let unregisterLayer: (() => void) | null = null;
+  watch(
+    detailOpen,
+    (open) => {
+      if (open && unregisterLayer === null) unregisterLayer = registerDismissLayer(closeDetail);
+      else if (!open && unregisterLayer !== null) {
+        unregisterLayer();
+        unregisterLayer = null;
+      }
+    },
+    { immediate: true },
+  );
+  onBeforeUnmount(() => {
+    unregisterLayer?.();
+    unregisterLayer = null;
+  });
+
   async function onOpenFile(name: string): Promise<void> {
     if (!connId.value) return;
     // One thing at a time in the area the two share: the click asked for the
@@ -323,6 +372,9 @@ export function useFilesPane(deps: FilesPaneDeps): {
 
   return {
     treeStyle,
+    compact,
+    detailOpen,
+    closeDetail,
     onTreeDragStart,
     envDir,
     openEnv,

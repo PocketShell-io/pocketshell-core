@@ -37,6 +37,7 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { useConnectionStore } from '../stores/connection';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { useForwardsStore } from '../stores/forwards';
+import { useLayoutClass } from '../layoutClass';
 import type { ForwardSpec } from '@pocketshell/core';
 import type { DiscoveredPort } from '@pocketshell/core';
 import type { ForwardState } from '@pocketshell/core';
@@ -45,6 +46,7 @@ import { formatBytes } from '@pocketshell/core';
 const connection = useConnectionStore();
 const forwards = useForwardsStore();
 const connId = computed(() => connection.connectionId);
+const layoutClass = useLayoutClass();
 
 /**
  * The host's `~/.ssh/config` LocalForward lines. PocketShell is the SSH
@@ -69,6 +71,8 @@ const configForwards = computed<ForwardSpec[]>(() =>
 // Manual-add form. Hidden behind the "Add forward" expander: a form for a
 // thing most sessions never do must not hold the panel's top row hostage.
 const showAdd = ref(false);
+/** Phone width: forwards render as cards instead of a nine-column table. */
+const compact = computed(() => layoutClass.value === 'compact');
 const kind = ref<ForwardSpec['kind']>('local');
 const localPort = ref<number>(8080);
 const remotePort = ref<number>(8080);
@@ -324,7 +328,7 @@ function fmtScanTime(epochMs: number | null): string {
 </script>
 
 <template>
-  <div class="port-panel">
+  <div class="port-panel" :class="{ compact }">
     <div class="panel-bar">
       <!-- Scan lives in the OVERLAY HEADER now, beside the close control
            (HostWorkspaceView), where Usage's refresh already sits — the
@@ -955,5 +959,130 @@ function fmtScanTime(epochMs: number | null): string {
 }
 .error {
   padding-top: var(--sp-2);
+}
+
+/* COMPACT (<= 640px): each forward is a CARD, not a table row. The DOM is the
+   table's (so expanded is untouched and the cells keep their meaning); the
+   cells are re-flowed by grid. Line 1: port + badges, status, the on/off
+   verb. Line 2: the two editable fields. A muted meta line (process, folder,
+   bytes) closes the card. No min-width, no sideways scroll. */
+.port-panel.compact {
+  padding: var(--sp-3);
+}
+.port-panel.compact .table-wrap {
+  overflow-x: visible;
+}
+.port-panel.compact .fwd-table {
+  min-width: 0;
+}
+.port-panel.compact .fwd-table,
+.port-panel.compact .fwd-table tbody {
+  display: block;
+}
+/* Column headers are meaningless on a card; they stay for assistive tech. */
+.port-panel.compact .fwd-table thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.port-panel.compact .fwd-table tbody tr:not(.more-row) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+}
+.port-panel.compact .fwd-table tbody tr.more-row {
+  display: block;
+}
+.port-panel.compact .fwd-table td {
+  display: block;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  padding: 0;
+  border-bottom: none;
+}
+.port-panel.compact .fwd-table .c-port {
+  grid-column: 1 / 3;
+  grid-row: 1;
+  white-space: normal;
+}
+.port-panel.compact .fwd-table .c-status {
+  grid-column: 3;
+  grid-row: 1;
+}
+.port-panel.compact .fwd-table .c-actions {
+  grid-column: 4;
+  grid-row: 1;
+  width: auto;
+}
+.port-panel.compact .fwd-table .c-name {
+  grid-column: 1;
+  grid-row: 2;
+}
+.port-panel.compact .fwd-table .c-local {
+  grid-column: 2 / 5;
+  grid-row: 2;
+}
+.port-panel.compact .fwd-table .c-proc {
+  grid-column: 1;
+  grid-row: 3;
+}
+.port-panel.compact .fwd-table .c-folder {
+  grid-column: 2;
+  grid-row: 3;
+}
+.port-panel.compact .fwd-table td:nth-child(7) {
+  grid-column: 3;
+  grid-row: 3;
+}
+.port-panel.compact .fwd-table td:nth-child(8) {
+  grid-column: 4;
+  grid-row: 3;
+}
+.port-panel.compact .fwd-table .c-proc,
+.port-panel.compact .fwd-table .c-folder,
+.port-panel.compact .fwd-table .c-bytes {
+  font-size: var(--fs-100);
+  color: var(--fg-muted);
+}
+.port-panel.compact .fwd-table .c-bytes .rate {
+  display: inline;
+  margin-left: var(--sp-1);
+}
+.port-panel.compact .fwd-table .c-port .port-num {
+  font-size: var(--fs-300);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
+}
+.port-panel.compact .cell-input {
+  box-sizing: border-box;
+  height: var(--control-h);
+  min-height: var(--hit-min);
+  background: var(--surface);
+  border-color: var(--border-strong);
+}
+.port-panel.compact .toggle,
+.port-panel.compact .add-btn,
+.port-panel.compact .add-toggle {
+  min-height: var(--hit-min);
+}
+.port-panel.compact .btn-auto {
+  min-height: var(--hit-min);
+}
+.port-panel.compact .more-btn {
+  min-height: var(--hit-min);
+}
+.port-panel.compact .empty {
+  grid-column: 1 / -1;
+  display: block;
+  padding: var(--sp-4) var(--sp-2);
 }
 </style>
