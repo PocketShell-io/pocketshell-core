@@ -1,7 +1,11 @@
-import { computed, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { formatBytes } from '@pocketshell/core';
 import { resolveTheme } from '@ui/themes';
+import { isEditable } from './fileKind';
 import { usePaneWidth } from './usePaneWidth';
+import { useLayoutClass } from './layoutClass';
+import { joinPosix } from './stores/projects';
+import { registerDismissLayer } from './extensions';
 import type { useConnectionStore } from './stores/connection';
 import type { useFilesStore } from './stores/files';
 import type { useSettingsStore } from './stores/settings';
@@ -26,6 +30,14 @@ export interface FilesPaneDeps {
  */
 export function useFilesPane(deps: FilesPaneDeps): {
   treeStyle: Ref<{ flex: string }>;
+  /** True on a phone-width layout, where the tree and the editor take turns. */
+  compact: ComputedRef<boolean>;
+  /** Compact only: a file or the env editor is open, so the detail pane has the screen. */
+  detailOpen: ComputedRef<boolean>;
+  /** Leave the detail pane for the tree (the editor's back chevron, Android Back). */
+  closeDetail: () => void;
+  /** Absolute path of the unsaved draft, or null. */
+  draftPath: ComputedRef<string | null>;
   onTreeDragStart: (e: MouseEvent) => void;
   /** The folder the docked env editor is editing, or null when closed. */
   envDir: Ref<string | null>;
@@ -180,12 +192,75 @@ export function useFilesPane(deps: FilesPaneDeps): {
     envDir.value = null;
   }
 
+  // -------------------------------------------------------------------------
+  // Compact: one pane at a time
+  // -------------------------------------------------------------------------
+  /**
+   * On a phone the tree and the editor never share the screen. Opening a file
+   * (or the env editor) hands the screen to that detail pane; the editor's
+   * back chevron, or the platform's dismiss gesture, hands it back. The tree
+   * stays MOUNTED underneath - hidden, not destroyed - so its scroll position
+   * and listing survive the round trip. Presentation only: which file is open
+   * is still the store's decision, and expanded layouts never read these.
+   */
+  const layoutClass = useLayoutClass();
+  const compact = computed(() => layoutClass.value === 'compact');
+  /**
+   * Back HIDES the detail pane; it never closes the file. The open file (and
+   * its unsaved draft) stays in the store exactly as a tab switch leaves it,
+   * and the docked env editor stays mounted, so Back on a phone can never
+   * destroy work. A newly opened file or env editor shows the pane again.
+   */
+  const detailHidden = ref(false);
+  const hasDetail = computed(() => envDir.value !== null || files.openPath != null);
+  const detailOpen = computed(() => compact.value && hasDetail.value && !detailHidden.value);
+  /** The unsaved file the tree marks, and tapping it resumes the draft. */
+  const draftPath = computed(() => (compact.value && files.dirty && isEditable(files.openMode) ? files.openPath : null));
+
+  function closeDetail(): void {
+    detailHidden.value = true;
+  }
+  watch(
+    () => [files.openPath, envDir.value] as const,
+    () => {
+      detailHidden.value = false;
+    },
+  );
+
+  // The detail pane is a dismissable layer only while it covers the tree
+  // (extensions.ts `app.dismissLayers`): Android Back then returns to the tree
+  // instead of leaving the workspace. With nothing open the layer is absent,
+  // so Back keeps its own meaning.
+  let unregisterLayer: (() => void) | null = null;
+  watch(
+    detailOpen,
+    (open) => {
+      if (open && unregisterLayer === null) unregisterLayer = registerDismissLayer(closeDetail);
+      else if (!open && unregisterLayer !== null) {
+        unregisterLayer();
+        unregisterLayer = null;
+      }
+    },
+    { immediate: true },
+  );
+  onBeforeUnmount(() => {
+    unregisterLayer?.();
+    unregisterLayer = null;
+  });
+
   async function onOpenFile(name: string): Promise<void> {
     if (!connId.value) return;
     // One thing at a time in the area the two share: the click asked for the
     // file, so the env panel steps aside (and `openPath` is untouched by it,
     // so closing the env view had already handed the area back to the file).
     envDir.value = null;
+    // Tapping the file whose unsaved draft is parked resumes the draft;
+    // re-reading it from the host would throw the draft away.
+    const abs = name.startsWith('/') ? name : joinPosix(files.cwd, name);
+    if (draftPath.value === abs) {
+      detailHidden.value = false;
+      return;
+    }
     await files.openFile(connId.value, name);
   }
 
@@ -323,6 +398,10 @@ export function useFilesPane(deps: FilesPaneDeps): {
 
   return {
     treeStyle,
+    compact,
+    detailOpen,
+    closeDetail,
+    draftPath,
     onTreeDragStart,
     envDir,
     openEnv,

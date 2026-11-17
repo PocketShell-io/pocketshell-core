@@ -27,6 +27,7 @@ import EnvPanelView from './EnvPanelView.vue';
 import { useFilesPane } from '../useFilesPane';
 import { fileTransportCapabilities } from '../platformCapabilities';
 import { useImageViewer } from '../useImageViewer';
+import AppIcon from '@ui/components/AppIcon.vue';
 
 /**
  * Loaded on demand. CodeMirror is ~680 KB of the renderer, and a workspace
@@ -78,6 +79,10 @@ const connId = computed(() => connection.connectionId);
 // are useImageViewer.ts. Both carry their own decision records.
 const {
   treeStyle,
+  compact,
+  detailOpen,
+  closeDetail,
+  draftPath,
   onTreeDragStart,
   envDir,
   openEnv,
@@ -236,7 +241,13 @@ defineExpose({ focus });
 </script>
 
 <template>
-  <div ref="rootEl" class="files-view" tabindex="-1" @keydown="onKeydown">
+  <div
+    ref="rootEl"
+    class="files-view"
+    :class="{ compact, 'detail-open': detailOpen }"
+    tabindex="-1"
+    @keydown="onKeydown"
+  >
     <!-- `tabindex="-1"` on the root above: focusable programmatically,
          invisible to the Tab key. The workspace's focusActiveTab
          (FolderWorkspaceView.vue) hands focus to this element through the
@@ -249,9 +260,10 @@ defineExpose({ focus });
          breaks attribute fallthrough.) -->
     <FileTree
       ref="treeRef"
-      :style="treeStyle"
+      :style="compact ? undefined : treeStyle"
       :root-path="rootPath"
       :env-dir="envDir"
+      :draft-path="draftPath"
       @open-file="onOpenFile"
       @open-in-new-tab="(path, kind) => emit('openInNewTab', path, kind)"
       @open-env="openEnv"
@@ -260,6 +272,7 @@ defineExpose({ focus });
          because the tree draws its own right hairline, and highlighted only
          when the cursor LINGERS so sweeping across never flashes a bar. -->
     <div
+      v-if="!compact"
       class="tree-splitter"
       role="separator"
       aria-orientation="vertical"
@@ -282,14 +295,34 @@ defineExpose({ focus });
            placeholder rather than a panel of errors. -->
       <template v-if="envDir && connId">
         <div class="editor-bar">
+          <button
+            v-if="compact"
+            class="icon-btn back-btn"
+            data-testid="files-back"
+            title="Back to files"
+            aria-label="Back to files"
+            @click="closeDetail"
+          >
+            <AppIcon name="arrow-left" :size="16" />
+          </button>
           <span class="path" :title="envDir">{{ envDir }}</span>
-          <button class="close-btn" title="Close env editor" @click="closeEnv">Close</button>
+          <button v-if="!compact" class="close-btn" title="Close env editor" @click="closeEnv">Close</button>
         </div>
         <EnvPanelView :key="envDir" :connection-id="connId" :dir="envDir" />
       </template>
       <template v-else-if="files.openPath">
         <div class="editor-bar">
-          <span class="path">{{ files.openPath }}</span>
+          <button
+            v-if="compact"
+            class="icon-btn back-btn"
+            data-testid="files-back"
+            title="Back to files"
+            aria-label="Back to files"
+            @click="closeDetail"
+          >
+            <AppIcon name="arrow-left" :size="16" />
+          </button>
+          <span class="path" :title="compact ? files.openPath ?? undefined : undefined">{{ compact ? openName : files.openPath }}</span>
           <span v-if="files.dirty" class="dirty">
             <span class="dirty-dot" />
             unsaved
@@ -320,7 +353,7 @@ defineExpose({ focus });
           <button v-if="transport.download" class="download-btn" :title="downloadTitle" @click="onDownload">
             Download…
           </button>
-          <button class="close-btn" title="Close file" @click="files.closeFile()">Close</button>
+          <button v-if="!compact" class="close-btn" title="Close file" @click="files.closeFile()">Close</button>
         </div>
 
         <!-- The open file's OWN error channel: a failed save or download,
@@ -658,6 +691,36 @@ defineExpose({ focus });
   flex: 1;
   min-width: 0;
   height: 100%;
+}
+/* COMPACT (<= 640px): the tree and the editor take turns, never share. The
+   tree is hidden WITHOUT being unmounted or display:none'd - an
+   out-of-flow, invisible box keeps its scroll offset, so Back lands on the
+   same row. No splitter is rendered at this width (template v-if). */
+.files-view.compact {
+  position: relative;
+}
+.files-view.compact .file-tree {
+  flex: 1 1 auto;
+  border-right: none;
+}
+.files-view.compact.detail-open .file-tree {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.files-view.compact:not(.detail-open) .editor-area {
+  display: none;
+}
+.files-view.compact .editor-bar {
+  height: auto;
+  min-height: var(--tabbar-h);
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+}
+.files-view.compact .save-btn,
+.files-view.compact .download-btn {
+  min-height: var(--hit-min);
 }
 /* The root takes programmatic focus (see the tabindex on it) but is a
    container, not a control. App.vue's designed focus treatment matches every
