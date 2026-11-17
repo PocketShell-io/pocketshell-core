@@ -101,7 +101,14 @@ afterAll(async () => {
   if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
     await new Promise<void>((resolve) => { chrome!.once('exit', () => resolve()); setTimeout(resolve, 5_000); });
   }
-  if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  // Best effort: Chrome's crashpad/helper processes can outlive the browser
+  // and keep writing into the throwaway /tmp profile (ENOTEMPTY in CI).
+  // A leftover temp dir must never fail the suite.
+  try {
+    if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch {
+    // ignore
+  }
 });
 
 async function connect(): Promise<Cdp> {
