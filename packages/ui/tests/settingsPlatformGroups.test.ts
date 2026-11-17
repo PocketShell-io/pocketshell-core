@@ -94,7 +94,7 @@ describe('Settings platform groups (0.5.x Connections, Advanced, Diagnostics, Ab
     expect(outside).not.toMatch(/\.switch:hover/);
     expect(css).toMatch(/@media \(hover: hover\) \{\s*\.switch:hover \{/);
     const narrow = css.slice(css.indexOf('@media (max-width: 480px)'));
-    expect(narrow).toMatch(/\.row \{[^}]*align-items: stretch/);
+    expect(narrow).toMatch(/\.row(?:,\s*\.row-main)? \{[^}]*align-items: stretch/);
     expect(narrow).toMatch(/\.switch \{\s*align-self: flex-start;/);
     const base = css.slice(css.indexOf('.switch {'), css.indexOf('}', css.indexOf('.switch {')));
     expect(base).toContain('-webkit-tap-highlight-color: transparent;');
