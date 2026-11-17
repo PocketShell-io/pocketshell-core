@@ -185,11 +185,45 @@ function soleSession(dir: SessionDirectory): string | null {
 
 /** An untracked folder is one session with no folder; its row IS the leaf. */
 function drawsLeaves(dir: SessionDirectory): boolean {
-  return props.showSessions && !dir.untracked && soleSession(dir) === null;
+  return props.showSessions && !dir.untracked && singleSession(dir) === null;
+}
+
+/**
+ * The session a compact folder row stands for when it holds exactly one
+ * (#3145): ANY single session, whatever it is named, collapses the group row
+ * and its lone leaf into ONE row — project name, the session name beneath it
+ * when it adds something, engine marks, age. A tap opens that session.
+ */
+function singleSession(dir: SessionDirectory): string | null {
+  if (!props.showSessions || dir.rows.length !== 1) return null;
+  return dir.rows[0]!.session.name;
+}
+
+/** The second line of a collapsed row: the session name, unless it only repeats the label. */
+function secondaryName(dir: SessionDirectory): string | null {
+  const name = singleSession(dir);
+  if (name === null || dir.untracked) return null;
+  const shown = displayName(name).text;
+  return shown === displayName(dir.label).text ? null : shown;
+}
+
+/**
+ * A directory removed while a session still runs in it reports its cwd as
+ * `/path (deleted)`; the suffix reached every row as text. On the compact
+ * layout it is stripped and the state is carried by a small icon instead.
+ */
+function displayName(text: string): { text: string; deleted: boolean } {
+  if (!props.showSessions) return { text, deleted: false };
+  const m = /^(.*?)\s*\(deleted\)\s*$/.exec(text);
+  return m ? { text: m[1]!, deleted: true } : { text, deleted: false };
+}
+
+function isDeleted(dir: SessionDirectory): boolean {
+  return displayName(dir.label).deleted || (dir.rows.length === 1 && displayName(dir.rows[0]!.session.name).deleted);
 }
 
 function onFolderClick(dir: SessionDirectory): void {
-  const sole = soleSession(dir);
+  const sole = soleSession(dir) ?? singleSession(dir);
   if (sole === null) emit('select', dir);
   else emit('select', dir, sole);
 }
@@ -283,8 +317,15 @@ function onFolderClick(dir: SessionDirectory): void {
         <span class="folder-label" :class="{ bucket: root.other }">
           <!-- No whitespace between the two: a newline here is a text node,
                and the header would read `~/ git`. -->
-          <span v-if="header.prefix" class="path-prefix">{{ header.prefix }}</span>{{ header.text }}
+          <span v-if="header.prefix" class="path-prefix">{{ header.prefix }}</span>{{ displayName(header.text).text }}
         </span>
+        <AppIcon
+          v-if="displayName(header.text).deleted"
+          class="deleted-mark"
+          name="trash-2"
+          :size="12"
+          title="Directory deleted"
+        />
         <!-- Beside the label, not pinned to the right edge. A count thrown to
              the far end of the row reads as its own column — "10" floating
              level with `git` but nowhere near it — and the user asked for it
@@ -310,6 +351,7 @@ function onFolderClick(dir: SessionDirectory): void {
              are re-sorted like any root's, so a sort door that skipped it
              would promise less than the sort does. -->
         <button
+          v-if="!props.showSessions"
           class="icon-btn sm root-sort"
           :class="{ engaged: props.sortEngaged }"
           title="Sort folders"
@@ -400,7 +442,7 @@ function onFolderClick(dir: SessionDirectory): void {
             }"
             :title="dirTooltip(dir)"
             :draggable="props.filtering ? 'false' : 'true'"
-            :data-session-name="soleSession(dir) ?? undefined"
+            :data-session-name="soleSession(dir) ?? singleSession(dir) ?? undefined"
             @click="onFolderClick(dir)"
             @contextmenu.prevent="emit('menu', dir, $event)"
             @dragstart="emit('dragStart', dir, $event)"
@@ -417,7 +459,18 @@ function onFolderClick(dir: SessionDirectory): void {
                  carries the full name (the full path) on hover. An untracked
                  folder is labelled by its session name, which is the only
                  label it has. -->
-            <span class="label" :class="{ mono: dir.untracked }">{{ dir.label }}</span>
+            <span v-if="props.showSessions" class="names">
+              <span class="label">{{ displayName(dir.label).text }}</span>
+              <span v-if="secondaryName(dir)" class="secondary">{{ secondaryName(dir) }}</span>
+            </span>
+            <span v-else class="label" :class="{ mono: dir.untracked }">{{ dir.label }}</span>
+            <AppIcon
+              v-if="props.showSessions && isDeleted(dir)"
+              class="deleted-mark"
+              name="trash-2"
+              :size="12"
+              title="Directory deleted"
+            />
             <!-- One mark per session that runs a named agent, in the folder's
                  TAB-BAR order — the folder's tab bar folded flat, the user's
                  dragged arrangement included (the `tabOrders` prop). This
@@ -458,7 +511,14 @@ function onFolderClick(dir: SessionDirectory): void {
                 @click="emit('select', dir, row.session.name)"
               >
                 <span class="dot" :class="{ active: row.session.attached }" />
-                <span class="label mono">{{ row.session.name }}</span>
+                <span class="label">{{ displayName(row.session.name).text }}</span>
+                <AppIcon
+                  v-if="displayName(row.session.name).deleted"
+                  class="deleted-mark"
+                  name="trash-2"
+                  :size="12"
+                  title="Directory deleted"
+                />
                 <span class="row-time">{{ fmtRelative(row.session.activity, props.now) }}</span>
               </button>
             </li>
@@ -904,10 +964,53 @@ function onFolderClick(dir: SessionDirectory): void {
 .session-leaf.current {
   background: var(--state-selected);
 }
-/* With leaves drawn, a folder row is a header over them: it keeps its click
-   (opening the folder), but reads one step quieter than the sessions. */
+/* ---- Compact density (#3145) -------------------------------------------
+   One face and one size hierarchy for every name: the primary name is the UI
+   font at --fs-400 (15px), the secondary is --fs-300 (13px) muted. Mono stays
+   reserved for paths and commands, so no row here uses it. A single-session
+   project is ONE row (name over session name, `.names`), a multi-session one a
+   group row over leaves; rows are --row-h (48px on touch). Scoped to
+   `.leaves`, which only the narrow layout sets, so the desktop rows are
+   untouched. */
+.folder-list.leaves .folder-header {
+  font-size: var(--fs-400);
+  line-height: var(--lh-400);
+}
+.folder-list.leaves .dir-header,
+.folder-list.leaves .session-leaf {
+  font-size: var(--fs-400);
+  line-height: var(--lh-400);
+}
+.names {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 .folder-list.leaves .dir-header .label {
+  color: var(--fg);
+}
+.secondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-300);
+  line-height: var(--lh-300);
+  color: var(--fg-muted);
+}
+.folder-list.leaves .session-leaf .label {
+  font-size: var(--fs-300);
+  line-height: var(--lh-300);
   color: var(--fg-secondary);
+}
+.folder-list.leaves .session-leaf.current .label {
+  color: var(--fg);
+}
+.deleted-mark {
+  flex: none;
+  color: var(--fg-muted);
 }
 @container (width < 270px) {
   .row-time {
