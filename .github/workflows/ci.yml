@@ -37,6 +37,8 @@ jobs:
         working-directory: packages/ui
         env:
           # tests/settingsLayoutBrowser.test.ts lays Settings out in real Chromium.
+          # verify-hit-targets (part of `npm test`) needs a real Chrome and
+          # fails hard when it finds none.
           CHROMIUM_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
           npm ci --no-fund --no-audit

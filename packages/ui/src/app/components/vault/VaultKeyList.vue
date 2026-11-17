@@ -260,9 +260,4 @@ function added(iso: string): string {
   align-items: flex-start;
   gap: var(--sp-1);
 }
-@media (pointer: coarse) {
-  .row-actions .btn-ghost {
-    min-height: 48px;
-  }
-}
 </style>

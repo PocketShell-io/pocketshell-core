@@ -219,6 +219,8 @@ onMounted(() => void load(props.startPath || '.'));
   justify-content: center;
   width: var(--control-h-sm);
   height: var(--control-h-sm);
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
   flex: 0 0 auto;
   background: transparent;
   border: 1px solid transparent;

@@ -189,7 +189,7 @@ onMounted(() => rejectEl.value?.focus({ preventScroll: true }));
 }
 .btn-primary,
 .btn-secondary {
-  min-height: var(--control-h);
+  min-height: max(var(--control-h), var(--hit-min));
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -219,14 +219,14 @@ onMounted(() => rejectEl.value?.focus({ preventScroll: true }));
   opacity: var(--disabled-opacity);
   cursor: default;
 }
-/* Touch: 48px targets, one answer per row so a thumb cannot hit two. */
+/* Touch: one answer per row so a thumb cannot hit two. This is layout only;
+   the 48px target itself comes from --hit-min (tokens.css). */
 @media (pointer: coarse) {
   .trust-actions {
     flex-direction: column;
   }
   .btn-primary,
   .btn-secondary {
-    min-height: 48px;
     width: 100%;
     font-size: var(--fs-400);
   }

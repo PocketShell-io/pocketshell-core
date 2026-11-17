@@ -262,7 +262,8 @@ async function clearAll(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  min-height: 44px;
+  /* 44 on a mouse (as before); the platform minimum on a finger. */
+  min-height: max(44px, var(--hit-min));
 }
 .danger {
   color: var(--error);

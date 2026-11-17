@@ -165,6 +165,10 @@
   --control-h-sm: 24px;
   --topbar-h: 40px;
   --tabbar-h: 32px;
+  /* Minimum hit target: 0 for a fine pointer (sizes are whatever each control
+     already is), 48px under a coarse one. Controls read it as min-width /
+     min-height, so desktop output is unchanged by construction. */
+  --hit-min: 0px;
 
   /* ---- Motion (per Android docs/design-system.md §motion) ------------- */
   --dur-fast: 150ms;
@@ -183,4 +187,18 @@
   --ps-inset-left: 0px;
   --ps-inset-right: 0px;
   --ps-inset-keyboard: 0px;
+}
+
+/* ---- Coarse-pointer density ------------------------------------------ */
+/* Keyed on the input device, not the viewport: a narrow desktop window keeps
+   its density and a tablet gets the targets. This is the ONE place touch
+   density is decided; components do not carry their own coarse blocks. */
+@media (pointer: coarse) {
+  :root {
+    --hit-min: 48px;
+    --row-h: 48px;
+    --control-h: 40px; /* visual height; the hit area is --hit-min */
+    --topbar-h: 56px;
+    --tabbar-h: 44px;
+  }
 }

@@ -1,5 +1,6 @@
-import { computed, onBeforeUnmount, ref, watch, type ComputedRef, type Ref } from 'vue';
-import { NARROW_WORKSPACE_QUERY, resolveWorkspaceLayout, type WorkspaceLayout } from './workspaceLayout';
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { useLayoutClass } from './layoutClass';
+import { resolveWorkspaceLayout, type WorkspaceLayout } from './workspaceLayout';
 
 /**
  * The host workspace's narrow (phone) layout: one half at a time below
@@ -8,8 +9,8 @@ import { NARROW_WORKSPACE_QUERY, resolveWorkspaceLayout, type WorkspaceLayout } 
  * The panel draws each folder's sessions as leaves in that layout, because the
  * pane's tab bar is not beside it to show them.
  *
- * `matchMedia` is absent in some test DOMs; no query means the wide layout,
- * which is exactly what the desktop has always drawn.
+ * The width class comes from `useLayoutClass` (./layoutClass.ts); this is its
+ * `compact` consumer.
  */
 export function useNarrowWorkspace(deps: {
   activeFolder: ComputedRef<string | null>;
@@ -22,17 +23,9 @@ export function useNarrowWorkspace(deps: {
   onCollapsePanel: () => void;
   closeNarrowPanel: () => void;
 } {
-  const narrow = ref(false);
-  let query: MediaQueryList | null = null;
-  const onChange = (event: MediaQueryListEvent): void => {
-    narrow.value = event.matches;
-  };
-  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    query = window.matchMedia(NARROW_WORKSPACE_QUERY);
-    narrow.value = query.matches;
-    query.addEventListener('change', onChange);
-  }
-  onBeforeUnmount(() => query?.removeEventListener('change', onChange));
+  const layoutClass = useLayoutClass();
+  // Compact is today's narrow: one half on screen at a time.
+  const narrow = computed(() => layoutClass.value === 'compact');
 
   /** The rail's "show panel" over an open folder, in the narrow layout. */
   const narrowPanelOpen = ref(false);

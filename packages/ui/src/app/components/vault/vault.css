@@ -46,7 +46,7 @@
 }
 .vault-field input,
 .vault-field select {
-  min-height: var(--control-h);
+  min-height: max(var(--control-h), var(--hit-min));
   min-width: 0;
   padding: var(--sp-1) var(--sp-2);
   background: var(--surface-2);
@@ -74,7 +74,7 @@
   display: flex;
   align-items: flex-start;
   gap: var(--sp-2);
-  min-height: var(--control-h);
+  min-height: max(var(--control-h), var(--hit-min));
   color: var(--fg);
   font-size: var(--fs-300);
   cursor: pointer;
@@ -107,7 +107,7 @@
   margin-right: auto;
 }
 .vault-btn {
-  min-height: var(--control-h);
+  min-height: max(var(--control-h), var(--hit-min));
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -159,12 +159,4 @@
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-@media (pointer: coarse) {
-  .vault-field input,
-  .vault-field select,
-  .vault-radio,
-  .vault-btn {
-    min-height: 48px;
-  }
 }

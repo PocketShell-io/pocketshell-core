@@ -1,3 +1,5 @@
+import { COMPACT_QUERY, LAYOUT_BREAKPOINTS } from './layoutClass';
+
 /**
  * How the host workspace lays out its two halves — the session panel and the
  * open folder's pane — for the width it has.
@@ -12,9 +14,9 @@
 export type WorkspaceLayout = 'split' | 'panel' | 'pane';
 
 /** At or below this viewport width the workspace shows one half at a time. */
-export const NARROW_WORKSPACE_MAX_WIDTH = 640;
+export const NARROW_WORKSPACE_MAX_WIDTH = LAYOUT_BREAKPOINTS.compact;
 
-export const NARROW_WORKSPACE_QUERY = `(max-width: ${NARROW_WORKSPACE_MAX_WIDTH}px)`;
+export const NARROW_WORKSPACE_QUERY = COMPACT_QUERY;
 
 export function resolveWorkspaceLayout(input: {
   narrow: boolean;
