@@ -60,6 +60,7 @@ export type AppIconName =
   | 'home'
   | 'image'
   | 'minus'
+  | 'more-vertical'
   | 'panel-left'
   | 'paperclip'
   | 'plus'
@@ -107,6 +108,9 @@ const GEOMETRY: Record<AppIconName, IconShape> = {
   // the usage panel, and a heartbeat says "something running to watch"
   // where a bar says "a number to read".
   activity: { paths: ['M22 12h-4l-3 9L9 3l-3 9H2'] },
+  // Feather's `more-vertical` (three dots). The compact chrome's overflow trigger:
+  // the phone's one door to the host tools that the 36px rail used to hold.
+  'more-vertical': { paths: ['M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z', 'M12 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2z', 'M12 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z'] },
   // Feather's `alert-triangle`. The banner mark for a scan that is failing —
   // a warning about a background process, not an error the user caused.
   'alert-triangle': {
