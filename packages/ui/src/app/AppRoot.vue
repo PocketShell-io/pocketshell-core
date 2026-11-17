@@ -16,6 +16,7 @@
 // those around it; nothing here asks which platform it is on.
 import { onBeforeUnmount, onMounted, watchEffect } from 'vue';
 import { fontCssVariables } from '@ui/fonts';
+import { fontProfile } from './fontProfile';
 import { resolveTheme } from '@ui/themes';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { deleteWordBackward } from '@pocketshell/core/shared/deleteWord';
@@ -29,9 +30,9 @@ import VaultUnlockGate from './components/vault/VaultUnlockGate.vue';
 const props = withDefaults(
   defineProps<{
     /**
-     * The mono font stack a user's chosen family falls back to. The shared
-     * default is the desktop's (Consolas first); a client whose fonts differ
-     * passes its own.
+     * Overrides the mono font stack a user's chosen family falls back to.
+     * Normally unset: the stack comes from the client's font profile
+     * (`provideFontProfile`, ./fontProfile.ts), which the terminal reads too.
      */
     monoFallback?: string;
     /**
@@ -106,7 +107,7 @@ watchEffect(() => {
       terminalFontSize: settings.terminalFontSize,
       editorFontSize: settings.editorFontSize,
     },
-    props.monoFallback,
+    props.monoFallback ?? fontProfile().fallbackStack,
   );
   for (const [name, value] of Object.entries(vars)) {
     document.documentElement.style.setProperty(name, value);

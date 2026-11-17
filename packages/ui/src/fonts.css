@@ -1,0 +1,33 @@
+/* The bundled monospace face (issue #3138).
+ *
+ * Declared under the plain name "JetBrains Mono" so that the family a user
+ * picks in Settings and the first family of every shipped stack are the same
+ * name: the bundled file answers it on every platform, installed or not.
+ * Complete faces rather than script subsets — see assets/fonts/README.md for
+ * why (box-drawing coverage). `font-display: block` because a terminal that
+ * paints in a fallback face and then swaps measures its cells twice; the face
+ * is a local file, so the block period is a few milliseconds, and the
+ * terminal still refits after `document.fonts.load()` resolves (fonts.ts).
+ *
+ * Imported by styles.css AFTER tokens.css, so the `--font-mono` below wins
+ * the cascade over the token's own (stale) stack on equal specificity.
+ */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('./assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+
+:root {
+  /* Must stay in sync with DEFAULT_MONO_STACK in fonts.ts. */
+  --font-mono: 'JetBrains Mono', Consolas, 'Cascadia Mono', ui-monospace, monospace;
+}

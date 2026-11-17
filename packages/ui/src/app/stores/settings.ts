@@ -5,7 +5,9 @@ import {
   parseFontSize,
   sanitiseFontFamily,
   TERMINAL_FONT_SIZE_DEFAULT,
+  terminalFontSizeDefault,
 } from '@ui/fonts';
+import { NARROW_WORKSPACE_QUERY } from '../workspaceLayout';
 import { type FolderOrder, normaliseFolderOrder } from '../folderOrder';
 import {
   FOLDER_SORT_DEFAULT,
@@ -621,10 +623,22 @@ function applyParsed<K extends keyof AppSettings>(
   out[key] = parsed;
 }
 
+/** The compact (phone) layout; absent `matchMedia` (a bare test DOM) means the wide default. */
+function compactViewport(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(NARROW_WORKSPACE_QUERY).matches;
+}
+
 /** A fresh, fully-defaulted settings object. */
 export function settingsDefaults(): AppSettings {
   const out: Partial<AppSettings> = {};
   for (const key of settingKeys()) applyDefault(out, key);
+  // The terminal's size is the one default that depends on the layout: the
+  // phone-sized (narrow) layout ships 13px so a 412dp screen holds >= 50
+  // columns (#3138); the desktop's 16 is unchanged. Resolved here, per call,
+  // because the answer is a property of the viewport the store boots in.
+  out.terminalFontSize = terminalFontSizeDefault(compactViewport());
   // Every key of AppSettings was just written, which the loop cannot prove to
   // the compiler; this is the assertion of that fact and the only one here.
   return out as AppSettings;

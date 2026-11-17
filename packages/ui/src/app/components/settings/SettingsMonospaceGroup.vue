@@ -8,13 +8,16 @@ import { useSettingsStore } from '../../stores/settings';
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
-  MONOSPACE_FAMILIES,
+  BUNDLED_MONO_FAMILY,
   parseFontSize,
   resolveMonoStack,
   sanitiseFontFamily,
 } from '@ui/fonts';
+import { fontProfile } from '../../fontProfile';
 
 const settings = useSettingsStore();
+/** What this client offers (desktop: suggestions + free text; a phone: only the bundled face). */
+const profile = fontProfile();
 
 /**
  * The stack the chosen family actually resolves to, used to render the two
@@ -29,7 +32,7 @@ const settings = useSettingsStore();
  * is what made the size controls confusable in the first place — see the
  * comment above the Monospace text section in the template.
  */
-const monoSample = computed(() => resolveMonoStack(settings.monospaceFontFamily));
+const monoSample = computed(() => resolveMonoStack(settings.monospaceFontFamily, profile.fallbackStack));
 
 /**
  * Committed on `change` (blur, Enter, or picking a datalist suggestion) rather
@@ -38,7 +41,7 @@ const monoSample = computed(() => resolveMonoStack(settings.monospaceFontFamily)
  * mono chrome on the way to "Fira Code".
  */
 function onFamilyChange(event: Event): void {
-  const el = event.target as HTMLInputElement;
+  const el = event.target as HTMLInputElement | HTMLSelectElement;
   const clean = sanitiseFontFamily(el.value) ?? null;
   settings.set('monospaceFontFamily', clean);
   // Write the cleaned value back so the field shows what was actually stored;
@@ -88,24 +91,39 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
     <div class="row">
       <div class="row-text">
         <label class="row-label" for="mono-family">Font</label>
-        <p class="row-hint">
+        <p v-if="profile.freeText" class="row-hint">
           Used by the terminal, the file editor and every path, port and session name
           in the app — they are one surface, so they share one face. Pick a suggestion
           or type any family installed on this machine; leave it empty for the default.
-          A font you do not have falls back to Consolas, never to a proportional face.
+          A font you do not have falls back to {{ BUNDLED_MONO_FAMILY }}, never to a proportional face.
+        </p>
+        <p v-else class="row-hint" data-testid="mono-family-hint">
+          Used by the terminal, the file editor and every path, port and session name
+          in the app. Only the fonts bundled with the app are offered.
         </p>
       </div>
       <input
+        v-if="profile.freeText"
         id="mono-family"
         class="control"
         type="text"
         list="mono-families"
-        placeholder="Consolas (default)"
+        :placeholder="`${BUNDLED_MONO_FAMILY} (default)`"
         :value="settings.monospaceFontFamily ?? ''"
         @change="onFamilyChange"
       />
-      <datalist id="mono-families">
-        <option v-for="family in MONOSPACE_FAMILIES" :key="family" :value="family" />
+      <select
+        v-else
+        id="mono-family"
+        class="control"
+        :value="settings.monospaceFontFamily ?? ''"
+        @change="onFamilyChange"
+      >
+        <option value="">{{ BUNDLED_MONO_FAMILY }} (default)</option>
+        <option v-for="family in profile.families.filter((f) => f !== BUNDLED_MONO_FAMILY)" :key="family" :value="family">{{ family }}</option>
+      </select>
+      <datalist v-if="profile.freeText" id="mono-families">
+        <option v-for="family in profile.families" :key="family" :value="family" />
       </datalist>
     </div>
 
