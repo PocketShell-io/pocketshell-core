@@ -105,6 +105,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
     session: string;
     backend: 'tmux' | 'aplexer';
     workspace: string | null;
+    aplexerId: string | null;
     choice: LaunchChoice;
   } | null>(null);
   /** Cleared when the launch lands; fires if it never does. See below. */
@@ -134,6 +135,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
             sessionIdentityKey(pendingLaunch.value.session, {
               backend: pendingLaunch.value.backend,
               workspace: pendingLaunch.value.workspace ?? undefined,
+              aplexerId: pendingLaunch.value.aplexerId ?? undefined,
             }),
           )
         : null,
@@ -187,6 +189,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
       session,
       backend: meta?.backend ?? 'tmux',
       workspace: meta?.workspace ?? null,
+      aplexerId: meta?.aplexerId ?? null,
       choice,
     };
     launchTimer = setTimeout(() => {

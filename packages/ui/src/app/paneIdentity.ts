@@ -26,6 +26,8 @@ export interface PaneIdentityProps {
   backend?: 'tmux' | 'aplexer';
   /** Aplexer workspace, carried so same-named tags cannot share a registration. */
   workspace?: string | null;
+  /** The aplexer session's immutable UUID — the identity when known (#3146). */
+  aplexerId?: string | null;
 }
 
 export function usePaneIdentity(props: PaneIdentityProps): {
@@ -52,6 +54,7 @@ export function usePaneIdentity(props: PaneIdentityProps): {
     sessionIdentityKey(props.bare ? (props.sessionKey ?? '') : targetSession.value, {
       backend: props.backend,
       workspace: props.workspace ?? undefined,
+      aplexerId: props.aplexerId ?? undefined,
     }),
   );
 
