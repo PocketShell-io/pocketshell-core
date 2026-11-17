@@ -111,6 +111,25 @@ describe('remeasureAfterFontLoad', () => {
     expect(refit).toHaveBeenCalledTimes(1);
   });
 
+  it('writes nothing and does not throw when the terminal is disposed before the face resolves', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { load: () => gate.then(() => []), ready: Promise.resolve() } });
+    let disposed = false;
+    const writes: string[] = [];
+    const term = { options: {
+      get fontFamily() { if (disposed) throw new Error('disposed'); return 'a'; },
+      set fontFamily(v: string) { if (disposed) throw new Error('disposed'); writes.push(v); },
+    } };
+    const refit = vi.fn();
+    const done = remeasureAfterFontLoad(term, 'a', 13, refit, () => disposed);
+    disposed = true;
+    release();
+    await expect(done).resolves.toBeUndefined();
+    expect(writes).toEqual([]);
+    expect(refit).not.toHaveBeenCalled();
+  });
+
   it('still refits when the FontFaceSet API is missing or the load rejects', async () => {
     Object.defineProperty(document, 'fonts', { configurable: true, value: { load: () => Promise.reject(new Error('x')), ready: Promise.resolve() } });
     const refit = vi.fn();

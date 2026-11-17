@@ -272,21 +272,28 @@ export async function loadMonoFace(stack: string, sizePx: number): Promise<void>
  * one different string and back (both measure; the last one is the real face),
  * then `refit` recomputes cols/rows from the new cell.
  *
- * Returns after the refit has been requested; awaiting it is optional.
+ * `isDisposed` is consulted after each await; once true, nothing is written
+ * and no refit is requested. Returns after the refit has been requested;
+ * awaiting it is optional.
  */
 export async function remeasureAfterFontLoad(
   term: FontMeasuredTerminal,
   stack: string,
   sizePx: number,
   refit: () => void,
+  isDisposed: () => boolean = () => false,
 ): Promise<void> {
   await loadMonoFace(stack, sizePx);
+  if (isDisposed()) return;
   // `ready` also covers a face the stylesheet starts loading late.
   try {
     await document.fonts?.ready;
   } catch {
     // ignore: see loadMonoFace
   }
+  // Every write below happens after an await: the terminal may have been
+  // disposed meanwhile, and writing an option on a disposed xterm throws.
+  if (isDisposed()) return;
   const current = term.options.fontFamily ?? stack;
   term.options.fontFamily = `${current}, monospace`;
   term.options.fontFamily = current;

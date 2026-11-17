@@ -646,6 +646,7 @@ onMounted(async () => {
   void remeasureAfterFontLoad(
     term, term.options.fontFamily ?? '', settings.terminalFontSize,
     () => { if (!unmounted) pane.scheduleFit(); },
+    () => unmounted,
   );
   inputOwnership.attachInputAdapters(term, containerEl.value!);
   inputOwnership.attachPrefixResets(containerEl.value!);
@@ -805,7 +806,7 @@ watch(
     term.options.fontSize = size;
     pane.scheduleFit();
     // A newly chosen bundled/installed face may not be loaded yet.
-    void remeasureAfterFontLoad(term, stack, size, () => { if (!unmounted) pane.scheduleFit(); });
+    void remeasureAfterFontLoad(term, stack, size, () => { if (!unmounted) pane.scheduleFit(); }, () => unmounted);
   },
 );
 
