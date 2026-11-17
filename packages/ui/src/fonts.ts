@@ -42,8 +42,20 @@
  *     means the size of the text the user READS, not the scale of the chrome.
  */
 
+/**
+ * The face every client bundles (fonts.css, assets/fonts): JetBrains Mono, OFL.
+ * It is the first family of every shipped stack so the terminal and the mono
+ * chrome are the same real monospace face on every platform, installed or not.
+ */
+export const BUNDLED_MONO_FAMILY = 'JetBrains Mono';
+
+/** The desktop/web stack: the bundled face, then the OS faces it used to lead with. */
+export const DEFAULT_MONO_STACK = `'${BUNDLED_MONO_FAMILY}', Consolas, 'Cascadia Mono', ui-monospace, monospace`;
+/** The phone stack: the bundled face and the platform's own monospace — no Consolas on Android. */
+export const BUNDLED_MONO_STACK = `'${BUNDLED_MONO_FAMILY}', ui-monospace, monospace`;
+
 /** The shipped stack, and the tail every custom family falls back through. */
-const FALLBACK_STACK = `Consolas, 'Cascadia Mono', ui-monospace, monospace`;
+const FALLBACK_STACK = DEFAULT_MONO_STACK;
 
 /**
  * The picker's suggestions. NOT an allow-list — the control is a combobox and
@@ -59,12 +71,12 @@ const FALLBACK_STACK = `Consolas, 'Cascadia Mono', ui-monospace, monospace`;
  * macOS system monos.
  */
 export const MONOSPACE_FAMILIES: readonly string[] = [
+  BUNDLED_MONO_FAMILY,
   'Consolas',
   'Cascadia Mono',
   'Cascadia Code',
   'Lucida Console',
   'Courier New',
-  'JetBrains Mono',
   'Fira Code',
   'Source Code Pro',
   'IBM Plex Mono',
@@ -103,6 +115,17 @@ export const FONT_SIZE_MAX = 32;
 
 /** Exactly what ships today, so an upgrade changes nothing on screen. */
 export const TERMINAL_FONT_SIZE_DEFAULT = 16;
+/**
+ * The compact (phone) default. JetBrains Mono's advance is 0.6em, so 13px is a
+ * 7.8px cell: a 412dp phone fits 52 columns minus padding, where 16px (9.6px)
+ * fits ~42 and the pre-#3138 fallback face fewer still.
+ */
+export const TERMINAL_FONT_SIZE_COMPACT_DEFAULT = 13;
+
+/** The terminal's default size for a layout. Desktop is unchanged; compact is the phone's. */
+export function terminalFontSizeDefault(compact: boolean): number {
+  return compact ? TERMINAL_FONT_SIZE_COMPACT_DEFAULT : TERMINAL_FONT_SIZE_DEFAULT;
+}
 /** `--fs-300`, the value `codeEditorTheme.ts` has always used. */
 export const EDITOR_FONT_SIZE_DEFAULT = 13;
 
@@ -210,4 +233,62 @@ export function fontCssVariables(
     '--term-font-size': `${clampFontSize(settings.terminalFontSize)}px`,
     '--code-font-size': `${clampFontSize(settings.editorFontSize)}px`,
   };
+}
+
+/** What xterm exposes that {@link remeasureAfterFontLoad} needs; keeps xterm out of this module. */
+export interface FontMeasuredTerminal {
+  options: { fontFamily?: string; fontWeight?: unknown; fontWeightBold?: unknown };
+}
+
+/** The faces a terminal draws: regular and bold of the first family in the stack. */
+function faceQueries(stack: string, sizePx: number): string[] {
+  const first = stack.split(',')[0]?.trim() ?? '';
+  return first === '' ? [] : [`400 ${sizePx}px ${first}`, `700 ${sizePx}px ${first}`];
+}
+
+/**
+ * Resolve once the first family of `stack` is actually loaded (both weights).
+ * Never rejects: a platform without the FontFaceSet API, or a face that fails
+ * to load, resolves immediately — the stack's tail is already a monospace.
+ */
+export async function loadMonoFace(stack: string, sizePx: number): Promise<void> {
+  const set = typeof document === 'undefined' ? undefined : document.fonts;
+  if (!set || typeof set.load !== 'function') return;
+  try {
+    await Promise.all(faceQueries(stack, sizePx).map((q) => set.load(q)));
+  } catch {
+    // The stack falls through to a system monospace; measuring then is right.
+  }
+}
+
+/**
+ * Re-measure a terminal's cell after its face finished loading.
+ *
+ * xterm measures its cell width once, when the font option is set. A terminal
+ * opened before the webfont is ready measures the FALLBACK face, and keeps
+ * those metrics once the real face paints — a cell-width mismatch that shows
+ * as wrong column counts and misaligned box drawing. xterm ignores an option
+ * assignment that does not change the value, so the font is bounced through
+ * one different string and back (both measure; the last one is the real face),
+ * then `refit` recomputes cols/rows from the new cell.
+ *
+ * Returns after the refit has been requested; awaiting it is optional.
+ */
+export async function remeasureAfterFontLoad(
+  term: FontMeasuredTerminal,
+  stack: string,
+  sizePx: number,
+  refit: () => void,
+): Promise<void> {
+  await loadMonoFace(stack, sizePx);
+  // `ready` also covers a face the stylesheet starts loading late.
+  try {
+    await document.fonts?.ready;
+  } catch {
+    // ignore: see loadMonoFace
+  }
+  const current = term.options.fontFamily ?? stack;
+  term.options.fontFamily = `${current}, monospace`;
+  term.options.fontFamily = current;
+  refit();
 }

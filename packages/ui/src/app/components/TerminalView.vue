@@ -62,7 +62,8 @@ import { forceLocalMouseSelection } from '../terminalMouseSelection';
 import { captureChord, captureTerminalText, type CaptureScope } from '../terminalCapture';
 import { copyToClipboard, pasteFromClipboard } from '../terminalClipboard';
 import { useSettingsStore } from '../stores/settings';
-import { resolveMonoStack } from '@ui/fonts';
+import { DEFAULT_MONO_STACK, remeasureAfterFontLoad, resolveMonoStack } from '@ui/fonts';
+import { fontProfile } from '../fontProfile';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
 import { isTypingKey } from '@pocketshell/core/shared/composerText';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
@@ -254,7 +255,9 @@ watch(
  */
 const TERMINAL_OPTIONS: ITerminalOptions = {
   // profiles.defaults.font.face = "Consolas"
-  fontFamily: 'Consolas, "Cascadia Mono", ui-monospace, monospace',
+  // Overridden at construction with the resolved stack; the bundled
+  // JetBrains Mono (#3138) is first, then the desktop's old faces.
+  fontFamily: DEFAULT_MONO_STACK,
   // profiles.defaults.font.size = 16. Windows Terminal reads that as points
   // (16pt = 21.33px at 96 DPI), but the user chose to take the number
   // literally as pixels here, so 16 it is. Mirrored by --term-font-size.
@@ -577,7 +580,7 @@ onMounted(async () => {
   };
   term = new Terminal({
     ...TERMINAL_OPTIONS,
-    fontFamily: resolveMonoStack(settings.monospaceFontFamily),
+    fontFamily: resolveMonoStack(settings.monospaceFontFamily, fontProfile().fallbackStack),
     fontSize: settings.terminalFontSize,
     theme: resolveTheme(settings.theme).terminal,
     // `registerDecoration` — the at-rest path tint, terminalPathHighlights.ts —
@@ -637,6 +640,13 @@ onMounted(async () => {
   // whole lifetime, across session re-points (terminalPane.ts documents why
   // per-shell binding leaked keystrokes).
   pane.attach(term, fitAddon, containerEl.value!);
+  // xterm measured its cell against whatever face was ready when it opened.
+  // Once the bundled face has loaded, re-measure and refit so the column count
+  // never rests on fallback-face metrics (#3138).
+  void remeasureAfterFontLoad(
+    term, term.options.fontFamily ?? '', settings.terminalFontSize,
+    () => { if (!unmounted) pane.scheduleFit(); },
+  );
   inputOwnership.attachInputAdapters(term, containerEl.value!);
   inputOwnership.attachPrefixResets(containerEl.value!);
 
@@ -790,9 +800,12 @@ watch(
   () => [settings.monospaceFontFamily, settings.terminalFontSize, settings.zoomPercent] as const,
   ([family, size]) => {
     if (!term) return;
-    term.options.fontFamily = resolveMonoStack(family);
+    const stack = resolveMonoStack(family, fontProfile().fallbackStack);
+    term.options.fontFamily = stack;
     term.options.fontSize = size;
     pane.scheduleFit();
+    // A newly chosen bundled/installed face may not be loaded yet.
+    void remeasureAfterFontLoad(term, stack, size, () => { if (!unmounted) pane.scheduleFit(); });
   },
 );
 
