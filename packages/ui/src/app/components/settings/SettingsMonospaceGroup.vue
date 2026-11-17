@@ -203,12 +203,6 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
   align-items: stretch;
   gap: var(--sp-2);
 }
-.row-main {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-}
 .preview {
   margin: 0;
   display: flex;

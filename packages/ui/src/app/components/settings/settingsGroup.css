@@ -22,6 +22,14 @@
   padding: var(--sp-3) 0;
   border-bottom: 1px solid var(--border-soft);
 }
+/* A row whose control sits beside its label inside a wrapper (the font-size
+   rows), the same shape one level down: compact width stacks it too. */
+.row-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
 .row:last-child {
   border-bottom: none;
 }
@@ -116,7 +124,8 @@ select.control {
 }
 /* Narrow (phone) screens: stack label over control instead of squeezing both. */
 @media (max-width: 480px) {
-  .row {
+  .row,
+  .row-main {
     flex-direction: column;
     align-items: stretch;
     gap: var(--sp-2);

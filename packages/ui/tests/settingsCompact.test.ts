@@ -2,8 +2,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { useSettingsStore } from '../src/app/stores/settings';
 import { provideApi } from '../src/app/ipc';
 import type { PocketShellApi } from '../src/app/api';
 import SettingsView from '../src/app/views/SettingsView.vue';
@@ -12,9 +11,8 @@ import SettingsView from '../src/app/views/SettingsView.vue';
  * #3139: a host that declares `app.desktopChrome === false` (Android) gets no
  * desktop-only settings or copy; a catch-all desktop double (every key a
  * function) keeps everything. jsdom has no layout, so the no-horizontal-overflow
- * assertion (scrollWidth <= clientWidth at 360 and 412) runs in real Chromium:
- * the host app's settings-compact-overflow check. Here the compact-width CSS
- * that makes it true is pinned at the source.
+ * and single-column assertions at 360 and 412 dp live in
+ * settingsLayoutBrowser.test.ts (real Chromium).
  */
 function desktopDouble(): PocketShellApi {
   const group = (name: string) => new Proxy({}, {
@@ -52,6 +50,17 @@ describe('Settings without desktop chrome (Android)', () => {
     wrapper.unmount();
   });
 
+  it('a stored `system` theme still selects a visible, valid option (relabelled for the phone)', async () => {
+    provideApi(androidDouble());
+    useSettingsStore().set('theme', 'system');
+    const wrapper = mount(SettingsView);
+    await flushPromises();
+    const select = wrapper.get('#theme-choice').element as HTMLSelectElement;
+    expect(select.value).toBe('system');
+    expect(select.selectedOptions[0]?.textContent?.trim()).toBe('Follow system');
+    wrapper.unmount();
+  });
+
   it('keeps all of it on a desktop host that does not declare the flag', async () => {
     provideApi(desktopDouble());
     const wrapper = mount(SettingsView);
@@ -60,24 +69,5 @@ describe('Settings without desktop chrome (Android)', () => {
     expect(wrapper.find('#zoom-label').exists()).toBe(true);
     expect(wrapper.text()).toContain('Follow Windows');
     wrapper.unmount();
-  });
-});
-
-describe('Settings compact layout source', () => {
-  const read = (rel: string) => readFileSync(join(__dirname, '../src/app', rel), 'utf8');
-
-  it('stacks rows to one column at phone width in the view and the shared group css', () => {
-    for (const file of ['views/SettingsView.vue', 'components/settings/settingsGroup.css']) {
-      const css = read(file);
-      const media = css.slice(css.indexOf('@media (max-width: 480px)'));
-      expect(media, file).toMatch(/\.row\s*\{[^}]*flex-direction:\s*column/);
-      expect(media, file).toMatch(/\.row-hint\s*\{[^}]*max-width:\s*none/);
-    }
-  });
-
-  it('lets the tab strip scroll inside itself instead of widening the body', () => {
-    const tabs = read('components/settings/SettingsTabs.vue');
-    expect(tabs).toMatch(/\.strip\s*\{[^}]*overflow-x:\s*auto/);
-    expect(tabs).toMatch(/\.tab\s*\{[^}]*flex:\s*none/);
   });
 });

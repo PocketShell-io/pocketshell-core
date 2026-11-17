@@ -74,6 +74,8 @@ const hostList = useHostsStore();
 
 /** False on a host that declares no desktop chrome (Android, #3139). */
 const desktop = desktopChromeSupported();
+/** The follow-the-OS theme choice: named for the OS the host runs on. */
+const systemThemeLabel = desktop ? 'Follow Windows' : 'Follow system';
 
 /** The five tabs, in reading order; Advanced carries the platform groups.
  *  Keyboard documents desktop chords only, so a no-desktop-chrome host omits it. */
@@ -269,8 +271,8 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
             <p class="row-hint">
               Colours for the whole app — panels, terminal and file editor together, so
               they always read as one surface.
-              <template v-if="desktop"><em>Follow Windows</em> switches between
-              Dark and Light with the system's own light and dark mode, live.</template>
+              <em>{{ systemThemeLabel }}</em> switches between Dark and Light with
+              {{ desktop ? "the system's" : "the phone's" }} own light and dark mode, live.
             </p>
           </div>
           <select
@@ -279,7 +281,7 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
             :value="settings.theme"
             @change="onThemeChange"
           >
-            <option v-if="desktop" :value="THEME_CHOICE_SYSTEM">Follow Windows</option>
+            <option :value="THEME_CHOICE_SYSTEM">{{ systemThemeLabel }}</option>
             <option v-for="theme in THEMES" :key="theme.id" :value="theme.id">
               {{ theme.label }}
             </option>
@@ -536,7 +538,8 @@ code {
    so the hint is not squeezed into a half-width column, and nothing is wider
    than the dialog body. Same breakpoint as settingsGroup.css. */
 @media (max-width: 480px) {
-  .row {
+  .row,
+  .row-main {
     flex-direction: column;
     align-items: stretch;
     gap: var(--sp-2);
