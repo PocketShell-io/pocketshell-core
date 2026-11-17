@@ -69,12 +69,21 @@ function onKeydown(event: KeyboardEvent): void {
   align-items: stretch;
   gap: var(--sp-1);
   padding: 0 var(--sp-3);
+  /* A strip wider than the dialog scrolls inside itself, never the body. */
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 /* Underline tabs, the session bar's treatment (WorkspaceTabBar): ghost at
    rest — a tinted fill and stronger label mark the selected tab. */
+.strip::-webkit-scrollbar {
+  display: none;
+}
 .tab {
+  flex: none;
   height: var(--control-h);
   padding: 0 var(--sp-3);
   background: transparent;

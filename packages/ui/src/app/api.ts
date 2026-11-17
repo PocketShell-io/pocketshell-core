@@ -163,6 +163,14 @@ export interface PocketShellApi {
      * and reconnect-on-return controls only where they change behaviour.
      */
     "backgroundGrace"?: boolean;
+    /**
+     * Optional: `false` on a platform with no desktop window chrome (Android):
+     * no window zoom chords, no OS-theme follow, no Electron menu or
+     * hardware-keyboard chord table. Settings then hides those controls and the
+     * copy that documents them. Absent or any other value means a desktop-class
+     * host, which draws everything.
+     */
+    "desktopChrome"?: boolean;
     };
 
     "ssh": {

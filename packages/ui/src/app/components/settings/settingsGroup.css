@@ -124,6 +124,9 @@ select.control {
   .control {
     max-width: none;
   }
+  .row-hint {
+    max-width: none;
+  }
   /* A switch keeps its own width; stretched it reads as a full-width button. */
   .switch {
     align-self: flex-start;

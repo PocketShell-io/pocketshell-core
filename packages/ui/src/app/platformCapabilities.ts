@@ -23,6 +23,19 @@ export function backgroundGraceSupported(): boolean {
   }
 }
 
+/**
+ * False only when the platform explicitly declares `app.desktopChrome === false`
+ * (Android). Anything else, including a catch-all double's function answer,
+ * is a desktop-class host: the pre-existing behaviour is to draw everything.
+ */
+export function desktopChromeSupported(): boolean {
+  try {
+    return api.app?.desktopChrome !== false;
+  } catch {
+    return true;
+  }
+}
+
 /** The installed build, or null when the platform cannot (or does not truly) answer. */
 export async function readInstalledAppInfo(): Promise<InstalledAppInfo | null> {
   try {

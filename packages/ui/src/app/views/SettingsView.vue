@@ -49,6 +49,7 @@ import { useConnectionStore } from '../stores/connection';
 import { useHostsStore } from '../stores/hosts';
 import { useSettingsStore } from '../stores/settings';
 import { defaultHostStatus } from '../autoConnect';
+import { desktopChromeSupported } from '../platformCapabilities';
 import { hostEntryId } from '@pocketshell/core';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import {
@@ -71,12 +72,16 @@ const connection = useConnectionStore();
 const settings = useSettingsStore();
 const hostList = useHostsStore();
 
-/** The five tabs, in reading order; Advanced carries the platform groups. */
+/** False on a host that declares no desktop chrome (Android, #3139). */
+const desktop = desktopChromeSupported();
+
+/** The five tabs, in reading order; Advanced carries the platform groups.
+ *  Keyboard documents desktop chords only, so a no-desktop-chrome host omits it. */
 const TABS = [
   { id: 'general', label: 'General' },
   { id: 'sessions', label: 'Sessions' },
   { id: 'appearance', label: 'Appearance' },
-  { id: 'keyboard', label: 'Keyboard' },
+  ...(desktop ? [{ id: 'keyboard', label: 'Keyboard' }] : []),
   { id: 'advanced', label: 'Advanced' },
 ] as const;
 // Session-local, deliberately not a stored setting: the panel always opens on
@@ -263,8 +268,9 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
             <label class="row-label" for="theme-choice">Theme</label>
             <p class="row-hint">
               Colours for the whole app — panels, terminal and file editor together, so
-              they always read as one surface. <em>Follow Windows</em> switches between
-              Dark and Light with the system's own light and dark mode, live.
+              they always read as one surface.
+              <template v-if="desktop"><em>Follow Windows</em> switches between
+              Dark and Light with the system's own light and dark mode, live.</template>
             </p>
           </div>
           <select
@@ -273,14 +279,14 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
             :value="settings.theme"
             @change="onThemeChange"
           >
-            <option :value="THEME_CHOICE_SYSTEM">Follow Windows</option>
+            <option v-if="desktop" :value="THEME_CHOICE_SYSTEM">Follow Windows</option>
             <option v-for="theme in THEMES" :key="theme.id" :value="theme.id">
               {{ theme.label }}
             </option>
           </select>
         </div>
 
-        <div class="row">
+        <div v-if="desktop" class="row">
           <div class="row-text">
             <span id="zoom-label" class="row-label">App zoom</span>
             <p class="row-hint">
@@ -337,6 +343,7 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
          hands the group the frame's remaining height so its own section rail
          and scrolling body fill it, instead of scrolling this panel. -->
     <div
+      v-if="desktop"
       v-show="activeTab === 'keyboard'"
       id="settings-panel-keyboard"
       class="tab-panel"
@@ -524,5 +531,25 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
 code {
   font-family: var(--font-mono);
   font-size: 0.9em;
+}
+/* Compact (phone) width: one column per row — label and hint over the control —
+   so the hint is not squeezed into a half-width column, and nothing is wider
+   than the dialog body. Same breakpoint as settingsGroup.css. */
+@media (max-width: 480px) {
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  .control {
+    max-width: none;
+  }
+  .switch,
+  .stepper {
+    align-self: flex-start;
+  }
+  .row-hint {
+    max-width: none;
+  }
 }
 </style>
