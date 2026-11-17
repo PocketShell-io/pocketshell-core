@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref, shallowRef, toRaw } from 'vue';
 import { api } from '../ipc';
+import { recordDiagError } from '../diag';
 import type { ConnectionStateEvent } from '../api';
 import type {
   BootstrapResult,
@@ -355,8 +356,16 @@ export const useConnectionStore = defineStore('connection', () => {
   }
 
   /**
-   * Restore the host's remembered auto-forward setting before a new
-   * connection becomes visible to the workspace.
+   * Restore the host's remembered auto-forward setting. Runs in the
+   * BACKGROUND right after a new connection is exposed (#3137): connect()
+   * does not wait for it. The header reads the persisted ON flag and updates
+   * from the engine's `forwards.onStates` push (HostWorkspaceView's states
+   * watcher, and the ports panel's `subscribe` in stores/forwards.ts, which
+   * also re-syncs), so the restored tunnels appear without a manual refresh.
+   * Because it is not awaited it is a no-op for a connection that is no
+   * longer the current, connected one (closed, dropped or replaced while
+   * `isAutoEnabled`/`startAuto` were in flight) and stays silent for it, the
+   * same as the bootstrap probe below.
    *
    * The ports overlay used to be the only caller of `forwards.init`, so the
    * header could truthfully read the persisted ON flag while no local tunnel
@@ -369,8 +378,10 @@ export const useConnectionStore = defineStore('connection', () => {
    * clone cannot carry through `ipcRenderer.invoke`.
    */
   async function restoreAutoForward(id: ConnectionId, host: HostEntry): Promise<void> {
+    const current = (): boolean => connectionId.value === id && state.value === 'connected';
     try {
       if (!(await api.forwards.isAutoEnabled(id))) return;
+      if (!current()) return;
       const configForwards = host.localForwards.map((forward) => ({
         kind: forward.kind,
         listenHost: forward.listenHost,
@@ -379,9 +390,11 @@ export const useConnectionStore = defineStore('connection', () => {
         destPort: forward.destPort,
       }));
       await api.forwards.startAuto(id, configForwards);
-    } catch {
+    } catch (e) {
       // A successful SSH connection must not be reported as failed because a
-      // best-effort forwarding restore could not be queried or started.
+      // best-effort forwarding restore could not be queried or started, but
+      // running in the background means nobody awaits it: record it.
+      if (current()) recordDiagError('error', new Error(`Port-forward restore failed: ${errorMessage(e)}`));
     }
   }
 
@@ -433,15 +446,16 @@ export const useConnectionStore = defineStore('connection', () => {
       return false;
     }
     if (result.ok && result.connectionId) {
-      // Do this while the picker still owns the connection attempt. Once the
-      // new id is exposed, HostWorkspaceView can render the persisted ON
-      // indicator knowing the engine has already been asked to resume.
-      await restoreAutoForward(result.connectionId, host);
+      // The restore is best-effort and may take several round trips; the user
+      // must not wait on it to see their connected host (#3137). The ON
+      // indicator reads the persisted flag, and the forwards panel refreshes
+      // when the engine reports the restored forwards.
       if (preserveComposerFrom && preserveComposerFrom !== result.connectionId) {
         useComposerStore().rekeyConnection(preserveComposerFrom, result.connectionId);
       }
       connectionId.value = result.connectionId;
       state.value = 'connected';
+      void restoreAutoForward(result.connectionId, host);
       // Fire bootstrap in the background; the UI surfaces it when it lands.
       // A rejection (the link dropped right after connect) is swallowed:
       // `bootstrap` staying null keeps the missing-tools strip quiet, which

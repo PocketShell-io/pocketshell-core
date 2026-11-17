@@ -9,7 +9,6 @@
  */
 import type { BootstrapResult, ExecResult, HostPlatform, ToolState } from './types';
 import { pathAwareCommand } from './aplexerCommands';
-import { parseCommandV } from './hostProbeParsers';
 import { detectHostPlatform } from './hostPlatform';
 
 export type BootstrapExec = (command: string) => Promise<ExecResult>;
@@ -25,47 +24,63 @@ export interface HostBootstrapOptions {
   platform?: HostPlatform;
 }
 
-/** Probe one tool: `command -v <binary>` under the path-aware shell. */
-async function probeTool(exec: BootstrapExec, binary: string): Promise<ToolState> {
-  const res = await exec(pathAwareCommand(`command -v ${binary}`));
-  const path = parseCommandV(res.stdout, res.exitCode);
-  if (!path) return { installed: false, path: null, version: null };
-  const versionRes = await exec(pathAwareCommand(`${binary} --version`));
-  const version = versionRes.exitCode === 0 ? versionRes.stdout.trim().split(/\r?\n/)[0] : null;
-  return { installed: true, path, version: version ?? null };
-}
-
-/** Detect the python installer: `command -v uv` then `command -v pipx`. */
-async function detectInstaller(exec: BootstrapExec): Promise<'uv' | 'pipx' | null> {
-  for (const binary of ['uv', 'pipx'] as const) {
-    const res = await exec(pathAwareCommand(`command -v ${binary}`));
-    if (parseCommandV(res.stdout, res.exitCode)) return binary;
-  }
-  return null;
-}
-
-/** Wrap a `systemctl --user` command with the env vars systemd needs over SSH. */
-function systemdUserCommand(command: string): string {
-  const env =
-    `XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)} ` +
-    `DBUS_SESSION_BUS_ADDRESS=unix:path=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus`;
-  return pathAwareCommand(`export ${env}; ${command}`);
-}
-
 const NOT_INSTALLED: ToolState = { installed: false, path: null, version: null };
+
+/** Tools whose path AND `--version` the probe reports. */
+const VERSIONED_TOOLS = ['pocketshell', 'tmuxctl', 'tmux', 'a'] as const;
+/** Python installers, in preference order. */
+const INSTALLERS = ['uv', 'pipx'] as const;
+
+const END_MARKER = 'PS_PROBE_END';
+
+/**
+ * The whole probe as ONE shell script (one SSH exec instead of ~13), printing
+ * `key=value` lines. Same semantics as the per-tool execs it replaced: path
+ * from `command -v`, version only when `--version` exits 0 (first line), the
+ * installer is the first of uv/pipx on PATH, and the daemon is probed only
+ * when the helper AND systemctl exist.
+ */
+function probeScript(tools: readonly string[], withDaemon: boolean): string {
+  const parts: string[] = [];
+  for (const tool of tools) {
+    parts.push(
+      `p=$(command -v ${tool}) && [ -n "$p" ] && { echo "path.${tool}=$p"; ` +
+        `v=$(${tool} --version 2>/dev/null) && echo "version.${tool}=$(printf '%s\\n' "$v" | sed -n 1p)"; }`,
+    );
+  }
+  parts.push(`ins=; for i in ${INSTALLERS.join(' ')}; do command -v $i >/dev/null 2>&1 && { ins=$i; break; }; done; echo "installer=$ins"`);
+  if (withDaemon) {
+    const unit = 'pocketshell-jobs.service';
+    parts.push(
+      `p=$(command -v pocketshell) && [ -n "$p" ] && command -v systemctl >/dev/null 2>&1 && { ` +
+        'export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; ' +
+        'export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus; ' +
+        `systemctl --user is-active ${unit} >/dev/null 2>&1; echo "daemon.running=$?"; ` +
+        `systemctl --user is-enabled ${unit} >/dev/null 2>&1; echo "daemon.enabled=$?"; }`,
+    );
+  }
+  parts.push(`echo ${END_MARKER}`);
+  return parts.join('; ');
+}
+
+function toolFrom(values: Map<string, string>, tool: string): ToolState {
+  const path = values.get(`path.${tool}`) ?? '';
+  if (!path) return { installed: false, path: null, version: null };
+  const version = values.get(`version.${tool}`)?.trim();
+  return { installed: true, path, version: version ? version : null };
+}
 
 /**
  * The probe itself: the `pocketshell` helper, the tmux join binary
  * (`tmuxctl`), raw tmux, and `a` (aplexer), plus the installer and the
- * daemon state. Probes run in parallel; the exec effect decides how a
+ * daemon state — all in a single exec; the exec effect decides how a
  * transport failure is reported.
  *
  * On a Windows host the helper, `tmuxctl` and tmux cannot exist — OpenSSH for
- * Windows has neither, and no amount of probing installs them. Probing anyway
- * costs five round trips to report exactly what is already known, so on
- * `platform: 'windows'` those three are answered WITHOUT an exec and only
+ * Windows has neither, and no amount of probing installs them. So on
+ * `platform: 'windows'` those three are answered WITHOUT being probed and only
  * `a` (aplexer — the session manager Windows hosts are expected to gain) and
- * the installer are probed. The daemon check stays gated on the helper and
+ * the installer are. The daemon check stays gated on the helper and
  * therefore skips itself.
  */
 export async function runHostBootstrap(
@@ -74,27 +89,31 @@ export async function runHostBootstrap(
 ): Promise<BootstrapResult> {
   const platform = options.platform ?? (await detectHostPlatform(exec));
   const posixOnly = platform === 'windows';
-  const [pocketshell, tmuxctl, tmux, aplexer, installer] = await Promise.all([
-    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'pocketshell'),
-    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'tmuxctl'),
-    posixOnly ? Promise.resolve(NOT_INSTALLED) : probeTool(exec, 'tmux'),
-    probeTool(exec, 'a'),
-    detectInstaller(exec),
-  ]);
-
-  let daemonRunning: boolean | null = null;
-  let daemonEnabled: boolean | null = null;
-  if (pocketshell.installed) {
-    const systemctlRes = await exec(pathAwareCommand('command -v systemctl'));
-    if (parseCommandV(systemctlRes.stdout, systemctlRes.exitCode)) {
-      const active = await exec(systemdUserCommand('systemctl --user is-active pocketshell-jobs.service'));
-      daemonRunning = active.exitCode === 0;
-      const enabled = await exec(systemdUserCommand('systemctl --user is-enabled pocketshell-jobs.service'));
-      daemonEnabled = enabled.exitCode === 0;
-    }
+  const tools = posixOnly ? ['a'] : [...VERSIONED_TOOLS];
+  const res = await exec(pathAwareCommand(probeScript(tools, !posixOnly)));
+  const values = new Map<string, string>();
+  let complete = false;
+  for (const line of res.stdout.split(/\r?\n/)) {
+    if (line === END_MARKER) complete = true;
+    const eq = line.indexOf('=');
+    if (eq > 0) values.set(line.slice(0, eq), line.slice(eq + 1));
   }
-
-  return { platform, pocketshell, tmuxctl, tmux, aplexer, installer, daemonRunning, daemonEnabled };
+  if (!complete) throw new Error(`host probe failed (exit ${res.exitCode}): ${res.stderr.trim()}`);
+  const installerName = values.get('installer');
+  const installer = installerName === 'uv' || installerName === 'pipx' ? installerName : null;
+  const pocketshell = posixOnly ? NOT_INSTALLED : toolFrom(values, 'pocketshell');
+  const daemonRunning = values.has('daemon.running') ? values.get('daemon.running') === '0' : null;
+  const daemonEnabled = values.has('daemon.enabled') ? values.get('daemon.enabled') === '0' : null;
+  return {
+    platform,
+    pocketshell,
+    tmuxctl: posixOnly ? NOT_INSTALLED : toolFrom(values, 'tmuxctl'),
+    tmux: posixOnly ? NOT_INSTALLED : toolFrom(values, 'tmux'),
+    aplexer: toolFrom(values, 'a'),
+    installer,
+    daemonRunning,
+    daemonEnabled,
+  };
 }
 
 /**
