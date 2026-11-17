@@ -16,6 +16,7 @@
 // and a leaf tap opens that folder with that session's tab selected — the same
 // `select(folder, session)` the panel's own create path already emits.
 import { computed } from 'vue';
+import { useCollapsedGroups } from '../sessionTreeCollapse';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { rootHostPath } from '../sessionRoots';
 import { rootHeaderParts, type SessionDirectory, type SessionRootFolder } from '../sessionTree';
@@ -143,6 +144,20 @@ const emit = defineEmits<{
 const rootRows = computed(() =>
   props.roots.map((root) => ({ root, header: rootHeaderParts(root) })),
 );
+
+const { isCollapsed, toggle: toggleGroup } = useCollapsedGroups();
+
+/**
+ * A root's folder rows in draw order, each with its index in `root.directories`
+ * (the drag gaps are measured against that array). On the narrow layout a
+ * directory deleted under a live session sinks below the live ones, keeping
+ * the host's order inside each half; desktop keeps the host order untouched.
+ */
+function drawnDirs(root: SessionRootFolder): { dir: SessionDirectory; i: number }[] {
+  const all = root.directories.map((dir, i) => ({ dir, i }));
+  if (!props.showSessions) return all;
+  return [...all.filter((d) => !isDeleted(d.dir)), ...all.filter((d) => isDeleted(d.dir))];
+}
 
 /**
  * The absolute host directory a root's `+` would start the picker in, or null
@@ -325,6 +340,7 @@ function onFolderClick(dir: SessionDirectory): void {
           name="trash-2"
           :size="12"
           title="Directory deleted"
+              aria-label="Directory deleted"
         />
         <!-- Beside the label, not pinned to the right edge. A count thrown to
              the far end of the row reads as its own column — "10" floating
@@ -411,9 +427,10 @@ function onFolderClick(dir: SessionDirectory): void {
              a landing rule drawn on the same element would have to fight it
              for the one border the row has. -->
         <li
-          v-for="(dir, i) in root.directories"
+          v-for="{ dir, i } in drawnDirs(root)"
           :key="dir.key"
           :class="{
+            'has-toggle': drawsLeaves(dir),
             'drop-above': props.dropTarget?.root === root.key && props.dropTarget.gap === i,
             'drop-below':
               props.dropTarget?.root === root.key &&
@@ -470,6 +487,7 @@ function onFolderClick(dir: SessionDirectory): void {
               name="trash-2"
               :size="12"
               title="Directory deleted"
+              aria-label="Directory deleted"
             />
             <!-- One mark per session that runs a named agent, in the folder's
                  TAB-BAR order — the folder's tab bar folded flat, the user's
@@ -499,7 +517,16 @@ function onFolderClick(dir: SessionDirectory): void {
                each opening the folder with its own tab selected. Drawn only
                for a real folder — an untracked folder's row already IS its
                one session. -->
-          <ul v-if="drawsLeaves(dir)" class="session-leaves">
+          <button
+            v-if="drawsLeaves(dir)"
+            class="group-toggle"
+            :aria-expanded="!isCollapsed(dir.key)"
+            :aria-label="`${isCollapsed(dir.key) ? 'Expand' : 'Collapse'} ${displayName(dir.label).text}`"
+            @click.stop="toggleGroup(dir.key)"
+          >
+            <AppIcon :name="isCollapsed(dir.key) ? 'chevron-right' : 'chevron-down'" :size="16" />
+          </button>
+          <ul v-if="drawsLeaves(dir) && !isCollapsed(dir.key)" class="session-leaves">
             <li v-for="row in dir.rows" :key="row.session.name">
               <button
                 class="session-leaf"
@@ -518,6 +545,7 @@ function onFolderClick(dir: SessionDirectory): void {
                   name="trash-2"
                   :size="12"
                   title="Directory deleted"
+              aria-label="Directory deleted"
                 />
                 <span class="row-time">{{ fmtRelative(row.session.activity, props.now) }}</span>
               </button>
@@ -1001,9 +1029,38 @@ function onFolderClick(dir: SessionDirectory): void {
   color: var(--fg-muted);
 }
 .folder-list.leaves .session-leaf .label {
-  font-size: var(--fs-300);
-  line-height: var(--lh-300);
+  font-size: var(--fs-400);
+  line-height: var(--lh-400);
   color: var(--fg-secondary);
+}
+/* Indent guide: a 1px rail under the group's dot (dot centre = 2px rail + 18px
+   pad + 4px) so the leaves read as the project's children. */
+.folder-list.leaves .session-leaves {
+  margin-left: 23px;
+  border-left: 1px solid var(--border);
+}
+.folder-list.leaves .session-leaf {
+  padding-left: 16px;
+}
+.folder-list.leaves .dir-list li {
+  position: relative;
+}
+.folder-list.leaves .dir-list li.has-toggle .dir-header {
+  padding-right: calc(var(--row-pad-x) + var(--hit-min, 48px));
+}
+.group-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--hit-min, 48px);
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
 }
 .folder-list.leaves .session-leaf.current .label {
   color: var(--fg);

@@ -35,6 +35,7 @@ const sessions: SessionSummary[] = [
   s('main', 'notes', 22 * 3600),
   s('shell-s1-mwd6e1xg', 'ps-s1-s1-mwd6e1xg (deleted)', 5 * 86400),
   s('shell-s0-mwd5sye7', 'ps-s0-s0-mwd5sye7 (deleted)', 5 * 86400),
+  s('an-extremely-long-session-name-that-also-overflows-the-row', 'a-very-long-project-name-that-keeps-going-and-going', 4 * 3600),
   s('main', 'telegram-bot', 2 * 86400),
   s('main', 'mcp-servers', 3 * 86400),
   s('main', 'home-lab', 4 * 86400),
@@ -42,7 +43,10 @@ const sessions: SessionSummary[] = [
   s('main', 'dotfiles', 5 * 86400),
 ];
 const roots = groupSessionsIntoRoots(sessions, HOME, ['~/git']);
-const compact = new URLSearchParams(location.search).get('layout') !== 'desktop';
+const params = new URLSearchParams(location.search);
+const selects: unknown[][] = [];
+(window as unknown as { __selects: unknown[][] }).__selects = selects;
+const compact = params.get('layout') !== 'desktop';
 
 createApp({
   render: () =>
@@ -54,6 +58,9 @@ createApp({
         defaultStartIn: null,
         showSessions: compact,
         tabOrders: {},
+        activeFolder: params.get('active') ? '~/git/orchestrator' : null,
+        activeSession: params.get('active') ? 'orchestrator-main' : null,
+        onSelect: (dir: { key: string }, session?: string) => selects.push([dir.key, session ?? null]),
       }),
     ]),
 }).mount('#app');

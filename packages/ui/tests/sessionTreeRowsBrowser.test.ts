@@ -198,3 +198,131 @@ describe.each([360, 412])('Session tree compact rows in real Chromium at %i dp',
     expect(m.text).toContain('(deleted)');
   }, 60_000);
 });
+
+/** Open the fixture in compact mode, run `script` in the page, return its value. */
+async function inPage<T>(width: number, query: string, script: string, reload = false): Promise<T> {
+  const cdp = await connect();
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 915, deviceScaleFactor: 1, mobile: true });
+  await cdp.send('Page.navigate', { url: `${origin}/?layout=compact${query}` });
+  const ready = async () => {
+    for (let i = 0; i < 100; i += 1) {
+      if (await cdp.evaluate<boolean>("!!document.querySelector('.dir-header')")) break;
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
+    await new Promise((ok) => setTimeout(ok, 200));
+  };
+  await ready();
+  await cdp.evaluate('localStorage.removeItem("ps.sessionTree.collapsed")');
+  if (reload) {
+    await cdp.send('Page.reload');
+    await ready();
+  }
+  return cdp.evaluate<T>(script);
+}
+
+describe.each([360, 412])('Session tree compact behaviour at %i dp', (width) => {
+  it('leaf rows are 15px primary text under a 1px indent guide', async () => {
+    const r = await inPage<{ size: string; rail: string; fam: string }>(width, '', `(() => {
+      const leaf = document.querySelector('.session-leaf .label');
+      const list = document.querySelector('.session-leaves');
+      return { size: getComputedStyle(leaf).fontSize, rail: getComputedStyle(list).borderLeftWidth, fam: getComputedStyle(leaf).fontFamily };
+    })()`);
+    expect(r.size).toBe('15px');
+    expect(r.rail).toBe('1px');
+    expect(r.fam).not.toMatch(/mono|consolas/i);
+  }, 60_000);
+
+  it('collapse toggle hides a multi-session group, persists, and expands again', async () => {
+    const r = await inPage<Record<string, unknown>>(width, '', `(async () => {
+      const wait = () => new Promise((ok) => setTimeout(ok, 100));
+      const li = () => [...document.querySelectorAll('.dir-list li')].find((l) => l.querySelector('.dir-header')?.textContent.includes('pocketshell') && l.querySelector('.group-toggle'));
+      const out = {};
+      out.toggles = document.querySelectorAll('.group-toggle').length;
+      out.singleHasToggle = !!document.querySelector('.dir-header[data-session-name="orchestrator-main"]').parentElement.querySelector('.group-toggle');
+      out.before = li().querySelectorAll('.session-leaf').length;
+      li().querySelector('.group-toggle').click(); await wait();
+      out.afterCollapse = li().querySelectorAll('.session-leaf').length;
+      out.expanded = li().querySelector('.group-toggle').getAttribute('aria-expanded');
+      out.label = li().querySelector('.group-toggle').getAttribute('aria-label');
+      out.stored = localStorage.getItem('ps.sessionTree.collapsed');
+      out.toggleSize = Math.round(li().querySelector('.group-toggle').getBoundingClientRect().width);
+      return out;
+    })()`);
+    expect(r.toggles).toBe(2);
+    expect(r.singleHasToggle).toBe(false);
+    expect(r.before).toBe(3);
+    expect(r.afterCollapse).toBe(0);
+    expect(r.expanded).toBe('false');
+    expect(r.label).toBe('Expand pocketshell');
+    expect(JSON.parse(r.stored as string)).toEqual(['~/git/pocketshell']);
+    expect(r.toggleSize).toBeGreaterThanOrEqual(48);
+  }, 60_000);
+
+  it('a collapsed group stays collapsed after a reload', async () => {
+    const cdp = await connect();
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 915, deviceScaleFactor: 1, mobile: true });
+    await cdp.send('Page.navigate', { url: `${origin}/?layout=compact` });
+    await new Promise((ok) => setTimeout(ok, 800));
+    await cdp.evaluate('localStorage.setItem("ps.sessionTree.collapsed", JSON.stringify(["~/git/pocketshell"]))');
+    await cdp.send('Page.reload');
+    await new Promise((ok) => setTimeout(ok, 800));
+    const leaves = await cdp.evaluate<number>(`[...document.querySelectorAll('.session-leaf')].filter((l) => l.textContent.includes('pocketshell-')).length`);
+    const open = await cdp.evaluate<number>(`[...document.querySelectorAll('.session-leaf')].length`);
+    expect(leaves).toBe(0);
+    expect(open).toBe(2); // ai-shipping-labs is still open
+  }, 60_000);
+
+  it('deleted marks are labelled and deleted directories sort last', async () => {
+    const r = await inPage<{ labels: (string | null)[]; names: string[] }>(width, '', `({
+      labels: [...document.querySelectorAll('.deleted-mark')].map((e) => e.getAttribute('aria-label')),
+      names: [...document.querySelectorAll('.dir-header .label')].map((e) => e.textContent),
+    })`);
+    expect(r.labels.length).toBeGreaterThanOrEqual(2);
+    for (const l of r.labels) expect(l).toBe('Directory deleted');
+    expect(r.names.slice(-2)).toEqual(['ps-s1-s1-mwd6e1xg', 'ps-s0-s0-mwd5sye7']);
+  }, 60_000);
+
+  it('truncates long primary and secondary names without overflowing the row', async () => {
+    const r = await inPage<Record<string, number | boolean | string>>(width, '', `(() => {
+      const row = [...document.querySelectorAll('.dir-header')].find((r) => r.textContent.includes('a-very-long-project'));
+      const label = row.querySelector('.label'); const sec = row.querySelector('.secondary'); const time = row.querySelector('.row-time');
+      return {
+        labelEllipsis: getComputedStyle(label).textOverflow, labelClipped: label.scrollWidth > label.clientWidth,
+        secEllipsis: getComputedStyle(sec).textOverflow, secClipped: sec.scrollWidth > sec.clientWidth,
+        timeRight: Math.round(time.getBoundingClientRect().right), timeLeft: Math.round(time.getBoundingClientRect().left),
+        rowRight: Math.round(row.getBoundingClientRect().right), vw: innerWidth, h: Math.round(row.getBoundingClientRect().height),
+        docW: document.documentElement.scrollWidth,
+      };
+    })()`);
+    expect(r.labelEllipsis).toBe('ellipsis');
+    expect(r.secEllipsis).toBe('ellipsis');
+    expect(r.labelClipped).toBe(true);
+    expect(r.secClipped).toBe(true);
+    expect(r.timeRight as number).toBeLessThanOrEqual(r.rowRight as number);
+    expect(r.timeLeft as number).toBeGreaterThan(0);
+    expect(r.docW as number).toBeLessThanOrEqual(r.vw as number);
+    expect(r.h as number).toBe(48);
+  }, 60_000);
+
+  it('marks the active session on a collapsed single-session row', async () => {
+    const r = await inPage<{ current: boolean; dot: boolean; others: number }>(width, '&active=1', `(() => {
+      const row = document.querySelector('.dir-header[data-session-name="orchestrator-main"]');
+      return { current: row.classList.contains('current'), dot: !!row.querySelector('.dot.active'), others: document.querySelectorAll('.dir-header.current').length };
+    })()`);
+    expect(r).toEqual({ current: true, dot: true, others: 1 });
+  }, 60_000);
+
+  it('a tap on a single-session row opens that session; a leaf tap opens its own', async () => {
+    const r = await inPage<unknown[][]>(width, '', `(() => {
+      document.querySelector('.dir-header[data-session-name="orchestrator-main"]').click();
+      document.querySelector('.session-leaf[data-session-name="pocketshell-review"]').click();
+      document.querySelector('.dir-header[data-session-name="main"]').click();
+      return window.__selects;
+    })()`);
+    expect(r).toEqual([
+      ['~/git/orchestrator', 'orchestrator-main'],
+      ['~/git/pocketshell', 'pocketshell-review'],
+      ['~/git/dtc-website', 'main'],
+    ]);
+  }, 60_000);
+});
