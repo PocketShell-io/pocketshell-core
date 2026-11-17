@@ -22,6 +22,7 @@
 // somewhere else.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { popupPlacement, type Box } from '@pocketshell/core/shared/popupPlacement';
+import { usePopupSheet } from '../usePhoneSheet';
 
 const props = defineProps<{
   /**
@@ -46,6 +47,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: [] }>();
 
+// A finger on a compact screen gets a bottom sheet with a scrim, not a small
+// anchored menu: nothing is measured or placed, and rows are 48px. A mouse
+// keeps the click-point anchored menu at every width.
+const sheet = usePopupSheet();
+
 const rootEl = ref<HTMLElement | null>(null);
 /**
  * Null until the menu has been measured.
@@ -58,6 +64,7 @@ const rootEl = ref<HTMLElement | null>(null);
 const placed = ref<{ left: number; top: number; flipped: boolean; maxHeight: number } | null>(null);
 
 const style = computed(() => {
+  if (sheet.value) return {};
   const p = placed.value;
   if (!p) return { visibility: 'hidden' as const, left: '0px', top: '0px' };
   return {
@@ -70,7 +77,7 @@ const style = computed(() => {
 
 function measure(): void {
   const el = rootEl.value;
-  if (!el) return;
+  if (!el || sheet.value) return;
   const box = el.getBoundingClientRect();
   placed.value = popupPlacement(
     props.anchor,
@@ -119,7 +126,15 @@ function onPointerDown(e: MouseEvent): void {
  * what the user expects from a menu they have started scrolling away from.
  * Capture, because the scroll happens on an inner element, not on `window`.
  */
-function onScroll(): void {
+function onScroll(e?: Event): void {
+  // A sheet scrolls its own rows; that is not the page moving away.
+  if (sheet.value && e?.target instanceof Node && rootEl.value?.contains(e.target)) return;
+  emit('close');
+}
+
+function onResize(): void {
+  // The keyboard opening resizes a phone's viewport; a sheet is not anchored.
+  if (sheet.value) return;
   emit('close');
 }
 
@@ -128,14 +143,14 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown, { capture: true });
   window.addEventListener('mousedown', onPointerDown, { capture: true });
   window.addEventListener('scroll', onScroll, { capture: true });
-  window.addEventListener('resize', onScroll);
+  window.addEventListener('resize', onResize);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown, { capture: true });
   window.removeEventListener('mousedown', onPointerDown, { capture: true });
   window.removeEventListener('scroll', onScroll, { capture: true });
-  window.removeEventListener('resize', onScroll);
+  window.removeEventListener('resize', onResize);
 });
 </script>
 
@@ -144,9 +159,11 @@ onBeforeUnmount(() => {
        `overflow` between it and the viewport. Teleported nodes keep their
        scope id, so the scoped styles below still apply. -->
   <Teleport to="body">
+    <div v-if="sheet" class="popup-scrim" />
     <div
       ref="rootEl"
       class="popup-menu"
+      :class="{ sheet }"
       role="menu"
       :aria-label="label"
       :style="style"
@@ -204,6 +221,30 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   font-family: var(--font-ui);
   font-size: var(--fs-300);
+}
+/* Compact + touch: the bottom sheet. Rows are labelled and 48px (the same
+   floor --hit-min gives every control under a coarse pointer). */
+.popup-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: var(--scrim);
+}
+.popup-menu.sheet {
+  left: 0;
+  right: 0;
+  bottom: calc(var(--ps-inset-bottom) + var(--ps-inset-keyboard));
+  top: auto;
+  min-width: 0;
+  max-height: 70vh;
+  padding: var(--sp-2) calc(var(--sp-2) + var(--ps-inset-right)) var(--sp-2) calc(var(--sp-2) + var(--ps-inset-left));
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border-bottom: none;
+}
+.popup-menu.sheet :deep(.menu-item) {
+  min-height: 48px;
+  padding: var(--sp-2) var(--sp-3);
+  white-space: normal;
 }
 .popup-menu :deep(.menu-item:hover) {
   background: var(--state-hover);

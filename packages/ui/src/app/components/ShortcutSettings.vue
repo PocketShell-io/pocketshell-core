@@ -755,4 +755,24 @@ kbd {
   font-size: var(--fs-200);
   line-height: var(--lh-200);
 }
+
+/* Compact: no side rail. The sections become a horizontally scrolling strip
+   above the list, and the list takes the full width. */
+@media (max-width: 640px) {
+  .keyboard {
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .keys-rail {
+    width: auto;
+    flex-direction: row;
+    align-self: stretch;
+    overflow-x: auto;
+  }
+  .rail-item {
+    flex: none;
+    min-height: max(40px, var(--hit-min));
+    white-space: nowrap;
+  }
+}
 </style>

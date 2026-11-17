@@ -26,6 +26,7 @@
 // palette pointing at nothing.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { PaletteCommand } from '../commandPalette';
+import { useCompact } from '../usePhoneSheet';
 
 const props = defineProps<{
   /** The verbs on offer, in display order (the builder's order is the order). */
@@ -35,6 +36,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ close: [] }>();
+
+// Compact: a bottom sheet (see the styles). Two behaviours change with it: the
+// input is not focused on open (a keyboard raised at once would cover the very
+// list the sheet exists to show), and a resize or an in-sheet scroll no longer
+// dismisses it, because the IME opening IS a resize on a phone.
+const compact = useCompact();
 
 const query = ref('');
 const inputEl = ref<HTMLInputElement | null>(null);
@@ -138,25 +145,31 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
-function onScroll(): void {
+function onScroll(e?: Event): void {
+  if (compact.value && e?.target instanceof Node && rootEl.value?.contains(e.target)) return;
+  emit('close');
+}
+
+function onResize(): void {
+  if (compact.value) return;
   emit('close');
 }
 
 const rootEl = ref<HTMLElement | null>(null);
 
 onMounted(() => {
-  void nextTick(() => inputEl.value?.focus());
+  if (!compact.value) void nextTick(() => inputEl.value?.focus());
   window.addEventListener('keydown', onKeydown, { capture: true });
   window.addEventListener('mousedown', onPointerDown, { capture: true });
   window.addEventListener('scroll', onScroll, { capture: true });
-  window.addEventListener('resize', onScroll);
+  window.addEventListener('resize', onResize);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown, { capture: true });
   window.removeEventListener('mousedown', onPointerDown, { capture: true });
   window.removeEventListener('scroll', onScroll, { capture: true });
-  window.removeEventListener('resize', onScroll);
+  window.removeEventListener('resize', onResize);
 });
 </script>
 
@@ -164,7 +177,7 @@ onBeforeUnmount(() => {
   <!-- To `body`, past every clipping ancestor — PopupMenu's reasoning, and
        PopupMenu's dismissal rules beside it. -->
   <Teleport to="body">
-    <div ref="rootEl" class="command-palette" role="dialog" :aria-label="label ?? 'Quick actions'">
+    <div ref="rootEl" class="command-palette" :class="{ sheet: compact }" role="dialog" :aria-label="label ?? 'Quick actions'">
       <input
         ref="inputEl"
         v-model="query"
@@ -311,5 +324,39 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   text-align: right;
   font-size: var(--fs-100);
+}
+
+/* Compact: a bottom sheet. The input sits at the bottom edge (column-reverse
+   keeps it first in the DOM for focus order) and the list grows UPWARD from it,
+   so the input is always the row nearest the thumb and, with the keyboard up,
+   directly above the IME (the keyboard inset lifts the whole sheet). Rows are
+   48px; the head and rows keep the same tokens. */
+.command-palette.sheet {
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--ps-inset-bottom) + var(--ps-inset-keyboard));
+  transform: none;
+  width: auto;
+  flex-direction: column-reverse;
+  /* vh, not %: a fixed box with no height has nothing for a percentage to resolve against. */
+  max-height: calc(100vh - var(--ps-inset-top) - var(--ps-inset-bottom) - var(--ps-inset-keyboard) - var(--sp-5));
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border-bottom: none;
+  padding-left: var(--ps-inset-left);
+  padding-right: var(--ps-inset-right);
+}
+.command-palette.sheet .palette-input {
+  height: 48px;
+  margin: var(--sp-2);
+}
+.command-palette.sheet .palette-list {
+  /* 64px = the 48px input plus its margins. */
+  max-height: min(60vh, calc(100vh - var(--ps-inset-top) - var(--ps-inset-bottom) - var(--ps-inset-keyboard) - var(--sp-5) - 64px));
+  margin: 0;
+}
+.command-palette.sheet .palette-item {
+  height: 48px;
+  padding: 0 var(--sp-3);
 }
 </style>
