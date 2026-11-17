@@ -232,6 +232,14 @@ const PORTS = `(() => {
     // card lines: distinct vertical bands of its cells
     firstRowLines: rows[0] ? new Set([...rows[0].children].map((c) => Math.round(c.getBoundingClientRect().top))).size : 0,
     compactClass: panel.classList.contains('compact'),
+    inArrow: getComputedStyle(rows[0].querySelector('.c-in'), '::before').content,
+    outArrow: getComputedStyle(rows[0].querySelector('.c-out'), '::before').content,
+    inLabel: rows[0].querySelector('.c-in').getAttribute('aria-label'),
+    folders: rows.map((r) => r.querySelector('.c-folder').innerText.trim()),
+    // every card variant shares one geometry
+    nameWidths: [...new Set(rows.map((r) => Math.round(r.querySelector('.c-name').getBoundingClientRect().width)))],
+    localLefts: [...new Set(rows.map((r) => Math.round(r.querySelector('.c-local').getBoundingClientRect().left)))],
+    actionRights: [...new Set(rows.map((r) => Math.round(r.querySelector('.c-actions').getBoundingClientRect().right)))],
   };
 })()`;
 
@@ -239,6 +247,8 @@ interface PortsBoxes {
   docOverflow: boolean; wrapOverflow: boolean; panelOverflow: boolean; tableMinWidth: string; tableWidth: number;
   panelWidth: number; rowCount: number; rowsInside: boolean; rowDisplays: string[]; headerDisplay: string;
   firstRowText: string; firstRowLines: number; compactClass: boolean;
+  inArrow: string; outArrow: string; inLabel: string | null; folders: string[];
+  nameWidths: number[]; localLefts: number[]; actionRights: number[];
 }
 
 describe.each([360, 412])('Ports in real Chromium at %i dp (compact)', (width) => {
@@ -256,6 +266,13 @@ describe.each([360, 412])('Ports in real Chromium at %i dp (compact)', (width) =
     expect(m.rowDisplays).toEqual(['grid']);
     expect(m.headerDisplay).toBe('absolute');
     expect(m.firstRowText).toContain('3000');
+    expect(m.inArrow).toContain('↓');
+    expect(m.outArrow).toContain('↑');
+    expect(m.inLabel).toMatch(/^Received /);
+    expect(m.folders[0]).toBe('frontend');
+    expect(m.nameWidths).toHaveLength(1);
+    expect(m.localLefts).toHaveLength(1);
+    expect(m.actionRights).toHaveLength(1);
     await cdp.shot(`ports-${width}`);
   }, 60_000);
 });

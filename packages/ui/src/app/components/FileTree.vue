@@ -4,6 +4,7 @@
 // breadcrumb, a summonable search box, a capped row list with "Load more",
 // refresh, and a "new folder/file" affordance wired to the store.
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { joinPosix } from '../stores/projects';
 import AppIcon, { type AppIconName } from '@ui/components/AppIcon.vue';
 import PopupMenu from './PopupMenu.vue';
 import OverlayPanel from './OverlayPanel.vue';
@@ -56,6 +57,8 @@ const props = defineProps<{
    * the folder being browsed — see isRowActive.
    */
   envDir?: string | null;
+  /** Absolute path of a file with an unsaved draft; its row wears a marker. */
+  draftPath?: string | null;
 }>();
 
 const connection = useConnectionStore();
@@ -669,6 +672,13 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
           </span>
         </span>
         <span v-if="e.type === 'file'" class="sz">{{ formatBytes(e.size) }}</span>
+        <span
+          v-if="draftPath && e.type === 'file' && draftPath === joinPosix(files.cwd, e.name)"
+          class="draft-dot"
+          data-testid="files-draft-marker"
+          title="Unsaved changes"
+          aria-label="Unsaved changes"
+        />
       </li>
 
       <!-- The count is the useful half: "Load more" alone does not say whether
@@ -826,6 +836,15 @@ defineExpose({ editPath: startEditing, focusSearch, goRoot });
 </template>
 
 <style scoped>
+/* Unsaved-draft pip, the editor bar's own `.dirty-dot` metric. */
+.draft-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: none;
+  margin-left: var(--sp-2);
+}
 /* WIDTH IS SET BY THE PARENT, as an inline `flex` basis (FilesView.vue).
    It used to be `min-width: 260px` with an `auto` basis, which made the pane
    CONTENT-sized: it grew to the longest filename in the directory and shrank

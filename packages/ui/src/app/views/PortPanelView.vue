@@ -224,6 +224,27 @@ function cwdLabel(row: PortRow): string {
   return parts.length <= 2 ? full : `…/${parts.slice(-2).join('/')}`;
 }
 
+/**
+ * Compact folder text: the LAST segment only (the leaf is what names a
+ * project); the full path is the cell's title and opens on tap.
+ */
+const openFolder = ref<string | null>(null);
+function folderText(row: PortRow): string {
+  const full = cwdOf(row);
+  if (!compact.value) return cwdLabel(row) || '—';
+  if (!full) return '—';
+  if (openFolder.value === row.id) return full;
+  return full.split('/').filter(Boolean).pop() ?? full;
+}
+/** Whether this forward has moved any bytes. */
+function trafficOf(row: PortRow): boolean {
+  return !!row.fwd && (row.fwd.bytesIn > 0 || row.fwd.bytesOut > 0);
+}
+function onFolderTap(row: PortRow): void {
+  if (!compact.value || !cwdOf(row)) return;
+  openFolder.value = openFolder.value === row.id ? null : row.id;
+}
+
 /** True when the row's local port was pinned/reassigned away from a mirror. */
 function isRemapped(row: PortRow): boolean {
   if (row.fwd) return row.fwd.remapped;
@@ -496,7 +517,14 @@ function fmtScanTime(epochMs: number | null): string {
             </td>
 
             <td class="c-proc" :title="processOf(row)">{{ processOf(row) || '—' }}</td>
-            <td class="c-folder" :title="cwdOf(row)">{{ cwdLabel(row) || '—' }}</td>
+            <td
+              class="c-folder"
+              :class="{ open: compact && openFolder === row.id }"
+              :title="cwdOf(row)"
+              @click="onFolderTap(row)"
+            >
+              {{ folderText(row) }}
+            </td>
 
             <td class="c-status">
               <span :class="['status', statusOf(row).tone]" :title="statusOf(row).title">
@@ -504,13 +532,23 @@ function fmtScanTime(epochMs: number | null): string {
               </span>
             </td>
 
-            <td class="c-bytes">
+            <td
+              class="c-bytes c-in"
+              :class="{ idle: compact && !trafficOf(row) }"
+              :title="compact ? 'Received from the host' : undefined"
+              :aria-label="compact && row.fwd ? `Received ${formatBytes(row.fwd.bytesIn)}` : undefined"
+            >
               <span class="bytes">{{ row.fwd ? formatBytes(row.fwd.bytesIn) : '—' }}</span>
               <span v-if="row.fwd && fmtRate(row.fwd.rateIn)" class="rate">
                 {{ fmtRate(row.fwd.rateIn) }}
               </span>
             </td>
-            <td class="c-bytes">
+            <td
+              class="c-bytes c-out"
+              :class="{ idle: compact && !trafficOf(row) }"
+              :title="compact ? 'Sent to the host' : undefined"
+              :aria-label="compact && row.fwd ? `Sent ${formatBytes(row.fwd.bytesOut)}` : undefined"
+            >
               <span class="bytes">{{ row.fwd ? formatBytes(row.fwd.bytesOut) : '—' }}</span>
               <span v-if="row.fwd && fmtRate(row.fwd.rateOut)" class="rate">
                 {{ fmtRate(row.fwd.rateOut) }}
@@ -964,8 +1002,9 @@ function fmtScanTime(epochMs: number | null): string {
 /* COMPACT (<= 640px): each forward is a CARD, not a table row. The DOM is the
    table's (so expanded is untouched and the cells keep their meaning); the
    cells are re-flowed by grid. Line 1: port + badges, status, the on/off
-   verb. Line 2: the two editable fields. A muted meta line (process, folder,
-   bytes) closes the card. No min-width, no sideways scroll. */
+   verb. Line 2: the two editable fields. Then a small muted meta block:
+   process and folder leaf, and (only once there has been traffic) the byte
+   counters. No min-width, no sideways scroll. */
 .port-panel.compact {
   padding: var(--sp-3);
 }
@@ -989,7 +1028,9 @@ function fmtScanTime(epochMs: number | null): string {
 }
 .port-panel.compact .fwd-table tbody tr:not(.more-row) {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  /* FIXED trailing columns, so every card variant (auto, manual, -R/-D) has
+     the same geometry: status 4.75rem, actions 6.25rem (two 48px marks). */
+  grid-template-columns: minmax(0, 1fr) 4.75rem 6.25rem;
   align-items: center;
   gap: var(--sp-1) var(--sp-2);
   margin-bottom: var(--sp-2);
@@ -1010,16 +1051,23 @@ function fmtScanTime(epochMs: number | null): string {
   border-bottom: none;
 }
 .port-panel.compact .fwd-table .c-port {
-  grid-column: 1 / 3;
+  grid-column: 1;
   grid-row: 1;
-  white-space: normal;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.port-panel.compact .fwd-table .c-port .origin {
+  margin-left: 0;
 }
 .port-panel.compact .fwd-table .c-status {
-  grid-column: 3;
+  grid-column: 2;
   grid-row: 1;
+  text-align: right;
 }
 .port-panel.compact .fwd-table .c-actions {
-  grid-column: 4;
+  grid-column: 3;
   grid-row: 1;
   width: auto;
 }
@@ -1028,7 +1076,7 @@ function fmtScanTime(epochMs: number | null): string {
   grid-row: 2;
 }
 .port-panel.compact .fwd-table .c-local {
-  grid-column: 2 / 5;
+  grid-column: 2 / 4;
   grid-row: 2;
 }
 .port-panel.compact .fwd-table .c-proc {
@@ -1036,26 +1084,44 @@ function fmtScanTime(epochMs: number | null): string {
   grid-row: 3;
 }
 .port-panel.compact .fwd-table .c-folder {
-  grid-column: 2;
+  grid-column: 2 / 4;
   grid-row: 3;
+  cursor: pointer;
 }
-.port-panel.compact .fwd-table td:nth-child(7) {
-  grid-column: 3;
-  grid-row: 3;
+.port-panel.compact .fwd-table .c-folder.open {
+  grid-column: 1 / -1;
+  grid-row: 5;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-.port-panel.compact .fwd-table td:nth-child(8) {
-  grid-column: 4;
-  grid-row: 3;
+.port-panel.compact .fwd-table .c-in {
+  grid-column: 1;
+  grid-row: 4;
+}
+.port-panel.compact .fwd-table .c-out {
+  grid-column: 2 / 4;
+  grid-row: 4;
+}
+/* The byte counters say which way they go: an arrow, with the words in the
+   cell's aria-label/title. The momentary rate is dropped - no room, and it is
+   never the thing the card is for. Untouched forwards hide the line. */
+.port-panel.compact .fwd-table .c-in::before {
+  content: '\2193  ';
+}
+.port-panel.compact .fwd-table .c-out::before {
+  content: '\2191  ';
+}
+.port-panel.compact .fwd-table .c-bytes .rate {
+  display: none;
+}
+.port-panel.compact .fwd-table .c-bytes.idle {
+  display: none;
 }
 .port-panel.compact .fwd-table .c-proc,
 .port-panel.compact .fwd-table .c-folder,
 .port-panel.compact .fwd-table .c-bytes {
   font-size: var(--fs-100);
   color: var(--fg-muted);
-}
-.port-panel.compact .fwd-table .c-bytes .rate {
-  display: inline;
-  margin-left: var(--sp-1);
 }
 .port-panel.compact .fwd-table .c-port .port-num {
   font-size: var(--fs-300);
@@ -1071,12 +1137,8 @@ function fmtScanTime(epochMs: number | null): string {
 }
 .port-panel.compact .toggle,
 .port-panel.compact .add-btn,
-.port-panel.compact .add-toggle {
-  min-height: var(--hit-min);
-}
-.port-panel.compact .btn-auto {
-  min-height: var(--hit-min);
-}
+.port-panel.compact .add-toggle,
+.port-panel.compact .btn-auto,
 .port-panel.compact .more-btn {
   min-height: var(--hit-min);
 }

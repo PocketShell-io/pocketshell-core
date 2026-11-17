@@ -99,7 +99,6 @@ describe('Files compact single pane (#3125)', () => {
 
     await wrapper.find('[data-testid=files-back]').trigger('click');
     await nextTick();
-    expect(files.openPath).toBeNull();
     expect(wrapper.find('.files-view').classes()).not.toContain('detail-open');
     // Same node, never remounted: the scroll offset travels with it.
     expect(wrapper.find('.file-tree').element).toBe(tree);
@@ -115,11 +114,64 @@ describe('Files compact single pane (#3125)', () => {
     expect(openDismissLayerCount()).toBe(1);
     expect(dismissTopLayer()).toBe(true);
     await nextTick();
-    expect(files.openPath).toBeNull();
+    expect(wrapper.find('.files-view').classes()).not.toContain('detail-open');
     expect(openDismissLayerCount()).toBe(0);
     expect(dismissTopLayer()).toBe(false);
     wrapper.unmount();
     expect(openDismissLayerCount()).toBe(0);
+  });
+
+  async function openDraft(wrapper: Awaited<ReturnType<typeof mountFiles>>['wrapper'], files: ReturnType<typeof useFilesStore>) {
+    files.openPath = '/home/u/a.bin';
+    files.openMode = 'text';
+    files.openContent = 'my unsaved draft';
+    files.dirty = true;
+    await nextTick();
+    expect(wrapper.find('.files-view').classes()).toContain('detail-open');
+  }
+
+  it('compact: Back (chevron) keeps an unsaved draft, marks it in the tree, and tapping the row resumes it', async () => {
+    setWidth(360);
+    const { wrapper, files } = await mountFiles();
+    await openDraft(wrapper, files);
+    await wrapper.find('[data-testid=files-back]').trigger('click');
+    await nextTick();
+    expect(wrapper.find('.files-view').classes()).not.toContain('detail-open');
+    expect(files.dirty).toBe(true);
+    expect(files.openContent).toBe('my unsaved draft');
+    expect(files.openPath).toBe('/home/u/a.bin');
+    expect(wrapper.find('[data-testid=files-draft-marker]').exists()).toBe(true);
+
+    await wrapper.find('.entries .entry:not(.up)').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.files-view').classes()).toContain('detail-open');
+    expect(files.dirty).toBe(true);
+    expect(files.openContent).toBe('my unsaved draft');
+    wrapper.unmount();
+  });
+
+  it('compact: Android Back (dismiss layer) keeps the unsaved draft too', async () => {
+    setWidth(360);
+    const { wrapper, files } = await mountFiles();
+    await openDraft(wrapper, files);
+    expect(dismissTopLayer()).toBe(true);
+    await nextTick();
+    expect(files.dirty).toBe(true);
+    expect(files.openContent).toBe('my unsaved draft');
+    expect(wrapper.find('[data-testid=files-draft-marker]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('expanded: no draft marker is added to the tree rows', async () => {
+    setWidth(1200);
+    const { wrapper, files } = await mountFiles();
+    files.openPath = '/home/u/a.bin';
+    files.openMode = 'text';
+    files.openContent = 'draft';
+    files.dirty = true;
+    await nextTick();
+    expect(wrapper.find('[data-testid=files-draft-marker]').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('expanded: unchanged - splitter, Close button, no back chevron, no layer, no compact classes', async () => {

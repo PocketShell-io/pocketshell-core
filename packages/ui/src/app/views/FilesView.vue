@@ -82,6 +82,7 @@ const {
   compact,
   detailOpen,
   closeDetail,
+  draftPath,
   onTreeDragStart,
   envDir,
   openEnv,
@@ -262,6 +263,7 @@ defineExpose({ focus });
       :style="compact ? undefined : treeStyle"
       :root-path="rootPath"
       :env-dir="envDir"
+      :draft-path="draftPath"
       @open-file="onOpenFile"
       @open-in-new-tab="(path, kind) => emit('openInNewTab', path, kind)"
       @open-env="openEnv"
