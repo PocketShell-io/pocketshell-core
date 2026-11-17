@@ -28,6 +28,8 @@
 .icon-btn {
   width: var(--control-h);
   height: var(--control-h);
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -55,12 +57,16 @@
 .icon-btn.sm {
   width: var(--control-h-sm);
   height: var(--control-h-sm);
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
 }
 
 /* Ghost LABELED button — header text actions (Ports, Usage, disconnect).
    Same register as .icon-btn; it just has words in it. */
 .btn-ghost {
   height: var(--control-h);
+  min-height: var(--hit-min);
+  min-width: var(--hit-min);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);

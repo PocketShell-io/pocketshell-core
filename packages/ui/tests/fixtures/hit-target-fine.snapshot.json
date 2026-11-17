@@ -1,0 +1,70 @@
+{
+  ".icon-btn": {
+    "w": 28,
+    "h": 28
+  },
+  ".icon-btn.sm": {
+    "w": 24,
+    "h": 24
+  },
+  ".btn-ghost": {
+    "w": 48.55,
+    "h": 28
+  },
+  ".folder-header": {
+    "w": 380,
+    "h": 28
+  },
+  ".dir-header": {
+    "w": 380,
+    "h": 28
+  },
+  ".session-leaf": {
+    "w": 380,
+    "h": 28
+  },
+  ".empty-root": {
+    "w": 380,
+    "h": 28
+  },
+  ".vault-btn": {
+    "w": 65.92,
+    "h": 28
+  },
+  ".vault-radio": {
+    "w": 380,
+    "h": 28
+  },
+  ".vault-field input": {
+    "w": 380,
+    "h": 28
+  },
+  ".vault-field select": {
+    "w": 380,
+    "h": 28
+  },
+  ".diagnostics .actions .btn-ghost": {
+    "w": 97.36,
+    "h": 44
+  },
+  ".rip .icon-btn": {
+    "w": 24,
+    "h": 24
+  },
+  ".env-bulk-toggle": {
+    "w": 53.03,
+    "h": 24
+  },
+  ".row-actions .btn-ghost": {
+    "w": 37.63,
+    "h": 28
+  },
+  ".trust-actions .btn-primary": {
+    "w": 71.06,
+    "h": 28
+  },
+  ".trust-actions .btn-secondary": {
+    "w": 74.31,
+    "h": 28
+  }
+}

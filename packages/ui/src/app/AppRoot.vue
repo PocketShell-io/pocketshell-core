@@ -147,8 +147,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 html,
-body,
-#app {
+body {
   height: 100%;
   margin: 0;
 }
@@ -162,8 +161,20 @@ body {
      the UI and the terminal it frames are rasterised the same way. */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* The inset contract (app/insets.ts): 0 on desktop and web, the platform's
-     bars and keyboard where its chrome draws over the page. */
+}
+/* The app root owns the inset padding, and is exactly the window high.
+   The padding sits on #app itself, never on a parent whose child then asks
+   for its own `min-height: 100dvh`: such a child starts below the padding and
+   ends that much below the window (the packaged host page's `#app
+   { min-height: 100dvh }` pushed the workspace's bottom 52px off screen).
+   `min-height: 0` and the doubled specificity defeat any page-level
+   min-height on the root; border-box keeps the padding inside the 100%.
+   The inset contract (app/insets.ts): 0 on desktop and web, the platform's
+   bars and keyboard where its chrome draws over the page. */
+html body #app {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
   padding: var(--ps-inset-top) var(--ps-inset-right) calc(var(--ps-inset-bottom) + var(--ps-inset-keyboard))
     var(--ps-inset-left);
 }

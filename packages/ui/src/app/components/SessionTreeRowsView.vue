@@ -539,7 +539,7 @@ function onFolderClick(dir: SessionDirectory): void {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  height: var(--row-h);
+  min-height: var(--row-h); /* grows with wrapped content; never clips */
   padding: 0 var(--row-pad-x) 0 var(--sp-3);
   font-weight: var(--fw-semibold);
   overflow: hidden;
@@ -749,7 +749,7 @@ function onFolderClick(dir: SessionDirectory): void {
    it starts where a directory LABEL starts (36) instead of where its dot
    does. */
 .empty-root {
-  height: var(--row-h);
+  min-height: var(--row-h); /* grows with wrapped content; never clips */
   display: flex;
   align-items: center;
   padding: 0 var(--row-pad-x) 0 36px;
@@ -763,7 +763,7 @@ function onFolderClick(dir: SessionDirectory): void {
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  height: var(--row-h);
+  min-height: var(--row-h); /* grows with wrapped content; never clips */
   background: transparent;
   border: none;
   border-left: 2px solid transparent;
@@ -887,7 +887,7 @@ function onFolderClick(dir: SessionDirectory): void {
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  height: var(--row-h);
+  min-height: var(--row-h); /* grows with wrapped content; never clips */
   background: transparent;
   border: none;
   border-left: 2px solid transparent;
@@ -908,24 +908,6 @@ function onFolderClick(dir: SessionDirectory): void {
    (opening the folder), but reads one step quieter than the sessions. */
 .folder-list.leaves .dir-header .label {
   color: var(--fg-secondary);
-}
-/* A coarse pointer (a finger) gets rows it can hit: the platform's 48px
-   touch target instead of the desktop's 28px list rhythm, and the root row's
-   doors at the same size. Keyed on the input device, not the viewport, so a
-   narrow desktop window keeps its density and a tablet gets the targets. */
-@media (pointer: coarse) {
-  .folder-header,
-  .dir-header,
-  .session-leaf,
-  .empty-root {
-    height: auto;
-    min-height: 48px;
-  }
-  .root-add,
-  .root-sort {
-    width: 48px;
-    height: 48px;
-  }
 }
 @container (width < 270px) {
   .row-time {

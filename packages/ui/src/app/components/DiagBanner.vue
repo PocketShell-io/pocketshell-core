@@ -2,8 +2,8 @@
 // DiagBanner: the app-wide strip for unhandled renderer errors, mounted once
 // in App.vue above the router outlet.
 //
-// Fixed, not in-flow, on purpose. Every view sizes itself to the viewport
-// (`height: 100vh`), so a strip that pushed content down would overflow the
+// Fixed, not in-flow, on purpose. Every view sizes itself to the root
+// (`height: 100%`, inside the inset padding), so a strip that pushed content down would overflow the
 // window by its own height and nudge a scrollbar into every screen it appeared
 // on. An error report may overlay the top bar briefly; that is the honest
 // cost of being visible everywhere without rearranging every screen for a

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build --config vite.config.ts",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts && npm run test:hit-targets",
+    "test:hit-targets": "node scripts/verify-hit-targets.mjs"
   },
   "description": "Shared Vue UI source for PocketShell desktop, web, and Android",
   "devDependencies": {
