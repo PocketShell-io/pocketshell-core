@@ -101,7 +101,12 @@ beforeAll(async () => {
 afterAll(async () => {
   chrome?.kill('SIGKILL');
   await vite?.close();
-  if (profile) rmSync(profile, { recursive: true, force: true });
+  // Chrome's helper processes can still be writing into the profile right
+  // after SIGKILL; retry so teardown never races them (ENOTEMPTY in CI).
+  if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
+    await new Promise<void>((resolve) => { chrome!.once('exit', () => resolve()); setTimeout(resolve, 5_000); });
+  }
+  if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 async function connect(): Promise<Cdp> {
