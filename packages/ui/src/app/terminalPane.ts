@@ -126,6 +126,23 @@ type DetachAcknowledgement = {
   cancelWait?: () => void;
 };
 
+/**
+ * The host CLI's attach failure for an unknown session (pocketshell-cli
+ * attach.py:61): the whole output is this one line and the client exits 3.
+ * The English text is matched only because it is the CLI's own string, and
+ * only together with exit code 3 and only against the output that arrives
+ * right after the attach (see {@link EARLY_OUTPUT_LIMIT}) — a program that
+ * later prints the same words in a live session is not this.
+ */
+const NO_SESSION_NAMED = /^no session named \S+$/i;
+const NO_SESSION_EXIT_CODE = 3;
+/** Only output within this many chars of the attach counts as "right after attach". */
+const EARLY_OUTPUT_LIMIT = 256;
+/** ...and within this long of the attach. */
+const EARLY_OUTPUT_WINDOW_MS = 5000;
+// eslint-disable-next-line no-control-regex
+const ANSI_SEQUENCE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
 export class TerminalPane {
   // -------------------------------------------------------------------------
   // The join veil
@@ -146,6 +163,19 @@ export class TerminalPane {
   // through paneWrite too, so a failed join clears its own veil by becoming
   // readable.
   readonly joinPending: Ref<boolean> = ref(false);
+
+  /**
+   * True once the attach client exited with "no session named <id>" (host CLI
+   * exit 3): the session this pane tried to join no longer exists (#3141). The
+   * view shows a "session ended" state with a way back to the tree instead of
+   * the raw CLI line.
+   */
+  readonly sessionEnded: Ref<boolean> = ref(false);
+  /** The last output text, for recognising the host CLI's "no session named" line. */
+  private recentOutput = '';
+  private earlyOutputClosed = false;
+  private attachRequestedAt = Date.now();
+  private readonly outputDecoder = new TextDecoder();
 
   private joinPendingTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -433,6 +463,10 @@ export class TerminalPane {
     if (!term || !this.container) return;
     // From here until the far end's first byte, the pane says what it is doing
     // instead of being a black rectangle. See the join-veil note above.
+    this.sessionEnded.value = false;
+    this.recentOutput = '';
+    this.earlyOutputClosed = false;
+    this.attachRequestedAt = Date.now();
     this.beginJoinPending();
     this.fitTerminal();
     const cols = term.cols;
@@ -564,12 +598,20 @@ export class TerminalPane {
   private bindShellStream(): void {
     this.unsubscribeData = api.shell.onData(({ shellId: id, data }) => {
       if (id === this.shellId && this.term) {
+        this.noteOutput(data);
         this.paneWrite(data);
       }
     });
-    this.unsubscribeExit = api.shell.onExited(({ shellId: id }) => {
+    this.unsubscribeExit = api.shell.onExited(({ shellId: id, exitCode }) => {
       if (id === this.shellId && this.term) {
         this.shellGone = true;
+        if (exitCode === NO_SESSION_EXIT_CODE && this.isNoSessionNamed()) {
+          // The host has no such session: not a dropped client, so nothing to
+          // re-join. Replace the raw CLI line with the ended state.
+          this.markSessionEnded();
+          if (this.registeredKey !== null) this.deps.shells.unregister(this.registeredKey, id);
+          return;
+        }
         // A dead PTY must stop answering registry lookups. Everything that aims
         // bytes at this pane by key — the agent launch above all — reads
         // `shellIdFor`, and an entry left pointing at a closed channel makes the
@@ -599,6 +641,30 @@ export class TerminalPane {
         this.finishClientExit(id);
       }
     });
+  }
+
+  /** Keep only the output that arrives right after the attach. */
+  private noteOutput(data: string | Uint8Array): void {
+    if (this.earlyOutputClosed) return;
+    const fresh = Date.now() - this.attachRequestedAt <= EARLY_OUTPUT_WINDOW_MS;
+    const text = typeof data === 'string' ? data : this.outputDecoder.decode(data, { stream: true });
+    this.recentOutput += text;
+    if (!fresh || this.recentOutput.length > EARLY_OUTPUT_LIMIT) this.earlyOutputClosed = true;
+  }
+
+  private isNoSessionNamed(): boolean {
+    if (this.earlyOutputClosed) return false;
+    return NO_SESSION_NAMED.test(this.recentOutput.replace(ANSI_SEQUENCE, '').trim());
+  }
+
+  private markSessionEnded(): void {
+    this.recentOutput = '';
+    this.cancelPendingDetach();
+    this.intentionalDetachOwner = null;
+    // Wipe the raw "no session named <id>" line the CLI printed.
+    this.term?.reset();
+    this.endJoinPending();
+    this.sessionEnded.value = true;
   }
 
   private finishClientExit(id: ShellId): void {

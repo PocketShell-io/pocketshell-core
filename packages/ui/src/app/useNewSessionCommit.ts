@@ -364,7 +364,7 @@ export function useNewSessionCommit(deps: NewSessionCommitDeps): {
     if (!result.ok) {
       if (result.code === 'create-uncertain') {
         preparing.value = 'Refreshing host sessions…';
-        try { await sessions.refresh(id); }
+        try { await sessions.refresh(id, { fresh: true }); }
         catch { /* The creation remains uncertain even when this refresh fails. */ }
         finally { preparing.value = null; }
       }

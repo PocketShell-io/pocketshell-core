@@ -30,6 +30,17 @@ describe('native account to authenticated server journey',()=>{
     expect(state.vault.requestUnlock).not.toHaveBeenCalled();
     expect(w.find('[data-testid="server-google-login"]').exists()).toBe(true);w.unmount();
   });
+  it('says it is unlocking, not asking the user to open the vault, while automatic unlock runs (#3141)',async()=>{
+    state.vault.view.state='locked';
+    state.vault.platform.prepareAccount=vi.fn(async()=>({accountId:state.account,state:'locked'}));
+    let finish!:(v:boolean)=>void;
+    state.vault.requestUnlock=vi.fn(()=>new Promise<boolean>(r=>{finish=r;}));
+    const w=mount(TrustedServersSection);await flushPromises();
+    expect(state.vault.requestUnlock).toHaveBeenCalled();
+    expect(w.text()).toContain('Unlocking your vault');
+    expect(w.text()).not.toContain('Open your vault');
+    finish(false);await flushPromises();w.unmount();
+  });
   it('creates a missing vault in app instead of asking for an existing passphrase',async()=>{
     state.vault.view.state='locked';
     state.vault.platform.prepareAccount=vi.fn(async()=>({accountId:state.account,state:'absent'}));

@@ -209,7 +209,7 @@ onBeforeUnmount(() => {alive = false; generation++; entryGeneration++; vault?.ca
       <p v-if="authPending || loading" class="muted refreshing" role="status" data-testid="servers-refreshing">{{verifiedAccount ? 'Refreshing…' : 'Checking your Google account…'}}</p>
       <button v-else-if="verifiedAccount && !unlocked" class="btn" data-testid="server-vault-unlock" @click="enterAccount">{{needsSetup ? 'Create your vault' : 'Unlock your vault'}}</button>
     </template>
-    <p v-else-if="authPending" class="muted" role="status">{{verifiedAccount ? 'Open your vault to continue.' : 'Checking your Google account…'}}</p>
+    <p v-else-if="authPending" class="muted" role="status">{{verifiedAccount ? 'Unlocking your vault…' : 'Checking your Google account…'}}</p>
     <template v-else-if="!verifiedAccount || localOnly">
       <p class="muted">Sign in to use your encrypted server list, or connect with SSH credentials kept on this device.</p>
       <button class="btn" :disabled="sync.busy" data-testid="server-google-login" @click="unlock">Sign in with Google</button>

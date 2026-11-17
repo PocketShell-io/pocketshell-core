@@ -146,7 +146,7 @@ export function useSessionStop(deps: SessionStopDeps): {
       stopBusy.value = false;
       stopping.value = null;
     }
-    await deps.sessions.refresh(connectionId);
+    await deps.sessions.refresh(connectionId, { fresh: true });
   }
 
   return { stopping, stopBusy, confirmStop };

@@ -9,4 +9,16 @@ describe('trusted server one-tap workspace',()=>{
   it('does not create on another account/connection after an await',async()=>{const d=base();d.current.mockResolvedValueOnce(true).mockResolvedValueOnce(false);await expect(openTrustedServerWorkspace(d)).rejects.toThrow('changed');expect(d.start).not.toHaveBeenCalled();});
   it.each(['~/git/project','/home/orin/git/project'])('restores home-relative project key from %s',async(last)=>{const d=base();d.lastFolder=last;d.list.mockResolvedValue({sessions:[{name:'work',workspace:'/home/orin/git/project',path:'/home/orin/git/project',created:0,activity:0,attached:false}] as never[],errors:[]});expect(await openTrustedServerWorkspace(d)).toEqual({folder:'~/git/project'});expect(d.start).not.toHaveBeenCalled();});
   it.each(['C:/Users/User','C:\\Users\\User'])('accepts Windows home %s with shared path normalization',async(home)=>{const d=base();d.home.mockResolvedValue(home);d.start.mockResolvedValue({...shell,folder:home});expect(await openTrustedServerWorkspace(d)).toEqual({folder:'~',session:'home'});expect(d.pending).toHaveBeenCalledWith({...shell,folder:home},'C:/Users/User');});
+  it('starts the home lookup while the listing is still in flight (#3141)',async()=>{
+    const d=base();let release!:()=>void;
+    d.list.mockImplementation(()=>new Promise(r=>{release=()=>r({sessions:[],errors:[]});}));
+    const run=openTrustedServerWorkspace(d);
+    await vi.waitFor(()=>expect(d.list).toHaveBeenCalled());
+    expect(d.home).toHaveBeenCalledTimes(1);
+    release();await run;
+  });
+  it('a home failure after a list error does not leak an unhandled rejection',async()=>{
+    const d=base();d.list.mockResolvedValue({sessions:[],errors:[{message:'x'}] as never[]});d.home.mockRejectedValue(new Error('realpath'));
+    await expect(openTrustedServerWorkspace(d)).rejects.toThrow('Could not verify');
+  });
 });

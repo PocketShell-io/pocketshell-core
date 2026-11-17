@@ -342,12 +342,10 @@ export const useConnectionStore = defineStore('connection', () => {
    * The sessions refresh is not a courtesy: the panel's last poll against the
    * old id is what left a raw "Unknown connection" rejection on screen, and
    * refreshing against the new id replaces both the stale list and that
-   * message in one move. Forwarding is restored by `connect()` before it
-   * exposes the new connection id, so a drop does not silently turn off
-   * forwarding for everyone who had it on.
-   *
-   * Bootstrap needs no line here: `connect()` already fires it in the
-   * background, and the UI surfaces the result when it lands.
+   * message in one move. Forwarding restore and bootstrap are scheduled by
+   * `connect()` itself (see `pendingProbes`) and start on this very listing
+   * at the latest, so a drop does not silently turn off forwarding for
+   * everyone who had it on and the UI surfaces bootstrap when it lands.
    */
   async function recoverSurfaces(id: ConnectionId): Promise<void> {
     await useSessionsStore()
@@ -398,6 +396,46 @@ export const useConnectionStore = defineStore('connection', () => {
     }
   }
 
+  /**
+   * A message for the host picker that must outlive the view that produced it:
+   * a late back-out (account changed after navigation) lands the user on a
+   * freshly mounted picker, which shows and clears it (#3141).
+   */
+  const connectNotice = ref<string | null>(null);
+  /**
+   * The connection whose host probes (bootstrap, auto-forward restore) are
+   * scheduled but not yet started. THE STORE owns this: every successful
+   * `connect()` (picker, palette host switch, gateway add-device, manual and
+   * automatic `reconnect()`) schedules it, so no caller can skip it. It starts
+   * on the first of (a) the caller's explicit {@link startHostProbes} /
+   * {@link workspaceReady} after it navigated, (b) the first successful
+   * session listing for that connection. Keyed per connect() instance: a reused
+   * connection id after a reconnect is a new entry, and close/replace drops it.
+   */
+  let pendingProbes: { id: ConnectionId; started: boolean } | null = null;
+  /**
+   * Start the scheduled host probes for a connection. Idempotent per connect
+   * instance and a no-op for a connection that is no longer the current,
+   * connected one. A rejection is swallowed: `bootstrap` staying null keeps the
+   * missing-tools strip quiet, which beats an unhandled rejection paging the
+   * diag banner for a connection that is already gone.
+   */
+  function startHostProbes(id: ConnectionId): void {
+    const pending = pendingProbes;
+    const host = activeHost.value;
+    if (!pending || pending.started || pending.id !== id || !host || connectionId.value !== id || state.value !== 'connected') return;
+    pending.started = true;
+    void restoreAutoForward(id, host);
+    void api.helper
+      .bootstrap(id)
+      .then((b) => {
+        if (connectionId.value === id) bootstrap.value = b;
+      })
+      .catch(() => undefined);
+  }
+  /** The destination workspace is up: start the scheduled probes. */
+  const workspaceReady = startHostProbes;
+
   async function connect(
     host: HostEntry,
     privateKeyPath?: string,
@@ -408,6 +446,7 @@ export const useConnectionStore = defineStore('connection', () => {
     // host-picker singleton. Clear them before a new dial so a workspace or
     // dialog cannot briefly render the previous host while this one connects.
     useProjectsStore().clear();
+    pendingProbes = null;
     state.value = 'connecting';
     error.value = null;
     errorKind.value = null;
@@ -455,18 +494,12 @@ export const useConnectionStore = defineStore('connection', () => {
       }
       connectionId.value = result.connectionId;
       state.value = 'connected';
-      void restoreAutoForward(result.connectionId, host);
-      // Fire bootstrap in the background; the UI surfaces it when it lands.
-      // A rejection (the link dropped right after connect) is swallowed:
-      // `bootstrap` staying null keeps the missing-tools strip quiet, which
-      // beats an unhandled rejection paging the diag banner for a connection
-      // that is already gone.
-      void api.helper
-        .bootstrap(result.connectionId)
-        .then((b) => {
-          bootstrap.value = b;
-        })
-        .catch(() => undefined);
+      // Host probes (bootstrap) and the auto-forward restore are native calls
+      // that queue on the platform's plugin thread. They are SCHEDULED here and
+      // start on workspaceReady() or the first successful listing, so they
+      // queue behind the destination's first calls (#3141).
+      pendingProbes = { id: result.connectionId, started: false };
+      useSessionsStore().setListedListener((listed) => startHostProbes(listed));
       return true;
     }
     state.value = 'idle';
@@ -507,6 +540,7 @@ export const useConnectionStore = defineStore('connection', () => {
       useProjectsStore().clear();
       await api.ssh.close(connectionId.value);
     }
+    pendingProbes = null;
     connectionId.value = null;
     replacingConnectionId = null;
     transportRetry.value = null;
@@ -538,5 +572,8 @@ export const useConnectionStore = defineStore('connection', () => {
     retryNow,
     onOsResume,
     disconnect,
+    startHostProbes,
+    workspaceReady,
+    connectNotice,
   };
 });

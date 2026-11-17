@@ -5,6 +5,7 @@ import { provideApi } from '../src/app/ipc';
 import type { PocketShellApi } from '../src/app/api';
 import { diagErrors } from '../src/app/diag';
 import { useConnectionStore } from '../src/app/stores/connection';
+import { useSessionsStore } from '../src/app/stores/sessions';
 
 /** #3137: connect exposes the connection without waiting for auto-forward restore. */
 const HOST: HostEntry = {
@@ -37,6 +38,7 @@ describe('connect and auto port-forward restore', () => {
     expect(outcome).toBe(true);
     expect(store.state).toBe('connected');
     expect(store.connectionId).toBe('conn-1');
+    store.startHostProbes('conn-1');
     await vi.waitFor(() => expect(startAuto).toHaveBeenCalledWith('conn-1', []));
     release();
   });
@@ -45,6 +47,7 @@ describe('connect and auto port-forward restore', () => {
     install({ isAutoEnabled: async () => true, startAuto: async () => { throw new Error('port busy'); } });
     const store = useConnectionStore();
     expect(await store.connect(HOST)).toBe(true);
+    store.startHostProbes('conn-1');
     await vi.waitFor(() => expect(diagErrors.value.map((d) => d.message).join()).toContain('Port-forward restore failed: port busy'));
     expect(store.state).toBe('connected');
   });
@@ -70,7 +73,10 @@ describe('background restore only acts for the current connection', () => {
     }, ['conn-a', 'conn-b']);
     const store = useConnectionStore();
     expect(await store.connect(HOST)).toBe(true);
+    store.startHostProbes('conn-a');
+    await vi.waitFor(() => expect(answerA).toBeTypeOf('function'));
     expect(await store.connect(HOST)).toBe(true);
+    store.startHostProbes('conn-b');
     expect(store.connectionId).toBe('conn-b');
     answerA(true);
     await new Promise((r) => setTimeout(r, 20));
@@ -86,11 +92,82 @@ describe('background restore only acts for the current connection', () => {
     }, ['conn-a']);
     const store = useConnectionStore();
     expect(await store.connect(HOST)).toBe(true);
+    store.startHostProbes('conn-a');
     await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
     await store.disconnect();
     expect(store.connectionId).not.toBe('conn-a');
     fail(new Error('connection gone'));
     await new Promise((r) => setTimeout(r, 20));
     expect(diagErrors.value).toEqual([]);
+  });
+});
+
+describe('host probes start on an explicit trigger after navigation (#3141)', () => {
+  it('connect() starts nothing; startHostProbes starts them once, only for the current connection', async () => {
+    const bootstrap = vi.fn(async () => null);
+    const isAutoEnabled = vi.fn(async () => false);
+    provideApi({
+      ssh: { onState: () => () => undefined, listConfigHosts: async () => [HOST], connect: async () => ({ ok: true, connectionId: 'conn-1' }), close: async () => true, exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
+      helper: { bootstrap, sessionsListing: async () => ({ sessions: [], errors: [] }), sessionsList: async () => [] },
+      forwards: { isAutoEnabled }, preview: { onStats: () => () => undefined }, diag: { log: () => undefined },
+    } as unknown as PocketShellApi);
+    const store = useConnectionStore();
+    expect(await store.connect(HOST)).toBe(true);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(isAutoEnabled).not.toHaveBeenCalled();
+    store.startHostProbes('other');
+    expect(bootstrap).not.toHaveBeenCalled();
+    store.startHostProbes('conn-1');
+    store.startHostProbes('conn-1');
+    await vi.waitFor(() => expect(isAutoEnabled).toHaveBeenCalledTimes(1));
+    expect(bootstrap).toHaveBeenCalledTimes(1);
+    expect(bootstrap).toHaveBeenCalledWith('conn-1');
+  });
+});
+
+describe('the store owns the probe trigger for every connect() caller (#3141)', () => {
+  function installProbing(ids: string[]) {
+    let n = 0;
+    const bootstrap = vi.fn(async () => null);
+    const isAutoEnabled = vi.fn(async () => false);
+    provideApi({
+      ssh: { onState: () => () => undefined, listConfigHosts: async () => [HOST], connect: async () => ({ ok: true, connectionId: ids[n++] ?? ids.at(-1) }), close: async () => true, exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
+      helper: { bootstrap, sessionsListing: async () => ({ sessions: [], errors: [] }), sessionsList: async () => [] },
+      forwards: { isAutoEnabled }, preview: { onStats: () => () => undefined }, diag: { log: () => undefined },
+    } as unknown as PocketShellApi);
+    return { bootstrap, isAutoEnabled };
+  }
+
+  it('palette host switch (connect + navigate, no explicit trigger): the first listing starts the probes', async () => {
+    const { bootstrap, isAutoEnabled } = installProbing(['conn-1']);
+    const store = useConnectionStore();
+    expect(await store.connect(HOST)).toBe(true);
+    expect(isAutoEnabled).not.toHaveBeenCalled();
+    await useSessionsStore().refresh('conn-1');
+    await vi.waitFor(() => expect(isAutoEnabled).toHaveBeenCalledTimes(1));
+    expect(bootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconnect() after a drop restores auto-forward and refreshes bootstrap for the new connection, even with a reused id', async () => {
+    const { bootstrap, isAutoEnabled } = installProbing(['conn-1', 'conn-1']);
+    const store = useConnectionStore();
+    expect(await store.connect(HOST)).toBe(true);
+    store.workspaceReady('conn-1');
+    await vi.waitFor(() => expect(isAutoEnabled).toHaveBeenCalledTimes(1));
+    expect(await store.reconnect()).toBe(true); // same id again; recoverSurfaces lists
+    await vi.waitFor(() => expect(isAutoEnabled).toHaveBeenCalledTimes(2));
+    expect(bootstrap).toHaveBeenCalledTimes(2);
+  });
+
+  it('a closed connection never starts its probes', async () => {
+    const { isAutoEnabled } = installProbing(['conn-1']);
+    const store = useConnectionStore();
+    await store.connect(HOST);
+    await store.disconnect();
+    store.workspaceReady('conn-1');
+    await useSessionsStore().refresh('conn-1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(isAutoEnabled).not.toHaveBeenCalled();
   });
 });
