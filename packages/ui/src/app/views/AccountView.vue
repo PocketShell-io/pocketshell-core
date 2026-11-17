@@ -214,6 +214,7 @@ function onCheckAccount(): void {
           </div>
           <button
             class="btn-ghost"
+            data-testid="account-check"
             :disabled="sync.busy || !signedIn"
             @click="onCheckAccount"
           >

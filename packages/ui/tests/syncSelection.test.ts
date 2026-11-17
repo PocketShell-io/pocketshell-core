@@ -301,6 +301,16 @@ describe('AccountView never shows "remove on sync" without a user action (#3072)
     return row.get('.status-chip').text();
   }
 
+  it('Check account has its own stable test id, distinct from the CLI sessions heading button', async () => {
+    const wrapper = await mountAccount(fakeAccount([host('hetzner')]), [host('hetzner')]);
+    // `.host-heading .btn-ghost` also matches the CLI sessions link above it:
+    // a packaged journey tapping that selector opened the wrong page (#3137).
+    expect(wrapper.findAll('.host-heading .btn-ghost').length).toBeGreaterThan(1);
+    const check = wrapper.findAll('[data-testid="account-check"]');
+    expect(check).toHaveLength(1);
+    expect(check[0]!.text()).toBe('Check account');
+  });
+
   it('after Check account, a config host that is in the account reads "In account", ticked', async () => {
     const account = fakeAccount([host('hetzner'), host('fixture')]);
     const wrapper = await mountAccount(account, [host('hetzner')]);
