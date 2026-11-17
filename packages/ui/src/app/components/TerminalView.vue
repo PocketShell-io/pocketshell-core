@@ -53,6 +53,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { applyUnicode11Widths } from '../terminalUnicode';
 import AppIcon from '@ui/components/AppIcon.vue';
+import { useRouter } from 'vue-router';
 import { useShellsStore } from '../stores/shells';
 import { useConnectionStore } from '../stores/connection';
 import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks';
@@ -198,6 +199,13 @@ const pane = new TerminalPane({
 });
 /** Drives the join veil in the template; the controller arms and clears it. */
 const joinPending = pane.joinPending;
+/** The host no longer has this session ("no session named"): show the ended state (#3141). */
+const sessionEnded = pane.sessionEnded;
+const router = useRouter();
+function backToSessions(): void {
+  const name = useConnectionStore().activeHost?.name;
+  if (name) void router?.push({ name: 'host-sessions', params: { name } });
+}
 
 const inputOwnership = createTerminalInputOwnership({
   getPrefixOwner: currentPrefixOwner,
@@ -892,6 +900,10 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
          positioned and pointer-transparent: it overlays the pane, passes
          clicks and keystrokes through to xterm, and disappears on the first
          remote byte. -->
+    <div v-if="sessionEnded" class="join-veil session-ended" data-testid="session-ended" role="status">
+      <span>This session has ended.</span>
+      <button type="button" class="btn" data-testid="session-ended-back" @click="backToSessions">Back to sessions</button>
+    </div>
     <div v-if="joinPending" class="join-veil" aria-live="polite">
       <AppIcon name="refresh" :size="16" class="spin" />
       <span>{{ targetSession ? `Joining ${targetSession}…` : 'Connecting…' }}</span>
@@ -959,6 +971,10 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
   font-size: var(--fs-300);
   pointer-events: none;
   background: var(--term-bg);
+}
+.join-veil.session-ended {
+  flex-direction: column;
+  pointer-events: auto;
 }
 .join-veil .app-icon {
   color: var(--fg-secondary);

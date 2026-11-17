@@ -416,3 +416,78 @@ describe('a client exit caused by the link going asks nothing (#3039 B2)', () =>
     }
   });
 });
+
+describe('"no session named" attach failure (#3141)', () => {
+  it('shows the ended state instead of the raw CLI line, re-joins nothing and lists nothing', async () => {
+    const { pane, internals, writes } = makePane('aplexer');
+    const reset = vi.fn();
+    (internals as unknown as { term: object }).term = { reset };
+    internals.shellId = 'shell-1' as ShellId;
+    internals.shellAttachedAt = Date.now();
+    internals.open = vi.fn(async () => undefined);
+    vi.mocked(api.shell.onData).mockClear();
+    internals.bindShellStream();
+    const onData = vi.mocked(api.shell.onData).mock.calls.at(-1)![0];
+    const onExit = vi.mocked(api.shell.onExited).mock.calls.at(-1)![0];
+    onData({ shellId: 'shell-1' as ShellId, data: 'no session named 3f2a9c1e-0000-4000-8000-123456789abc\r\n' });
+    onExit({ shellId: 'shell-1' as ShellId, exitCode: 3 });
+    await settle();
+    await settle();
+    expect(pane.sessionEnded.value).toBe(true);
+    expect(reset).toHaveBeenCalled();
+    expect(internals.open).not.toHaveBeenCalled();
+    expect(api.helper.sessionsList).not.toHaveBeenCalled();
+    expect(writes).not.toContain(EXITED);
+  });
+
+  it('does not treat a user program printing the words (after real output) as an ended session', async () => {
+    const { pane, internals, writes } = makePane('aplexer');
+    const reset = vi.fn();
+    (internals as unknown as { term: object }).term = { reset };
+    internals.shellId = 'shell-1' as ShellId;
+    internals.shellAttachedAt = Date.now();
+    internals.open = vi.fn(async () => undefined);
+    internals.bindShellStream();
+    const onData = vi.mocked(api.shell.onData).mock.calls.at(-1)![0];
+    const onExit = vi.mocked(api.shell.onExited).mock.calls.at(-1)![0];
+    onData({ shellId: 'shell-1' as ShellId, data: '$ echo no session named x\r\nno session named x\r\n$ ' });
+    onExit({ shellId: 'shell-1' as ShellId, exitCode: 0 });
+    await settle();
+    await settle();
+    expect(pane.sessionEnded.value).toBe(false);
+    expect(reset).not.toHaveBeenCalled();
+    expect(api.helper.sessionsList).toHaveBeenCalled(); // normal client-exit verdict ran
+    expect(writes).not.toContain('This session has ended');
+  });
+
+  it('requires exit code 3: the same early line with any other exit is the ordinary client exit', async () => {
+    const { pane, internals } = makePane('aplexer');
+    const reset = vi.fn();
+    (internals as unknown as { term: object }).term = { reset };
+    internals.shellId = 'shell-1' as ShellId;
+    internals.shellAttachedAt = Date.now();
+    internals.open = vi.fn(async () => undefined);
+    internals.bindShellStream();
+    const onData = vi.mocked(api.shell.onData).mock.calls.at(-1)![0];
+    const onExit = vi.mocked(api.shell.onExited).mock.calls.at(-1)![0];
+    onData({ shellId: 'shell-1' as ShellId, data: 'no session named abc\r\n' });
+    onExit({ shellId: 'shell-1' as ShellId, exitCode: 255 });
+    await settle();
+    expect(pane.sessionEnded.value).toBe(false);
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('matches the line when it is split across output chunks', async () => {
+    const { pane, internals } = makePane('aplexer');
+    (internals as unknown as { term: object }).term = { reset: vi.fn() };
+    internals.shellId = 'shell-1' as ShellId;
+    internals.bindShellStream();
+    const onData = vi.mocked(api.shell.onData).mock.calls.at(-1)![0];
+    const onExit = vi.mocked(api.shell.onExited).mock.calls.at(-1)![0];
+    onData({ shellId: 'shell-1' as ShellId, data: new TextEncoder().encode('no sess') });
+    onData({ shellId: 'shell-1' as ShellId, data: new TextEncoder().encode('ion named abc\r\n') });
+    onExit({ shellId: 'shell-1' as ShellId, exitCode: 3 });
+    await settle();
+    expect(pane.sessionEnded.value).toBe(true);
+  });
+});

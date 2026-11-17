@@ -177,7 +177,7 @@ export function useFolderStop(deps: FolderStopDeps): {
       const names = failed.map((name) => `"${name}"`).join(', ');
       stopError.value = `Could not stop ${names} in ${target.label}.` + (reason ? ` ${reason}` : '');
     }
-    await deps.sessions.refresh(connectionId);
+    await deps.sessions.refresh(connectionId, { fresh: true });
   }
 
   return { stopping, stopBusy, stopError, stopFolderLabel, askStopFolder, confirmStopFolder };

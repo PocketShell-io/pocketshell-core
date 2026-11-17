@@ -13,6 +13,9 @@ export async function openTrustedServerWorkspace(deps: {
 }): Promise<{ folder: string; session?: string }> {
   const guard = async () => {if (!await deps.current()) throw new Error('The active account or server changed. Connect again.');};
   await guard();
+  // Listing and $HOME are independent host round-trips (#3141): run them together.
+  const homePromise = deps.home();
+  homePromise.catch(() => undefined);
   const listing = await deps.list();
   await guard();
   if (listing.errors.length) throw new Error('Could not verify existing sessions. Refresh and connect again.');
@@ -20,7 +23,7 @@ export async function openTrustedServerWorkspace(deps: {
   // metadata, explicitly not a separate client-side liveness signal.
   const live = listing.sessions;
   const folderOf = (s: SessionSummary) => normaliseRootPath(s.workspace || s.path);
-  const home = normaliseRootPath(await deps.home());
+  const home = normaliseRootPath(await homePromise);
   await guard();
   if (!home || (!home.startsWith('/') && !isWindowsDrivePath(home))) throw new Error('Could not resolve your home folder.');
   // Router folders are grouping keys, not absolute SFTP paths. Use the same

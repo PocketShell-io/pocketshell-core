@@ -95,7 +95,9 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   /** Reset renderer-side remote state when a different SSH connection takes over. */
+  const homeInFlight = new Map<ConnectionId, Promise<string | null>>();
   function clearState(): void {
+    homeInFlight.clear();
     scopeGeneration += 1;
     browseRequest += 1;
     home.value = null;
@@ -143,9 +145,19 @@ export const useProjectsStore = defineStore('projects', () => {
    * `$HOME` (grouping infers one from the paths), so a transient failure should
    * be retried by the next caller rather than remembered.
    */
-  async function ensureHome(connectionId: ConnectionId): Promise<string | null> {
+  function ensureHome(connectionId: ConnectionId): Promise<string | null> {
+    scopeTo(connectionId);
+    if (home.value !== null) return Promise.resolve(home.value);
+    // One realPath per connection in flight (#3141); concurrent callers share it.
+    const shared = homeInFlight.get(connectionId);
+    if (shared) return shared;
+    const run = resolveHome(connectionId);
+    homeInFlight.set(connectionId, run);
+    void run.finally(() => { if (homeInFlight.get(connectionId) === run) homeInFlight.delete(connectionId); });
+    return run;
+  }
+  async function resolveHome(connectionId: ConnectionId): Promise<string | null> {
     const generation = scopeTo(connectionId);
-    if (home.value !== null) return home.value;
     const result = await api.projects.home(connectionId);
     if (!isCurrent(connectionId, generation)) return null;
     if (!result.ok || !result.home) {

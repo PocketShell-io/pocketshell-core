@@ -245,7 +245,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
         id: 'sessions:refresh',
         label: 'Refresh sessions',
         run: () => {
-          if (connection.connectionId) void sessions.refresh(connection.connectionId);
+          if (connection.connectionId) void sessions.refresh(connection.connectionId, { fresh: true });
         },
       },
     );

@@ -369,6 +369,12 @@ const connectedKey = computed(() =>
 );
 
 onMounted(async () => {
+  // A late back-out elsewhere (account changed after navigation) leaves its
+  // explanation here, on the picker the user was returned to (#3141).
+  if (connection.connectNotice) {
+    connectError.value = connection.connectNotice;
+    connection.connectNotice = null;
+  }
   // Reclaim the OS window title from the workspace, which sets the host's
   // identity on it and deliberately does not reset it on unmount (mount order
   // during a route swap is not something to depend on).
@@ -560,34 +566,55 @@ async function onAccountDirectConnect(host: HostEntry): Promise<void> {
   if (!resumed && (!(await dial(admitted, true)) || !pickerAlive || request !== pickerRequest)) return;
   const ownedId = connection.activeHost === admitted ? connection.connectionId : null;
   const ownsConnection = () => ownedId !== null && connection.connectionId === ownedId && connection.activeHost === admitted;
-  let sameAccount = false;
-  let verificationFailed = false;
-  try {
-    sameAccount = await keyVault.platform.accountId() === scope.accountId;
-  } catch {
-    // A native/backend verification failure is failed admission too. The
-    // successful dial still belongs to this request and must be cleaned up.
-    verificationFailed = true;
-  }
-  if (!sameAccount || !current() || !ownsConnection()) {
-    if (pickerAlive && request === pickerRequest) {
-      connectError.value = verificationFailed
-        ? 'Your account could not be verified. Connect again.'
-        : 'Your account or host changed. Connect again.';
-    }
-    // An equivalent endpoint is insufficient: another request may now own a
-    // newer connection to that same server while the account check awaited.
-    if (ownsConnection()) {
-      const closing = connection.disconnect().catch(() => undefined);
-      pendingBootstrapClose = closing;
-      await closing;
-      if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
-    }
+  // The pre-dial verification above already proved the account; the native
+  // account lookup is queued behind other plugin calls (#3141), so the post-dial
+  // re-check runs in parallel with navigation and backs out on mismatch.
+  if (!current() || !ownsConnection()) {
+    if (pickerAlive && request === pickerRequest) connectError.value = 'Your account or host changed. Connect again.';
+    if (ownsConnection()) await closeOwned();
     return;
   }
   directAdmissions.set(admitted, {accountId: scope.accountId, vaultId: scope.vaultId, epoch: scope.epoch,
     binding, connectionId: ownedId!});
-  enterPlainWorkspace(admitted);
+  const pushedName = admitted.name;
+  const navigated = enterPlainWorkspace(admitted).catch(() => undefined);
+  void navigated.then(() => connection.startHostProbes(ownedId!));
+  void (async () => {
+    let sameAccount = false;
+    let verificationFailed = false;
+    try {
+      sameAccount = await keyVault.platform.accountId!() === scope.accountId;
+    } catch {
+      verificationFailed = true;
+    }
+    // The picker unmounts on navigation, so only account/vault/ownership count here.
+    const vaultSame = keyVault.store.state === 'unlocked' && keyVault.store.vaultId === scope.vaultId && keyVault.store.epoch === scope.epoch;
+    if (sameAccount && vaultSame && ownsConnection()) return;
+    directAdmissions.delete(admitted);
+    await navigated;
+    const owned = ownsConnection();
+    // An equivalent endpoint is insufficient: another request may now own a
+    // newer connection to that same server while the account check awaited.
+    // Closing drops every terminal attach and listing bound to the connection.
+    if (owned) await closeOwned();
+    // Back out from ANY route (a terminal included) while this host's
+    // workspace is what the user is in.
+    const route = router.currentRoute.value;
+    if (route.name !== 'hosts' && (owned || route.params.name === pushedName)) {
+      await router.replace({ name: 'hosts' });
+    }
+    const message = verificationFailed
+      ? 'Your account could not be verified. Connect again.'
+      : 'Your account or host changed. Connect again.';
+    connection.connectNotice = message;
+    if (pickerAlive) connectError.value = message;
+  })();
+  async function closeOwned(): Promise<void> {
+    const closing = connection.disconnect().catch(() => undefined);
+    pendingBootstrapClose = closing;
+    await closing;
+    if (pendingBootstrapClose === closing) pendingBootstrapClose = null;
+  }
 }
 
 function onTrustedConnect(host: HostEntry): void {
@@ -728,6 +755,7 @@ async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmissio
       token.navigating = true;
       await router.push({name:'folder',params:{name:host.name,folder:route.folder},
         ...(route.session ? {query:{tab:route.session}} : {})});
+      connection.startHostProbes(id);
     } catch(e) { if(pickerAlive && activeBootstrap === token && !token.cancelled) connectError.value = (e as Error).message; }
     finally { if(activeBootstrap === token) {activeBootstrap = null;connectingTo.value = null;connectingKey.value = null;} }
     return;
@@ -737,17 +765,17 @@ async function enterWorkspace(host: HostEntry, localAdmission: LocalHostAdmissio
   // rest of its own state (Files tabs, selection) from the same store, so the
   // folder route alone is the entire handoff. A host never opened, or a
   // record that names nothing, keeps the old landing below.
-  enterPlainWorkspace(host);
+  const plainId = connection.connectionId;
+  void enterPlainWorkspace(host).then(() => { if (plainId) connection.startHostProbes(plainId); }, () => undefined);
 }
 
 /** Land in the host's last folder, else its session list (no managed bootstrap). */
-function enterPlainWorkspace(host: HostEntry): void {
+function enterPlainWorkspace(host: HostEntry): Promise<unknown> {
   const folder = readLastFolder(host.name);
   if (folder) {
-    void router.push({ name: 'folder', params: { name: host.name, folder } });
-    return;
+    return router.push({ name: 'folder', params: { name: host.name, folder } });
   }
-  void router.push({ name: 'host-sessions', params: { name: host.name } });
+  return router.push({ name: 'host-sessions', params: { name: host.name } });
 }
 
 /**

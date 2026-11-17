@@ -112,7 +112,7 @@ export function useSessionRename(deps: SessionRenameDeps): {
     // what made the bar move on the tick above), so this runs fire-and-forget
     // purely to pull the authoritative row — activity, agentKind — and to fold
     // the rename into the list wholesale. Nothing waits on it.
-    void deps.sessions.refresh(connectionId);
+    void deps.sessions.refresh(connectionId, { fresh: true });
   }
 
   /**

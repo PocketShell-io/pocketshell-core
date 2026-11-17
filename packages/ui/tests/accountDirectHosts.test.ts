@@ -79,7 +79,7 @@ describe('account-only direct SSH row beside a signed-in trusted Gateway server'
   it('closes the connection and opens nothing when the account changes during the dial',async()=>{
     const t=await setup({accountHosts:[entry('hetzner-ssh')],accountAfterDial:'google:other'});
     await rows()[0]!.trigger('click');await flushPromises();await flushPromises();
-    expect(t.router.currentRoute.value.name).toBe('hosts');
+    await vi.waitFor(()=>expect(t.router.currentRoute.value.name).toBe('hosts'));
     expect(wrapper!.text()).toContain('Your account or host changed');
     expect(t.close).toHaveBeenCalledWith('conn-account');
   });
@@ -131,15 +131,63 @@ describe('pending account-only direct SSH admission', () => {
     const t = await setup({accountHosts: [entry('hetzner-ssh')], dialGate: gate.promise, postDialAccount: account.promise});
     await rows()[0]!.trigger('click'); await flushPromises();
     expect(t.connect).toHaveBeenCalledTimes(1);
-    t.sync.accountHosts = [];
     gate.resolve(); await flushPromises();
+    t.sync.accountHosts = []; // row gone after navigation: ownership, not the row, decides the back-out
     expect(t.connection.connectionId).toBe('conn-account');
     t.connection.activeHost = endpoint === 'same endpoint' ? entry('hetzner-ssh') : entry('newer-host');
     t.connection.connectionId = 'conn-newer';
     account.resolve('google:orin'); await flushPromises(); await flushPromises();
-    expect(t.router.currentRoute.value.name).toBe('hosts');
+    await vi.waitFor(() => expect(t.router.currentRoute.value.name).toBe('hosts'));
     expect(t.close).not.toHaveBeenCalled();
     expect(t.connection.connectionId).toBe('conn-newer');
+  });
+});
+
+describe('post-dial account re-check runs in parallel with navigation (#3141)', () => {
+  it('navigates before the post-dial account lookup resolves', async () => {
+    const account = deferred<string>();
+    const t = await setup({accountHosts: [entry('hetzner-ssh')], postDialAccount: account.promise});
+    await rows()[0]!.trigger('click'); await flushPromises(); await flushPromises();
+    expect(t.router.currentRoute.value.name).toBe('host-sessions');
+    expect(t.close).not.toHaveBeenCalled();
+    account.resolve('google:orin'); await flushPromises(); await flushPromises();
+    expect(t.router.currentRoute.value.name).toBe('host-sessions');
+    expect(t.close).not.toHaveBeenCalled();
+  });
+  it('backs out of the already-open workspace and closes when the late check finds another account', async () => {
+    const account = deferred<string>();
+    const t = await setup({accountHosts: [entry('hetzner-ssh')], postDialAccount: account.promise});
+    await rows()[0]!.trigger('click'); await flushPromises(); await flushPromises();
+    expect(t.router.currentRoute.value.name).toBe('host-sessions');
+    account.resolve('google:other');
+    await vi.waitFor(() => expect(t.router.currentRoute.value.name).toBe('hosts'));
+    expect(t.close).toHaveBeenCalledWith('conn-account');
+    // The explanation survives the view: held in the store, shown by the next picker.
+    expect(t.connection.connectNotice).toContain('Your account or host changed');
+    wrapper!.unmount();
+    wrapper = mount(HostPickerView, {global: {plugins: [t.router]}});
+    await flushPromises();
+    expect(wrapper.text()).toContain('Your account or host changed');
+    expect(t.connection.connectNotice).toBeNull();
+  });
+  it('starts the host probes only after navigating (picker triggers startHostProbes)', async () => {
+    const t = await setup({accountHosts: [entry('hetzner-ssh')]});
+    const probes = vi.spyOn(t.connection, 'startHostProbes');
+    await rows()[0]!.trigger('click'); await flushPromises(); await flushPromises();
+    expect(t.router.currentRoute.value.name).toBe('host-sessions');
+    expect(probes).toHaveBeenCalledWith('conn-account');
+  });
+  it('backs out from a deeper route (a folder workspace) too, closing the connection', async () => {
+    const account = deferred<string>();
+    const t = await setup({accountHosts: [entry('hetzner-ssh')], postDialAccount: account.promise});
+    await rows()[0]!.trigger('click'); await flushPromises(); await flushPromises();
+    expect(t.router.currentRoute.value.name).toBe('host-sessions');
+    await t.router.push({name: 'folder', params: {name: 'hetzner-ssh', folder: '~'}});
+    account.resolve('google:other');
+    await vi.waitFor(() => expect(t.router.currentRoute.value.name).toBe('hosts'));
+    expect(t.close).toHaveBeenCalledWith('conn-account');
+    expect(t.connection.connectionId).toBeNull();
+    expect(t.connection.connectNotice).toContain('Your account or host changed');
   });
 });
 

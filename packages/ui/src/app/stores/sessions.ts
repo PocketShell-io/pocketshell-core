@@ -276,18 +276,62 @@ export const useSessionsStore = defineStore('sessions', () => {
     return { sessions: await api.helper.sessionsList(connectionId, 'activity'), errors: [] };
   }
 
-  async function refresh(connectionId: ConnectionId, options?: { quiet?: boolean }): Promise<void> {
-    if (!options?.quiet) loading.value = true;
-    error.value = null;
-    try {
-      const listing = await fetchListing(connectionId);
-      sessions.value = mergeKilled(mergePending(listing.sessions));
-      listErrors.value = listing.errors;
-    } catch (e) {
-      error.value = errorMessage(e);
-    } finally {
-      if (!options?.quiet) loading.value = false;
+  // One listing in flight per connection (#3141): SessionTree, SessionRedirect,
+  // the folder workspace and the poll all call refresh, and each listing is a
+  // host round-trip, so concurrent callers share the one promise. A caller that
+  // just MUTATED the host (rename, kill, create) passes `fresh: true`: it must
+  // not read a listing that started before its mutation, so it chains ONE
+  // trailing listing after the in-flight one, shared by every fresh caller
+  // that arrives before that trailing listing starts.
+  interface Flight { current: Promise<void>; next: Promise<void> | null }
+  const inFlight = new Map<ConnectionId, Flight>();
+  /**
+   * Called with the connection id after every successful listing. The
+   * connection store uses it as one of the two signals that start the host
+   * probes (#3141): the first listing means a workspace is up.
+   */
+  let listedListener: ((connectionId: ConnectionId) => void) | null = null;
+  function setListedListener(listener: ((connectionId: ConnectionId) => void) | null): void {
+    listedListener = listener;
+  }
+  /** Bumped by clear(): a listing started before it must not write after it. */
+  let generation = 0;
+
+  function startListing(connectionId: ConnectionId): Promise<void> {
+    const started = generation;
+    const current = (async () => {
+      error.value = null;
+      try {
+        const listing = await fetchListing(connectionId);
+        if (started !== generation) return;
+        sessions.value = mergeKilled(mergePending(listing.sessions));
+        listErrors.value = listing.errors;
+        listedListener?.(connectionId);
+      } catch (e) {
+        if (started === generation) error.value = errorMessage(e);
+      }
+    })();
+    const flight: Flight = { current, next: null };
+    inFlight.set(connectionId, flight);
+    void current.finally(() => { if (inFlight.get(connectionId) === flight) inFlight.delete(connectionId); });
+    return current;
+  }
+
+  function refresh(connectionId: ConnectionId, options?: { quiet?: boolean; fresh?: boolean }): Promise<void> {
+    const flight = inFlight.get(connectionId);
+    let run: Promise<void>;
+    if (!flight) {
+      run = startListing(connectionId);
+    } else if (options?.fresh) {
+      const queuedAt = generation;
+      flight.next ??= flight.current.then(() => (queuedAt === generation ? startListing(connectionId) : undefined));
+      run = flight.next;
+    } else {
+      run = flight.next ?? flight.current;
     }
+    if (options?.quiet) return run;
+    loading.value = true;
+    return run.finally(() => { loading.value = false; });
   }
 
   /**
@@ -339,6 +383,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   // escape hatch for a caller that already knows the exact tmux name it wants.
 
   function clear(): void {
+    generation += 1;
+    inFlight.clear();
     sessions.value = [];
     pendingRows.value = [];
     killedRows.value = [];
@@ -352,6 +398,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     error,
     listErrors,
     refresh,
+    setListedListener,
     addPending,
     removeLocal,
     renameLocal,

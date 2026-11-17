@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref, shallowRef, toRaw } from 'vue';
 import { api } from '../ipc';
+import { recordDiagError } from '../diag';
 import type { ConnectionStateEvent } from '../api';
 import type {
   BootstrapResult,
@@ -341,12 +342,10 @@ export const useConnectionStore = defineStore('connection', () => {
    * The sessions refresh is not a courtesy: the panel's last poll against the
    * old id is what left a raw "Unknown connection" rejection on screen, and
    * refreshing against the new id replaces both the stale list and that
-   * message in one move. Forwarding is restored by `connect()` before it
-   * exposes the new connection id, so a drop does not silently turn off
-   * forwarding for everyone who had it on.
-   *
-   * Bootstrap needs no line here: `connect()` already fires it in the
-   * background, and the UI surfaces the result when it lands.
+   * message in one move. Forwarding restore and bootstrap are scheduled by
+   * `connect()` itself (see `pendingProbes`) and start on this very listing
+   * at the latest, so a drop does not silently turn off forwarding for
+   * everyone who had it on and the UI surfaces bootstrap when it lands.
    */
   async function recoverSurfaces(id: ConnectionId): Promise<void> {
     await useSessionsStore()
@@ -355,8 +354,16 @@ export const useConnectionStore = defineStore('connection', () => {
   }
 
   /**
-   * Restore the host's remembered auto-forward setting before a new
-   * connection becomes visible to the workspace.
+   * Restore the host's remembered auto-forward setting. Runs in the
+   * BACKGROUND right after a new connection is exposed (#3137): connect()
+   * does not wait for it. The header reads the persisted ON flag and updates
+   * from the engine's `forwards.onStates` push (HostWorkspaceView's states
+   * watcher, and the ports panel's `subscribe` in stores/forwards.ts, which
+   * also re-syncs), so the restored tunnels appear without a manual refresh.
+   * Because it is not awaited it is a no-op for a connection that is no
+   * longer the current, connected one (closed, dropped or replaced while
+   * `isAutoEnabled`/`startAuto` were in flight) and stays silent for it, the
+   * same as the bootstrap probe below.
    *
    * The ports overlay used to be the only caller of `forwards.init`, so the
    * header could truthfully read the persisted ON flag while no local tunnel
@@ -369,8 +376,10 @@ export const useConnectionStore = defineStore('connection', () => {
    * clone cannot carry through `ipcRenderer.invoke`.
    */
   async function restoreAutoForward(id: ConnectionId, host: HostEntry): Promise<void> {
+    const current = (): boolean => connectionId.value === id && state.value === 'connected';
     try {
       if (!(await api.forwards.isAutoEnabled(id))) return;
+      if (!current()) return;
       const configForwards = host.localForwards.map((forward) => ({
         kind: forward.kind,
         listenHost: forward.listenHost,
@@ -379,11 +388,53 @@ export const useConnectionStore = defineStore('connection', () => {
         destPort: forward.destPort,
       }));
       await api.forwards.startAuto(id, configForwards);
-    } catch {
+    } catch (e) {
       // A successful SSH connection must not be reported as failed because a
-      // best-effort forwarding restore could not be queried or started.
+      // best-effort forwarding restore could not be queried or started, but
+      // running in the background means nobody awaits it: record it.
+      if (current()) recordDiagError('error', new Error(`Port-forward restore failed: ${errorMessage(e)}`));
     }
   }
+
+  /**
+   * A message for the host picker that must outlive the view that produced it:
+   * a late back-out (account changed after navigation) lands the user on a
+   * freshly mounted picker, which shows and clears it (#3141).
+   */
+  const connectNotice = ref<string | null>(null);
+  /**
+   * The connection whose host probes (bootstrap, auto-forward restore) are
+   * scheduled but not yet started. THE STORE owns this: every successful
+   * `connect()` (picker, palette host switch, gateway add-device, manual and
+   * automatic `reconnect()`) schedules it, so no caller can skip it. It starts
+   * on the first of (a) the caller's explicit {@link startHostProbes} /
+   * {@link workspaceReady} after it navigated, (b) the first successful
+   * session listing for that connection. Keyed per connect() instance: a reused
+   * connection id after a reconnect is a new entry, and close/replace drops it.
+   */
+  let pendingProbes: { id: ConnectionId; started: boolean } | null = null;
+  /**
+   * Start the scheduled host probes for a connection. Idempotent per connect
+   * instance and a no-op for a connection that is no longer the current,
+   * connected one. A rejection is swallowed: `bootstrap` staying null keeps the
+   * missing-tools strip quiet, which beats an unhandled rejection paging the
+   * diag banner for a connection that is already gone.
+   */
+  function startHostProbes(id: ConnectionId): void {
+    const pending = pendingProbes;
+    const host = activeHost.value;
+    if (!pending || pending.started || pending.id !== id || !host || connectionId.value !== id || state.value !== 'connected') return;
+    pending.started = true;
+    void restoreAutoForward(id, host);
+    void api.helper
+      .bootstrap(id)
+      .then((b) => {
+        if (connectionId.value === id) bootstrap.value = b;
+      })
+      .catch(() => undefined);
+  }
+  /** The destination workspace is up: start the scheduled probes. */
+  const workspaceReady = startHostProbes;
 
   async function connect(
     host: HostEntry,
@@ -395,6 +446,7 @@ export const useConnectionStore = defineStore('connection', () => {
     // host-picker singleton. Clear them before a new dial so a workspace or
     // dialog cannot briefly render the previous host while this one connects.
     useProjectsStore().clear();
+    pendingProbes = null;
     state.value = 'connecting';
     error.value = null;
     errorKind.value = null;
@@ -433,26 +485,21 @@ export const useConnectionStore = defineStore('connection', () => {
       return false;
     }
     if (result.ok && result.connectionId) {
-      // Do this while the picker still owns the connection attempt. Once the
-      // new id is exposed, HostWorkspaceView can render the persisted ON
-      // indicator knowing the engine has already been asked to resume.
-      await restoreAutoForward(result.connectionId, host);
+      // The restore is best-effort and may take several round trips; the user
+      // must not wait on it to see their connected host (#3137). The ON
+      // indicator reads the persisted flag, and the forwards panel refreshes
+      // when the engine reports the restored forwards.
       if (preserveComposerFrom && preserveComposerFrom !== result.connectionId) {
         useComposerStore().rekeyConnection(preserveComposerFrom, result.connectionId);
       }
       connectionId.value = result.connectionId;
       state.value = 'connected';
-      // Fire bootstrap in the background; the UI surfaces it when it lands.
-      // A rejection (the link dropped right after connect) is swallowed:
-      // `bootstrap` staying null keeps the missing-tools strip quiet, which
-      // beats an unhandled rejection paging the diag banner for a connection
-      // that is already gone.
-      void api.helper
-        .bootstrap(result.connectionId)
-        .then((b) => {
-          bootstrap.value = b;
-        })
-        .catch(() => undefined);
+      // Host probes (bootstrap) and the auto-forward restore are native calls
+      // that queue on the platform's plugin thread. They are SCHEDULED here and
+      // start on workspaceReady() or the first successful listing, so they
+      // queue behind the destination's first calls (#3141).
+      pendingProbes = { id: result.connectionId, started: false };
+      useSessionsStore().setListedListener((listed) => startHostProbes(listed));
       return true;
     }
     state.value = 'idle';
@@ -493,6 +540,7 @@ export const useConnectionStore = defineStore('connection', () => {
       useProjectsStore().clear();
       await api.ssh.close(connectionId.value);
     }
+    pendingProbes = null;
     connectionId.value = null;
     replacingConnectionId = null;
     transportRetry.value = null;
@@ -524,5 +572,8 @@ export const useConnectionStore = defineStore('connection', () => {
     retryNow,
     onOsResume,
     disconnect,
+    startHostProbes,
+    workspaceReady,
+    connectNotice,
   };
 });

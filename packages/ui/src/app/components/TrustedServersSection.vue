@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { trustedHostSlot, type HostEntry, type TrustedHostRecord } from '@pocketshell/core';
 import { useKeyVault } from '../keyVault';
 import { useSyncStore } from '../stores/sync';
+import { clearCachedServers, readCachedServers, writeCachedServers, type CachedServer } from '../trustedServersCache';
 
 defineProps<{ busy?: boolean }>();
 const emit = defineEmits<{ connect: [host: HostEntry]; local: []; loaded: [scope: { accountId: string; vaultId: string; epoch: number; aliases: string[] } | null] }>();
@@ -10,7 +11,10 @@ const vault = useKeyVault();
 const sync = useSyncStore();
 const loading = ref(false);
 const error = ref('');
-const servers = ref<TrustedHostRecord[]>([]);
+const servers = ref<Array<TrustedHostRecord | CachedServer>>([]);
+// True while `servers` is the cached last-known list, not yet confirmed by the vault.
+const stale = ref(false);
+let cachedAccount: string | null = null;
 const connecting = ref(false);
 const authPending = ref(false);
 const localOnly = computed({get:()=>vault?.view.localOnly === true,set:(value:boolean)=>{if(vault) vault.view.localOnly=value;}});
@@ -23,22 +27,40 @@ let entryGeneration = 0;
 let entryTask: Promise<void> | null = null;
 let attemptedAccount: string | null = null;
 
+function clearServers(): void {
+  servers.value = [];
+  stale.value = false;
+  cachedAccount = null;
+}
+
+/** Paint the last-known list for the remembered email; the refresh confirms or replaces it. */
+function seedFromCache(): void {
+  if (localOnly.value || !sync.status?.loggedIn) return;
+  const cached = readCachedServers(sync.status.email);
+  if (!cached) return;
+  servers.value = cached.servers;
+  cachedAccount = cached.accountId;
+  stale.value = true;
+}
+
 async function load(): Promise<void> {
   const seq = ++generation;
-  servers.value = [];
   emit('loaded', null);
   error.value = '';
-  if (localOnly.value || !verifiedAccount.value || !vault?.platform.accountId || !vault.platform.trustedHostRevisions || !vault.platform.installTrustedHost) return;
+  if (localOnly.value || !verifiedAccount.value || !vault?.platform.accountId || !vault.platform.trustedHostRevisions || !vault.platform.installTrustedHost) { clearServers(); return; }
+  // Keep showing the cached rows (marked stale) while refreshing.
+  if (!stale.value) servers.value = [];
   loading.value = true;
   try {
     const account = await vault.platform.accountId();
-    if (!account || account !== verifiedAccount.value || !alive || seq !== generation) return;
+    if (!alive || seq !== generation) return;
+    if (!account || account !== verifiedAccount.value) { clearServers(); return; }
     const vaultId = vault.store.vaultId;
     const epoch = vault.store.epoch;
     if (!vaultId || epoch === null || !unlocked.value) return;
     const floors = await vault.platform.trustedHostRevisions.load(account,vaultId);
     const hosts = await vault.store.listTrustedHosts(account,floors);
-    if (!alive || seq !== generation || !unlocked.value || await vault.platform.accountId() !== account) return;
+    if (!alive || seq !== generation || !unlocked.value) return;
     // Persist every accepted revision, including revocation tombstones.
     for (const host of hosts) {
       await vault.platform.trustedHostRevisions.save(account,vaultId,await trustedHostSlot(host),host.revision);
@@ -47,6 +69,9 @@ async function load(): Promise<void> {
     if (!alive || seq !== generation || currentAccount !== account || !unlocked.value
       || vault.store.vaultId !== vaultId || vault.store.epoch !== epoch) return;
     servers.value = hosts.filter(host => host.status === 'active');
+    stale.value = false;
+    cachedAccount = account;
+    writeCachedServers(sync.status?.email,account,hosts);
     emit('loaded', { accountId: account, vaultId, epoch, aliases: hosts.map(host => host.hostAlias) });
   } catch (e) { if (seq === generation) error.value = (e as Error).message; }
   finally { if (seq === generation) loading.value = false; }
@@ -66,12 +91,17 @@ function enterAccount(): Promise<void> {
     if (vault.platform.prepareAccount) prepared = await vault.platform.prepareAccount();
     else {
       const accountId = await vault.platform.accountId?.();
-      if (!accountId || !current()) return;
+      if (!current()) return;
+      if (!accountId) { clearServers(); clearCachedServers(); return; }
       const probe = unlocked.value ? null : await vault.store.probe();
       if (probe?.kind === 'error') throw new Error(probe.message);
       prepared = {accountId, state: unlocked.value ? 'unlocked' : probe?.kind === 'noVault' ? 'absent' : 'locked'};
     }
-    if (!current() || !prepared?.accountId) return;
+    if (!current()) return;
+    if (!prepared?.accountId) { clearServers(); clearCachedServers(); return; }
+    // The cached rows belong to the account that was signed in last time; if
+    // the verified subject differs they must not survive a single frame more.
+    if (cachedAccount !== null && cachedAccount !== prepared.accountId) { clearServers(); clearCachedServers(); }
     verifiedAccount.value = prepared.accountId;
     needsSetup.value = prepared.state === 'absent';
     const ready = prepared.state === 'unlocked' || await (needsSetup.value
@@ -103,7 +133,8 @@ function useLocal(): void {
   entryTask = null;
   authPending.value = false;
   verifiedAccount.value = null;
-  servers.value = [];
+  clearServers();
+  clearCachedServers();
   emit('loaded', null);
   loading.value = false;
   error.value = '';
@@ -112,19 +143,29 @@ function useLocal(): void {
   emit('local');
 }
 
-async function connect(server: TrustedHostRecord): Promise<void> {
+async function connect(server: TrustedHostRecord | CachedServer): Promise<void> {
   if (!vault?.platform.accountId || !vault.platform.installTrustedHost || !vault.platform.trustedHostRevisions) return;
   if (connecting.value) return;
   connecting.value = true;
-  const seq = generation;
   error.value = '';
   try {
+    // A cached row can be tapped before the background refresh has verified
+    // the account/unlocked the vault: wait for that one operation, then
+    // continue only if it really verified.
+    if (stale.value && entryTask) await entryTask;
+    if (!verifiedAccount.value || !unlocked.value) throw new Error('Sign in and unlock your vault again.');
+    const seq = generation;
     const valid = () => alive && !localOnly.value && verifiedAccount.value === server.accountId && generation === seq && unlocked.value && vault.store.vaultId === server.vaultId && vault.store.epoch === server.epoch;
-    const account = await vault.platform.accountId();
-    if (account !== server.accountId || !valid()) throw new Error('Sign in and unlock your vault again.');
+    // No identity round trip up front: the vault reads below only use the
+    // row's own account as a lookup key and persist nothing; the pre-install
+    // fence verifies the live account before anything is saved or installed.
+    const account = server.accountId;
     const floors = await vault.platform.trustedHostRevisions.load(account,server.vaultId);
     const latest = await vault.store.getTrustedHost(account,server,floors[await trustedHostSlot(server)] ?? server.revision);
     if (latest.kind !== 'ok' || latest.host.status !== 'active') throw new Error('This server is no longer authorized.');
+    // Fence immediately before anything is persisted or installed: valid() is
+    // local state only, so an account change during the vault reads is caught
+    // here, before account A's host reaches the native trust store.
     if (!valid() || await vault.platform.accountId() !== account) throw new Error('Your account or vault changed. Sign in again.');
     await vault.platform.trustedHostRevisions.save(account,server.vaultId,await trustedHostSlot(server),latest.host.revision);
     await vault.platform.installTrustedHost(latest.host);
@@ -140,7 +181,8 @@ watch(() => [sync.status?.loggedIn,sync.status?.email,sync.busy] as const, ([sig
   const key = signedIn ? email ?? '' : null;
   if (key !== attemptedAccount) {
     entryGeneration++; generation++;
-    servers.value = []; emit('loaded', null); loading.value = false; verifiedAccount.value = null;
+    clearServers(); emit('loaded', null); loading.value = false; verifiedAccount.value = null;
+    if (signedIn) seedFromCache(); else clearCachedServers();
     if (attemptedAccount !== null) {vault?.cancelUnlock(); vault?.lock();}
     entryTask = null; authPending.value = false;
     attemptedAccount = null;
@@ -150,14 +192,24 @@ watch(() => [sync.status?.loggedIn,sync.status?.email,sync.busy] as const, ([sig
     void enterAccount();
   }
 }, {immediate:true});
-watch(unlocked, (isUnlocked) => {generation++;servers.value=[];emit('loaded', null);loading.value=false;if(isUnlocked && !sync.busy && verifiedAccount.value && !entryTask) void load();});
+watch(unlocked, (isUnlocked) => {generation++;if(!stale.value) servers.value=[];emit('loaded', null);loading.value=false;if(isUnlocked && !sync.busy && verifiedAccount.value && !entryTask) void load();});
 onBeforeUnmount(() => {alive = false; generation++; entryGeneration++; vault?.cancelUnlock();});
 </script>
 
 <template>
   <section class="trusted-servers" data-testid="trusted-servers">
     <h2>{{localOnly ? 'SSH without an account' : 'Your servers'}}</h2>
-    <p v-if="authPending" class="muted" role="status">{{verifiedAccount ? 'Open your vault to continue.' : 'Checking your Google account…'}}</p>
+    <template v-if="stale && servers.length">
+      <!-- Last-known list, painted before the vault refresh finishes (#3137). -->
+      <ul class="server-list" data-testid="trusted-servers-stale">
+        <li v-for="server in servers" :key="server.deviceId">
+          <button class="server-row" :disabled="busy || connecting" data-testid="trusted-server-connect" @click="connect(server)">{{server.hostAlias}}</button>
+        </li>
+      </ul>
+      <p v-if="authPending || loading" class="muted refreshing" role="status" data-testid="servers-refreshing">{{verifiedAccount ? 'Refreshing…' : 'Checking your Google account…'}}</p>
+      <button v-else-if="verifiedAccount && !unlocked" class="btn" data-testid="server-vault-unlock" @click="enterAccount">{{needsSetup ? 'Create your vault' : 'Unlock your vault'}}</button>
+    </template>
+    <p v-else-if="authPending" class="muted" role="status">{{verifiedAccount ? 'Unlocking your vault…' : 'Checking your Google account…'}}</p>
     <template v-else-if="!verifiedAccount || localOnly">
       <p class="muted">Sign in to use your encrypted server list, or connect with SSH credentials kept on this device.</p>
       <button class="btn" :disabled="sync.busy" data-testid="server-google-login" @click="unlock">Sign in with Google</button>
@@ -179,6 +231,7 @@ onBeforeUnmount(() => {alive = false; generation++; entryGeneration++; vault?.ca
 </template>
 
 <style scoped>
+.refreshing {font-size:var(--fs-sm,12px);opacity:.7}
 .server-list {list-style:none;padding:0;display:grid;gap:var(--space-2,8px)}
 .server-row {width:100%;text-align:left;padding:var(--space-3,12px);color:var(--fg);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);cursor:pointer;min-height:48px}
 </style>

@@ -358,7 +358,7 @@ export function useSessionLaunch(deps: SessionLaunchDeps): {
     if (!result.ok || !result.sessionName) {
       if (result.code === 'create-uncertain') {
         uncertainReadPending = true;
-        try { await deps.sessions.refresh(connectionId); }
+        try { await deps.sessions.refresh(connectionId, { fresh: true }); }
         catch { /* Keep the explicit uncertain outcome if refreshing also fails. */ }
         finally { uncertainReadPending = false; }
       }
