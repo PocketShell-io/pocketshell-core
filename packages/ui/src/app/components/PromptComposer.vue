@@ -97,6 +97,8 @@ const props = defineProps<{
    */
   backend?: 'tmux' | 'aplexer';
   workspace?: string | null;
+  /** The aplexer session's immutable UUID; keys the draft when known. */
+  aplexerId?: string | null;
   /** The engine running in this pane. Null until agent detection exists. */
   agentKind?: ComposerAgentKind | null;
   /** False while the SSH connection is down — advisory only, never a block. */

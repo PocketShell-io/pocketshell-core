@@ -171,6 +171,7 @@ export function useQuickActions(deps: QuickActionsDeps): {
             id: `session:${sessionIdentityKey(row.session.name, {
               backend: row.session.backend,
               workspace: row.session.workspace,
+              aplexerId: row.session.aplexerId,
             })}:${dir.key}`,
             label: `Open ${dir.label}:${row.session.name}`,
             keywords: `${dir.label} ${row.session.name} ${dir.path}`,

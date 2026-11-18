@@ -163,7 +163,11 @@ export function useFolderStop(deps: FolderStopDeps): {
           deps.composer.targetKey(
             connectionId,
             name,
-            sessionIdentityKey(name, { backend: entry.backend, workspace: entry.workspace ?? undefined }),
+            sessionIdentityKey(name, {
+              backend: entry.backend,
+              workspace: entry.workspace ?? undefined,
+              aplexerId: entry.aplexerId ?? undefined,
+            }),
           ),
         );
       }
