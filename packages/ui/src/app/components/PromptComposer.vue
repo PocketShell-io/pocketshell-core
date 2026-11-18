@@ -819,7 +819,12 @@ defineExpose({
 }
 .draft-wrap {
   flex: 1 1 auto;
-  min-height: 0;
+  /* Never below the draft's own two-line floor (plus this padding). With
+     `min-height: 0` the wrap shrank under the textarea once a banner, the
+     uploading line, a platform chip row and the tiles all wanted room, and
+     the textarea overflowed it: the next row (a tile, "Uploading…") painted
+     on top of the draft (#3191). At the floor .panel-body scrolls instead. */
+  min-height: calc(46px + 2 * var(--sp-2));
   display: flex;
   padding: var(--sp-2) var(--sp-3);
 }
