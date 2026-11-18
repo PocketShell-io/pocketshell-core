@@ -86,6 +86,7 @@ import type { SessionSummary } from '@pocketshell/core';
 import { displayPath } from '../stores/projects';
 import { useNewSessionCommit, type SessionRoute } from '../useNewSessionCommit';
 import { useNewSessionFolders } from '../useNewSessionFolders';
+import { useCompact } from '../usePhoneSheet';
 
 const props = withDefaults(
   defineProps<{
@@ -131,6 +132,8 @@ const projects = useProjectsStore();
 const sessions = useSessionsStore();
 
 const route = ref<SessionRoute>('existing');
+/** Compact (a phone): a full-height sheet, short route labels, stacked actions. */
+const compact = useCompact();
 // The commit pipeline — repo/clone state, the predicted target folder and its
 // derived name, the agent step, and the one `commit` path every route ends in —
 // is useNewSessionCommit.ts; the folder browsing that feeds it is
@@ -187,7 +190,15 @@ const {
   rootsBtnEl,
   toggleRootsMenu,
   onRoot,
-} = useNewSessionFolders({ projects, connection, route, busy, commit });
+} = useNewSessionFolders({
+  projects,
+  connection,
+  route,
+  busy,
+  commit,
+  // Compact: no caret on open - it would raise the keyboard over the dialog.
+  autofocus: () => !compact.value,
+});
 
 // ---- the editable name ----------------------------------------------------
 //
@@ -243,7 +254,7 @@ function cancelNameEdit(): void {
   />
 
   <OverlayPanel v-else title="New session" size="md" @close="emit('close')">
-    <div class="new-session">
+    <div class="new-session" :class="{ compact }">
       <!-- ================= outcome =================
            Only the answers that are not simply "yes" get this far: a plain
            success has already emitted `started` and this dialog is unmounting.
@@ -263,19 +274,20 @@ function cancelNameEdit(): void {
         <nav class="routes" role="tablist">
           <button
             v-for="r in ([
-              { id: 'existing', label: 'Existing folder', icon: 'folder' },
-              { id: 'new', label: 'New folder', icon: 'folder-plus' },
-              { id: 'clone', label: 'Clone from GitHub', icon: 'download' },
+              { id: 'existing', label: 'Existing folder', short: 'Existing', icon: 'folder' },
+              { id: 'new', label: 'New folder', short: 'New', icon: 'folder-plus' },
+              { id: 'clone', label: 'Clone from GitHub', short: 'Clone', icon: 'download' },
             ] as const)"
             :key="r.id"
             class="route"
             :class="{ on: route === r.id }"
             role="tab"
             :aria-selected="route === r.id"
+            :aria-label="compact ? r.label : undefined"
             @click="route = r.id"
           >
             <AppIcon :name="r.icon" :size="14" />
-            {{ r.label }}
+            {{ compact ? r.short : r.label }}
           </button>
         </nav>
 
@@ -541,7 +553,7 @@ function cancelNameEdit(): void {
                cursor that is still resting on it and shove its neighbour
                sideways at the exact moment the user might click again, which
                is a worse bug than the stray glyph this replaced. -->
-          <div class="commit-actions">
+          <div class="commit-actions" :class="{ compact }">
             <button class="btn-secondary" @click="emit('close')">Cancel</button>
             <button
               class="btn-secondary"
@@ -583,6 +595,78 @@ function cancelNameEdit(): void {
   min-height: 0;
   gap: var(--sp-3);
   padding: var(--sp-4);
+}
+
+/* ---- compact (phone): a full-height sheet --------------------------------
+   OverlayPanel supplies the full-screen page, the Back arrow and the inset
+   padding; this fills it: the folder list takes the free height, the commit bar
+   stays at the bottom, and the actions stack so every label fits on one line. */
+.new-session.compact {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  height: 100%;
+  padding: var(--sp-3);
+  /* Scrolls rather than clips: with the keyboard up the parts no longer fit, and
+     clipped flex children used to paint over each other (seen on device). */
+  overflow-y: auto;
+  /* A focused field scrolls to just above the sticky action bar, not under it. */
+  scroll-padding-bottom: 13rem;
+}
+.new-session.compact .browser,
+.new-session.compact .repos {
+  flex: 1 0 auto;
+}
+/* The actions stay reachable above the keyboard however far the form scrolls. */
+.new-session.compact .commit {
+  position: sticky;
+  bottom: calc(-1 * var(--sp-3));
+  margin-bottom: calc(-1 * var(--sp-3));
+  padding-bottom: var(--sp-3);
+  background: var(--surface);
+  z-index: 1;
+}
+.new-session.compact .folder-rows,
+.new-session.compact .repo-rows {
+  flex: 1 1 0;
+  max-height: none;
+  min-height: 96px;
+}
+.new-session.compact .route {
+  min-width: 0;
+  padding: 0 var(--sp-1);
+  white-space: nowrap;
+  min-height: var(--hit-min);
+}
+.new-session.compact .field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+}
+.new-session.compact .field-label {
+  min-width: 0;
+}
+.new-session.compact .text-input {
+  min-height: var(--hit-min);
+}
+.commit-actions.compact {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.commit-actions.compact .btn-primary {
+  grid-column: 1 / -1;
+  order: -1;
+}
+.commit-actions.compact .btn-primary,
+.commit-actions.compact .btn-secondary {
+  justify-content: center;
+  min-height: max(var(--control-h), var(--hit-min));
+  padding: 0 var(--sp-2);
+  white-space: nowrap;
+}
+/* The reserved 14px for the busy mark would push the label off-centre in a
+   full-width button; on compact the mark simply takes no room until it spins. */
+.commit-actions.compact .idle-mark {
+  display: none;
 }
 
 /* ---- route selector: one segmented control, VS Code register ---------- */

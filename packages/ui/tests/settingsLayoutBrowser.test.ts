@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Cdp, warmBrowser, warmServer, gotoAndWait, sleep, waitForSelector } from './support/cdp';
 
 /**
  * #3139 G9: the Settings acceptance in REAL Chromium layout (jsdom has none).
@@ -45,28 +46,6 @@ async function freePort(): Promise<number> {
   });
 }
 
-class Cdp {
-  private id = 0;
-  private waiting = new Map<number, (m: { result?: unknown; error?: unknown }) => void>();
-  constructor(private ws: WebSocket) {
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(String(event.data));
-      this.waiting.get(msg.id)?.(msg);
-    };
-  }
-  send(method: string, params: Record<string, unknown> = {}): Promise<{ result?: any }> {
-    return new Promise((ok, fail) => {
-      const id = ++this.id;
-      this.waiting.set(id, (m) => (m.error ? fail(new Error(JSON.stringify(m.error))) : ok(m as { result?: any })));
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async evaluate<T>(expression: string): Promise<T> {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
-    return r.result.result.value as T;
-  }
-}
 
 beforeAll(async () => {
   vite = await createServer({
@@ -85,13 +64,15 @@ beforeAll(async () => {
   });
   await vite.listen();
   origin = `http://127.0.0.1:${(vite.httpServer!.address() as { port: number }).port}`;
+  await warmServer(origin);
   debugPort = await freePort();
   profile = mkdtempSync(join(tmpdir(), 'settings-layout-'));
   chrome = spawn(findBrowser(), [
     '--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`, '--remote-allow-origins=*', 'about:blank',
   ], { stdio: 'ignore' });
-}, 60_000);
+  await warmBrowser(await connect(), origin);
+}, 180_000);
 
 afterAll(async () => {
   chrome?.kill('SIGKILL');
@@ -161,12 +142,9 @@ interface Measure {
 async function measureAll(host: 'android' | 'desktop', width: number): Promise<{ tabs: string[]; byTab: Record<string, Measure> }> {
   const cdp = await connect();
   await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: true });
-  await cdp.send('Page.navigate', { url: `${origin}/?host=${host}` });
-  for (let i = 0; i < 100; i += 1) {
-    if (await cdp.evaluate<boolean>("!!document.querySelector('.settings') && !!document.querySelector('#settings-tab-general')")) break;
-    await new Promise((ok) => setTimeout(ok, 100));
-  }
-  await new Promise((ok) => setTimeout(ok, 300));
+  await gotoAndWait(cdp, `${origin}/?host=${host}`, '.settings');
+  await waitForSelector(cdp, '#settings-tab-general');
+  await sleep(300);
   const tabs = await cdp.evaluate<string[]>("[...document.querySelectorAll('[role=tab]')].map((e) => e.id.replace('settings-tab-', ''))");
   const byTab: Record<string, Measure> = {};
   for (const tab of tabs) byTab[tab] = await cdp.evaluate<Measure>(MEASURE(tab));

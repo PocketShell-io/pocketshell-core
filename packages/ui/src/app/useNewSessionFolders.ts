@@ -16,6 +16,13 @@ export interface NewSessionFoldersDeps {
   busy: ComputedRef<boolean>;
   /** The one commit path; Enter on the `existing` route ends in it. */
   commit: (choice: LaunchChoice | null) => Promise<void>;
+  /**
+   * Whether the filter takes the caret on its own (on open and after each
+   * browse). Default true. A phone passes false: focusing a text field raises
+   * the on-screen keyboard, which would cover the dialog before the user has
+   * touched anything.
+   */
+  autofocus?: () => boolean;
 }
 
 /**
@@ -105,14 +112,17 @@ export function useNewSessionFolders(deps: NewSessionFoldersDeps): {
     if (projects.browsing) return;
     searchEl.value?.focus();
   }
+  const autoFocusSearch = (): void => {
+    if (deps.autofocus?.() ?? true) focusSearch();
+  };
 
   watch(
     () => projects.browsing,
     (browsing, was) => {
-      if (was && !browsing) void nextTick(focusSearch);
+      if (was && !browsing) void nextTick(autoFocusSearch);
     },
   );
-  onMounted(focusSearch);
+  onMounted(autoFocusSearch);
 
   // -------------------------------------------------------------------------
   // The keyboard flow: type, arrow, Enter

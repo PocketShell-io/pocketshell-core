@@ -67,6 +67,7 @@ import SettingsUpdatesGroup from '../components/settings/SettingsUpdatesGroup.vu
 // Used by the default-host notice; it was referenced without an import once,
 // and those buttons rendered empty.
 import AppIcon from '@ui/components/AppIcon.vue';
+import { useCompact } from '../usePhoneSheet';
 
 const connection = useConnectionStore();
 const settings = useSettingsStore();
@@ -89,6 +90,11 @@ const TABS = [
 // Session-local, deliberately not a stored setting: the panel always opens on
 // General, so a preference touched last year cannot hijack the next visit.
 const activeTab = ref<string>('general');
+
+/** Compact (K2): the shortcut editor is one 'Keyboard shortcuts' row that opens
+ *  it, not a rail-and-list page on a phone-width screen. */
+const compact = useCompact();
+const shortcutsOpen = ref(false);
 
 onMounted(async () => {
   // The picker loads hosts on its own mount, but the workspace does not
@@ -354,7 +360,20 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
     >
       <section class="group fill">
         <h3 class="group-title">Keyboard</h3>
-        <ShortcutSettings />
+        <button
+          v-if="compact"
+          type="button"
+          class="shortcuts-row"
+          :aria-expanded="shortcutsOpen"
+          @click="shortcutsOpen = !shortcutsOpen"
+        >
+          <span class="shortcuts-row-text">
+            <span class="row-label">Keyboard shortcuts</span>
+            <span class="row-hint">Every key PocketShell claims, and what it does.</span>
+          </span>
+          <AppIcon :name="shortcutsOpen ? 'chevron-down' : 'chevron-right'" :size="16" />
+        </button>
+        <ShortcutSettings v-if="!compact || shortcutsOpen" />
       </section>
     </div>
 
@@ -428,6 +447,29 @@ const atDefaultZoom = computed(() => settings.zoomPercent === ZOOM_PERCENT_DEFAU
   gap: var(--sp-4);
   padding: var(--sp-3) 0;
   border-bottom: 1px solid var(--border-soft);
+}
+/* The compact disclosure row: label and hint left, chevron right, 48px floor. */
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: max(48px, var(--hit-min));
+  padding: var(--sp-2) 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg);
+  text-align: left;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+.shortcuts-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
 }
 .row:last-child {
   border-bottom: none;

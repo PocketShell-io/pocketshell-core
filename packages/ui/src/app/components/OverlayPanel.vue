@@ -9,6 +9,7 @@
 // otherwise the name appears twice — which it used to, see
 // docs/screenshots/07-usage-overlay.png.
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { useCompact } from '../usePhoneSheet';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { useDismissLayer } from '../extensions';
 
@@ -27,6 +28,10 @@ withDefaults(
   { size: 'lg' },
 );
 const emit = defineEmits<{ close: [] }>();
+
+// Compact: a full-screen page with a Back arrow (the platform Back already
+// closes it through the dismiss layer below) instead of a centred dialog.
+const compact = useCompact();
 
 // An open panel is a dismissable layer (extensions.ts `app.dismissLayers`):
 // the platform's dismiss gesture — Android Back — closes the topmost one, the
@@ -83,24 +88,33 @@ onBeforeUnmount(() => {
 <template>
   <!-- `appear` so the entrance plays on the first render too: the panel is
        mounted by a v-if, so its first appearance IS its only appearance. -->
+  <!-- Compact: teleported to `body` so the full-screen page is positioned against
+       the viewport. Left in place, `position: fixed` resolves against whatever
+       transformed/contained ancestor hosts the opener (on the phone, the session
+       panel), and the "full screen" page started below that panel's toolbar
+       (seen on device, #3123). Expanded keeps today's in-place rendering. -->
+  <Teleport to="body" :disabled="!compact">
   <Transition name="overlay" appear>
-    <div class="overlay-backdrop" @click.self="emit('close')">
+    <div class="overlay-backdrop" :class="{ compact }" @click.self="emit('close')">
       <div
         ref="panelEl"
         class="overlay-panel"
-        :class="size"
+        :class="[size, { compact }]"
         role="dialog"
         aria-modal="true"
         :aria-label="title"
         tabindex="-1"
       >
         <header class="overlay-header">
+          <button v-if="compact" class="icon-btn" aria-label="Back" title="Back" @click="emit('close')">
+            <AppIcon name="arrow-left" />
+          </button>
           <h2 class="overlay-title">{{ title }}</h2>
           <div class="overlay-actions">
             <!-- Panel-scoped controls (refresh, filters) belong up here beside
                  the close control, not floating at the top of the body. -->
             <slot name="actions" />
-            <button class="icon-btn" title="Close" @click="emit('close')">
+            <button v-if="!compact" class="icon-btn" title="Close" @click="emit('close')">
               <AppIcon name="close" />
             </button>
           </div>
@@ -111,6 +125,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -170,9 +185,33 @@ onBeforeUnmount(() => {
 }
 .overlay-title {
   margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
   font-size: var(--fs-500);
   line-height: var(--lh-500);
   font-weight: var(--fw-semibold);
+}
+/* Compact: the sheet IS the screen. The backdrop pads by the app insets (the
+   keyboard included, so the body shrinks above the IME), the panel fills it. */
+.overlay-backdrop.compact {
+  align-items: stretch;
+  justify-content: stretch;
+  background: var(--surface);
+  backdrop-filter: none;
+  padding: var(--ps-inset-top) var(--ps-inset-right) calc(var(--ps-inset-bottom) + var(--ps-inset-keyboard))
+    var(--ps-inset-left);
+}
+.overlay-panel.compact {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.overlay-panel.compact .overlay-header {
+  min-height: var(--topbar-h);
+  padding: var(--sp-1) var(--sp-2);
 }
 .overlay-body {
   /* `1 1 auto` not `1`: flex-basis auto lets the body take its content's
