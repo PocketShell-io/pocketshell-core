@@ -606,11 +606,22 @@ function cancelNameEdit(): void {
   flex: 1 1 auto;
   height: 100%;
   padding: var(--sp-3);
-  overflow: hidden;
+  /* Scrolls rather than clips: with the keyboard up the parts no longer fit, and
+     clipped flex children used to paint over each other (seen on device). */
+  overflow-y: auto;
 }
 .new-session.compact .browser,
 .new-session.compact .repos {
-  flex: 1 1 auto;
+  flex: 1 0 auto;
+}
+/* The actions stay reachable above the keyboard however far the form scrolls. */
+.new-session.compact .commit {
+  position: sticky;
+  bottom: calc(-1 * var(--sp-3));
+  margin-bottom: calc(-1 * var(--sp-3));
+  padding-bottom: var(--sp-3);
+  background: var(--surface);
+  z-index: 1;
 }
 .new-session.compact .folder-rows,
 .new-session.compact .repo-rows {

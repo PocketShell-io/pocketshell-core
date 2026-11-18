@@ -149,7 +149,7 @@ async function run<T>(opts: { fine?: boolean; width: number; height: number; kb?
   return out;
 }
 
-const READY: Record<string, string> = { palette: '.palette-item', menu: '.menu-item', newsession: '.commit-actions button', settings: '#settings-tab-keyboard' };
+const READY: Record<string, string> = { 'overlay-in-host': '.overlay-title', palette: '.palette-item', menu: '.menu-item', newsession: '.commit-actions button', settings: '#settings-tab-keyboard' };
 const PHONES = [{ width: 360, height: 800 }, { width: 412, height: 915 }];
 const KB = 300;
 
@@ -169,6 +169,11 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.back.height).toBeGreaterThanOrEqual(48);
     expect(m.back.left).toBeLessThan(m.header.left + 24);
     expect(m.close).toBe(false);
+  }, 60_000);
+
+  it('OverlayPanel opened inside a transformed host still covers the whole viewport (seen on device: it started below the panel toolbar)', async () => {
+    const m = await run<{ panel: Box }>(at(0, 'overlay-in-host'), 'overlay-in-host', `() => ({ panel: box(document.querySelector('.overlay-panel')) })`);
+    expect([m.panel.left, m.panel.top, m.panel.width, m.panel.height]).toEqual([0, 0, width, height]);
   }, 60_000);
 
   it.each([0, KB])('CommandPalette is a bottom sheet, input at the bottom edge above the keyboard (inset %i)', async (kb) => {

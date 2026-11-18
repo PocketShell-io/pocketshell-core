@@ -47,6 +47,11 @@ const view = () => {
       });
       return h(NewSessionDialog, { onClose: noop });
     }
+    case 'overlay-in-host':
+      // A transformed host (the phone's session panel): fixed children resolve against it.
+      return h('div', { style: 'transform: translateY(54px); height: 400px; overflow: hidden' }, [
+        h(OverlayPanel, { title: 'Ports', size: 'lg' }, { default: () => h('div', { style: 'padding:16px' }, 'Panel body') }),
+      ]);
     case 'settings':
       return h(OverlayPanel, { title: 'Settings', size: 'md' }, { default: () => h(SettingsView) });
     default:

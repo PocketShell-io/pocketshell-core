@@ -88,6 +88,12 @@ onBeforeUnmount(() => {
 <template>
   <!-- `appear` so the entrance plays on the first render too: the panel is
        mounted by a v-if, so its first appearance IS its only appearance. -->
+  <!-- Compact: teleported to `body` so the full-screen page is positioned against
+       the viewport. Left in place, `position: fixed` resolves against whatever
+       transformed/contained ancestor hosts the opener (on the phone, the session
+       panel), and the "full screen" page started below that panel's toolbar
+       (seen on device, #3123). Expanded keeps today's in-place rendering. -->
+  <Teleport to="body" :disabled="!compact">
   <Transition name="overlay" appear>
     <div class="overlay-backdrop" :class="{ compact }" @click.self="emit('close')">
       <div
@@ -119,6 +125,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </Transition>
+  </Teleport>
 </template>
 
 <style scoped>

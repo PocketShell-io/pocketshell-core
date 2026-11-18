@@ -43,12 +43,14 @@ describe('OverlayPanel', () => {
   it('compact: a full-screen page with a Back arrow that closes; no X', async () => {
     PHONE();
     const w = mount(OverlayPanel, { props: { title: 'Ports' }, attachTo: document.body });
-    expect(w.find('.overlay-panel').classes()).toContain('compact');
-    const back = w.find('button[aria-label="Back"]');
-    expect(back.exists()).toBe(true);
-    expect(back.find('svg').exists()).toBe(true);
-    expect(w.find('button[title="Close"]').exists()).toBe(false);
-    await back.trigger('click');
+    // Teleported to body on compact: positioned against the viewport, not the opener's panel.
+    expect(w.find('.overlay-panel').exists()).toBe(false);
+    expect(document.body.querySelector('.overlay-panel')!.classList).toContain('compact');
+    const back = document.body.querySelector('button[aria-label="Back"]') as HTMLElement;
+    expect(back).not.toBeNull();
+    expect(back.querySelector('svg')).not.toBeNull();
+    expect(document.body.querySelector('button[title="Close"]')).toBeNull();
+    back.click();
     expect(w.emitted('close')).toHaveLength(1);
     w.unmount();
   });
@@ -195,10 +197,10 @@ describe('NewSessionDialog', () => {
   it('compact: short non-wrapping route labels, full labels kept for assistive tech, no keyboard on open', async () => {
     PHONE();
     const w = await open();
-    const tabs = w.findAll('[role=tab]');
-    expect(tabs.map((t) => t.text())).toEqual(['Existing', 'New', 'Clone']);
-    expect(tabs.map((t) => t.attributes('aria-label'))).toEqual(['Existing folder', 'New folder', 'Clone from GitHub']);
-    expect(document.activeElement).not.toBe(w.find('input[aria-label="Search folders in this directory"]').element);
+    const tabs = [...document.body.querySelectorAll('[role=tab]')];
+    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Existing', 'New', 'Clone']);
+    expect(tabs.map((t) => t.getAttribute('aria-label'))).toEqual(['Existing folder', 'New folder', 'Clone from GitHub']);
+    expect(document.activeElement).not.toBe(document.body.querySelector('input[aria-label="Search folders in this directory"]'));
     w.unmount();
   });
 
