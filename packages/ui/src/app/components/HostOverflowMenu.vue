@@ -96,11 +96,14 @@ function runTabAction(row: TabActionRow): void {
 </template>
 
 <style scoped>
-/* The one item that can lose work looks like it (the tab menu's rule). */
-.popup-menu :deep(.menu-item.danger) {
+/* The one item that can lose work looks like it (the tab menu's rule). Written
+   from `ul` because this component's root is PopupMenu, whose own root is a
+   Teleport: it carries no scope id, so a `.popup-menu`-rooted rule here would
+   never match. The extra `ul` also outranks PopupMenu's `.menu-item` colour. */
+ul .menu-item.danger {
   color: var(--error);
 }
-.popup-menu :deep(.menu-item.danger:hover) {
+ul .menu-item.danger:hover {
   background: var(--error-soft);
 }
 </style>

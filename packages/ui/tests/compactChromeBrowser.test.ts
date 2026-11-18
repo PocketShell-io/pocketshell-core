@@ -193,8 +193,16 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
     await cdp.evaluate("document.querySelector('button[aria-label=\"More\"]').click()");
     await new Promise((ok) => setTimeout(ok, 200));
     const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .menu-item');
-    expect(rows.map((r) => r.label)).toEqual(['Port forwarding', 'Provider usage', 'Host monitor', 'Quick actions', 'Settings']);
+    expect(rows.map((r) => r.label)).toEqual(['Port forwarding', 'Provider usage', 'Host monitor', 'Quick actions', 'Settings', 'Rename session…', 'Stop this session']);
     for (const r of rows) expect(r.h, `row ${r.label}`).toBeGreaterThanOrEqual(48);
+    // The one destructive row is tinted --error, like the tab menu's Stop.
+    const colors = await cdp.evaluate<{ stop: string; rename: string; error: string }>(`(() => {
+      const probe = document.createElement('i'); probe.style.color = 'var(--error)'; document.body.appendChild(probe);
+      const c = (sel) => getComputedStyle(document.querySelector(sel)).color;
+      return { stop: c('[data-testid=host-overflow-tab-stop]'), rename: c('[data-testid=host-overflow-tab-rename]'), error: getComputedStyle(probe).color };
+    })()`);
+    expect(colors.stop).toBe(colors.error);
+    expect(colors.rename).not.toBe(colors.error);
 
     expect(await cdp.evaluate<[number, number]>('[document.documentElement.scrollWidth, document.documentElement.clientWidth]'))
       .toEqual([width, width]);

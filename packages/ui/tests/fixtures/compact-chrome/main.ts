@@ -16,6 +16,7 @@ import { useConnectionStore } from '@ui/app/stores/connection';
 import { useSessionsStore } from '@ui/app/stores/sessions';
 import HostWorkspaceView from '@ui/app/views/HostWorkspaceView.vue';
 import WorkspaceTabBar from '@ui/app/components/WorkspaceTabBar.vue';
+import { registerTabActions, tabActionRowsFor } from '@ui/app/workspaceTabActions';
 
 const SESSIONS: SessionSummary[] = [
   { name: 'home-alexey-main', created: 1, activity: 2, attached: true, path: '/home/u/git/alpha' },
@@ -47,7 +48,10 @@ const TABS: WorkspaceTab[] = [
   { kind: 'files', id: 'files-1', label: 'Files' } as WorkspaceTab,
 ];
 const Folder = defineComponent({
-  setup: () => () =>
+  setup() {
+    // What FolderWorkspaceView does for the front tab: the overflow lists its actions.
+    registerTabActions(() => tabActionRowsFor(TABS[0], { rename: () => undefined, stop: () => undefined, closeFiles: () => undefined, closeTool: () => undefined }));
+    return () =>
     h('div', { style: 'display:flex;flex-direction:column;flex:1;min-height:0', class: 'folder-stub' }, [
       h(WorkspaceTabBar, {
         tabs: TABS,
@@ -66,7 +70,8 @@ const Folder = defineComponent({
         captureTitle: 'Copy screen',
       } as never),
       h('div', { class: 'terminal-stub', style: 'flex:1;min-height:0' }),
-    ]),
+    ]);
+  },
 });
 
 const pinia = createPinia();
