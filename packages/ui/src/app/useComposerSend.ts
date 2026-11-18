@@ -35,7 +35,7 @@ export function useComposerSend(deps: ComposerSendDeps): {
   discardArmed: Ref<boolean>;
   onDiscardClick: () => void;
   onSend: () => Promise<void>;
-  onSubmit: (options: { enter: boolean }) => Promise<boolean>;
+  onSubmit: (options: { enter: boolean; focus?: boolean }) => Promise<boolean>;
   onDiscard: () => void;
 } {
   const composer = deps.composer;
@@ -56,9 +56,10 @@ export function useComposerSend(deps: ComposerSendDeps): {
    * without the submit key, for a platform input source (the phone's
    * dictation panel). An Insert never closes the composer, whatever the
    * close-on-send setting says: the text is at the prompt, not submitted, so
-   * the user is still composing.
+   * the user is still composing. `focus: false` leaves the keyboard focus
+   * where it is: a voice source delivers without raising a soft keyboard.
    */
-  async function onSubmit(options: { enter: boolean }): Promise<boolean> {
+  async function onSubmit(options: { enter: boolean; focus?: boolean }): Promise<boolean> {
     const k = key.value;
     const shellId = deps.shells.shellIdFor(sessionKey.value);
     // The user's Settings → Advanced "Enter-key delay", read per send so a
@@ -95,6 +96,7 @@ export function useComposerSend(deps: ComposerSendDeps): {
     // terminal — which is also what makes the next keystroke re-open the panel.
     // A failed send leaves the card up with its banner, so the caret goes back to
     // the draft the user still has to deal with.
+    if (options.focus === false) return delivered;
     if (delivered && options.enter && settings.closeComposerOnSend) deps.focusTerminal();
     else focusDraft();
     return delivered;

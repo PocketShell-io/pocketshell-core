@@ -196,3 +196,56 @@ describe('the open card reports its top edge (#3128 terminal lift)', () => {
     }
   });
 });
+
+describe('a phone composer never raises the soft keyboard on its own (#3128: no remote resize)', () => {
+  function stubCompact(compact: boolean) {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: compact && query.includes('640'),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    return () => {
+      window.matchMedia = original;
+    };
+  }
+
+  it.each([
+    [true, 0],
+    [false, 1],
+  ] as const)('compact=%s: closing hands focus to the terminal %s time(s)', async (compact, expected) => {
+    const restore = stubCompact(compact);
+    try {
+      const { w, composer } = await mountComposer();
+      composer.setMode('docked');
+      await flushPromises();
+      await w.get('button[aria-label="Close the prompt panel"]').trigger('click');
+      await flushPromises();
+      expect(composer.mode).toBe('hidden');
+      expect(w.emitted('focus-terminal') ?? []).toHaveLength(expected);
+      w.unmount();
+    } finally {
+      restore();
+    }
+  });
+
+  it('a source submit leaves focus alone, even when the send closes the composer', async () => {
+    const { w, shells, settings, composer } = await mountComposer();
+    settings.submitEnterDelayMs = 0;
+    settings.closeComposerOnSend = true;
+    launcherContext!.open();
+    await flushPromises();
+    shells.register(sourceContext!.sessionKey, 'shell-1' as never);
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    sourceContext!.setDraft('hello');
+    await expect(sourceContext!.submit({ enter: true })).resolves.toBe(true);
+    await flushPromises();
+    expect(composer.mode).toBe('hidden');
+    expect(document.activeElement).toBe(outside);
+    expect(w.emitted('focus-terminal') ?? []).toHaveLength(0);
+    w.unmount();
+  });
+});

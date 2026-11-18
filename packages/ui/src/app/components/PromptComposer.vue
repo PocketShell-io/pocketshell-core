@@ -78,6 +78,7 @@ import { useComposerSend } from '../useComposerSend';
 import { useComposerClipboard } from '../useComposerClipboard';
 import { useComposerVisibility } from '../useComposerVisibility';
 import { registerDismissLayer } from '../extensions';
+import { useLayoutClass } from '../layoutClass';
 import { useComposerGeometry } from '../useComposerGeometry';
 
 const props = defineProps<{
@@ -160,8 +161,16 @@ function includeParked(remotePath: string): void {
   focusDraft();
 }
 
-/** Hand the keyboard to the terminal — the card's one outward announce. */
-const focusTerminal = (): void => emit('focus-terminal');
+/**
+ * Hand the keyboard to the terminal — the card's one outward announce. Not on
+ * a phone (#3128): focusing the terminal there raises the soft keyboard, and
+ * the keyboard resizes the remote terminal, so closing or sending would make
+ * the whole pane redraw. The keyboard stays as the user left it.
+ */
+const layoutClass = useLayoutClass();
+const focusTerminal = (): void => {
+  if (layoutClass.value !== 'compact') emit('focus-terminal');
+};
 
 /**
  * Send and the armed Discard moved whole to ../useComposerSend.ts.
@@ -288,7 +297,7 @@ const extensionContext = computed<ComposerExtensionContext>(() => {
       if (boundKey === key.value) caret.value = text.length;
     },
     submit: (options: { enter: boolean }) =>
-      boundKey === key.value ? onSubmit(options) : Promise.resolve(false),
+      boundKey === key.value ? onSubmit({ enter: options.enter, focus: false }) : Promise.resolve(false),
   };
 });
 

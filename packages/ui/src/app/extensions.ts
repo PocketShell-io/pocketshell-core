@@ -109,6 +109,7 @@ export interface ComposerExtensionContext {
    * Deliver the draft into the session's pane: `enter: true` is Send, `enter:
    * false` writes it without the submit key (Insert). Resolves whether it was
    * delivered; a failure leaves the draft and the "Not sent" banner, as Send does.
+   * It never moves the keyboard focus (no soft keyboard pops up on a phone).
    */
   submit(options: { enter: boolean }): Promise<boolean>;
 }
