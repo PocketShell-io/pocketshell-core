@@ -27,6 +27,7 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class {
   options: any = {}; cols = 80; rows = 24; element = document.createElement('div'); buffer = { active: { getLine: () => undefined } };
   loadAddon() {} open() {} onData() { return { dispose() {} }; } onKey() { return { dispose() {} }; }
   onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; } onBinary() { return { dispose() {} }; }
+  onRender() { return { dispose() {} }; } onCursorMove() { return { dispose() {} }; }
   attachCustomKeyEventHandler() {} registerLinkProvider() { return { dispose() {} }; } registerDecoration() {}
   parser = { registerOscHandler() { return { dispose() {} }; } }; unicode = { register() {}, activeVersion: '6' };
   dispose() {} focus() {} write() {} reset() {}
