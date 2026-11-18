@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Cdp, gotoAndWait, sleep } from './support/cdp';
+import { Cdp, warmBrowser, warmServer, gotoAndWait, sleep } from './support/cdp';
 
 /**
  * #3123 S4a in REAL Chromium: computed boxes (getBoundingClientRect) of the real
@@ -58,9 +58,10 @@ beforeAll(async () => {
   });
   await vite.listen();
   origin = `http://127.0.0.1:${(vite.httpServer!.address() as { port: number }).port}`;
+  await warmServer(origin);
   debugPort = await freePort();
   debugPort = await freePort();
-}, 60_000);
+}, 150_000);
 
 /** One Chromium at a time (a snap Chromium hands a second instance to the first). */
 const COARSE = 'primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1';
@@ -74,6 +75,7 @@ async function startChrome(pointer: string): Promise<void> {
     '--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`, '--remote-allow-origins=*', `--blink-settings=${pointer}`, 'about:blank',
   ], { stdio: 'ignore' });
+  await warmBrowser(await connect(debugPort), origin);
 }
 
 
@@ -129,7 +131,7 @@ const PHONES = [{ width: 360, height: 800 }, { width: 412, height: 915 }];
 const KB = 300;
 
 describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ width, height }) => {
-  beforeAll(() => startChrome(COARSE), 60_000);
+  beforeAll(() => startChrome(COARSE), 180_000);
   const at = (kb: number, shot: string) => ({ width, height, kb, shot: `${shot}-${width}${kb ? '-kb' : ''}` });
 
   it.each([0, KB])('OverlayPanel is the whole screen (keyboard inset %i)', async (kb) => {
@@ -144,12 +146,12 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.back.height).toBeGreaterThanOrEqual(48);
     expect(m.back.left).toBeLessThan(m.header.left + 24);
     expect(m.close).toBe(false);
-  }, 60_000);
+  }, 150_000);
 
   it('OverlayPanel opened inside a transformed host still covers the whole viewport (seen on device: it started below the panel toolbar)', async () => {
     const m = await run<{ panel: Box }>(at(0, 'overlay-in-host'), 'overlay-in-host', `() => ({ panel: box(document.querySelector('.overlay-panel')) })`);
     expect([m.panel.left, m.panel.top, m.panel.width, m.panel.height]).toEqual([0, 0, width, height]);
-  }, 60_000);
+  }, 150_000);
 
   it.each([0, KB])('CommandPalette is a bottom sheet, input at the bottom edge above the keyboard (inset %i)', async (kb) => {
     const m = await run<{ root: Box; input: Box; list: Box; items: Box[]; focused: boolean }>(at(kb, 'palette'), 'palette', `() => ({
@@ -165,7 +167,7 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.items.length).toBeGreaterThan(0);
     for (const item of m.items) expect(item.height).toBeGreaterThanOrEqual(48);
     expect(m.focused).toBe(false);
-  }, 60_000);
+  }, 150_000);
 
   it.each([0, KB])('PopupMenu is a bottom sheet with 48px rows and a scrim (inset %i)', async (kb) => {
     const m = await run<{ menu: Box; scrim: Box | null; items: Box[] }>(at(kb, 'menu'), 'menu', `() => ({
@@ -177,7 +179,7 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect([m.scrim!.width, m.scrim!.height]).toEqual([width, height]);
     expect(m.items.length).toBe(4);
     for (const item of m.items) expect(item.height).toBeGreaterThanOrEqual(48);
-  }, 60_000);
+  }, 150_000);
 
   it.each([0, KB])('NewSessionDialog: full-height sheet, one-line route labels and buttons that fit, no keyboard (inset %i)', async (kb) => {
     const m = await run<{
@@ -208,7 +210,7 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.list.height).toBeGreaterThan(96);
     expect(m.docX[0]).toBeLessThanOrEqual(m.docX[1]);
     expect(m.focused).toBe(false);
-  }, 60_000);
+  }, 150_000);
 
   it('NewSessionDialog: the focused New-folder field stays above the action bar with the keyboard up', async () => {
     const m = await run<{ field: Box; commit: Box; panelBottom: number }>(at(KB, 'newsession-field-kb'), 'newsession', `() => ({
@@ -220,7 +222,7 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.field.bottom, 'field not under the sticky bar').toBeLessThanOrEqual(m.commit.top + 1);
     expect(m.field.top).toBeGreaterThanOrEqual(0);
     expect(m.commit.bottom).toBeLessThanOrEqual(m.panelBottom);
-  }, 60_000);
+  }, 150_000);
 
   it('Settings > Keyboard: one "Keyboard shortcuts" row, then the editor with no horizontal overflow', async () => {
     const m = await run<{ rowH: number; collapsed: boolean; open: boolean; docX: number[]; railFits: boolean }>(
@@ -238,11 +240,11 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.open).toBe(true);
     expect(m.docX[0]).toBeLessThanOrEqual(m.docX[1]);
     expect(m.railFits).toBe(true);
-  }, 60_000);
+  }, 150_000);
 });
 
 describe('expanded / fine pointer output is unchanged at 1280x800', () => {
-  beforeAll(() => startChrome(FINE), 60_000);
+  beforeAll(() => startChrome(FINE), 180_000);
   const at = { fine: true, width: 1280, height: 800 };
 
   it('OverlayPanel: a centred dialog capped at 960, X close, no Back', async () => {
@@ -252,7 +254,7 @@ describe('expanded / fine pointer output is unchanged at 1280x800', () => {
     expect(m.panel.left).toBeCloseTo(160, -1);
     expect(m.back).toBe(false);
     expect(m.close).toBe(true);
-  }, 60_000);
+  }, 150_000);
 
   it('CommandPalette: 520 wide, top-centre at 10vh, input focused', async () => {
     const m = await run<{ root: Box; focused: boolean }>({ ...at, shot: 'palette-desktop' }, 'palette', `() => ({
@@ -260,7 +262,7 @@ describe('expanded / fine pointer output is unchanged at 1280x800', () => {
     expect(m.root.width).toBeCloseTo(520, -1);
     expect(m.root.top).toBeCloseTo(80, -1);
     expect(m.focused).toBe(true);
-  }, 60_000);
+  }, 150_000);
 
   it('PopupMenu: min-width 180, hangs off the anchor, no scrim', async () => {
     const m = await run<{ menu: Box; scrim: boolean }>({ ...at, shot: 'menu-desktop' }, 'menu', `() => ({
@@ -269,7 +271,7 @@ describe('expanded / fine pointer output is unchanged at 1280x800', () => {
     expect(m.menu.left).toBe(200);
     expect(m.menu.top).toBeGreaterThanOrEqual(300);
     expect(m.scrim).toBe(false);
-  }, 60_000);
+  }, 150_000);
 
   it('NewSessionDialog: full route labels on one line, search focused', async () => {
     const m = await run<{ labels: string[]; focused: boolean; width: number }>({ ...at, shot: 'newsession-desktop' }, 'newsession', `() => ({
@@ -279,5 +281,5 @@ describe('expanded / fine pointer output is unchanged at 1280x800', () => {
     expect(m.labels).toEqual(['Existing folder', 'New folder', 'Clone from GitHub']);
     expect(m.focused).toBe(true);
     expect(m.width).toBeCloseTo(720, -1);
-  }, 60_000);
+  }, 150_000);
 });

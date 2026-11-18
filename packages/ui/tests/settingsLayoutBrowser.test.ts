@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Cdp, gotoAndWait, sleep, waitForSelector } from './support/cdp';
+import { Cdp, warmBrowser, warmServer, gotoAndWait, sleep, waitForSelector } from './support/cdp';
 
 /**
  * #3139 G9: the Settings acceptance in REAL Chromium layout (jsdom has none).
@@ -64,13 +64,15 @@ beforeAll(async () => {
   });
   await vite.listen();
   origin = `http://127.0.0.1:${(vite.httpServer!.address() as { port: number }).port}`;
+  await warmServer(origin);
   debugPort = await freePort();
   profile = mkdtempSync(join(tmpdir(), 'settings-layout-'));
   chrome = spawn(findBrowser(), [
     '--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`, '--remote-allow-origins=*', 'about:blank',
   ], { stdio: 'ignore' });
-}, 60_000);
+  await warmBrowser(await connect(), origin);
+}, 180_000);
 
 afterAll(async () => {
   chrome?.kill('SIGKILL');

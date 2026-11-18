@@ -33,9 +33,19 @@ export class Cdp {
     });
   }
 
-  /** One evaluation, no retry. */
-  async evaluateOnce<T>(expression: string): Promise<T> {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  /**
+   * One evaluation, no retry. Bounded: a `Runtime.evaluate` issued while the page
+   * is navigating can be left unanswered when its execution context is replaced
+   * (measured: ~25s on the first navigation of a fresh Chromium), so an answer
+   * that does not come within `callTimeoutMs` is an error the callers retry.
+   */
+  async evaluateOnce<T>(expression: string, callTimeoutMs = 5_000): Promise<T> {
+    const r = await Promise.race([
+      this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }),
+      sleep(callTimeoutMs).then(() => {
+        throw new Error(`Runtime.evaluate unanswered after ${callTimeoutMs}ms`);
+      }),
+    ]);
     if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
     return r.result.result.value as T;
   }
@@ -81,14 +91,61 @@ let navigations = 0;
  * it. The URL carries a unique `_nav` token; ready means `location.search`
  * contains it, so a previous test's page can never satisfy the wait.
  */
-export async function gotoAndWait(cdp: Cdp, url: string, readySelector: string, timeoutMs = 45_000): Promise<void> {
-  navigations += 1;
-  const token = `${Date.now().toString(36)}-${navigations}`;
-  const target = `${url}${url.includes('?') ? '&' : '?'}_nav=${token}`;
-  await cdp.send('Page.navigate', { url: target });
-  await waitForExpression(
-    cdp,
-    `location.search.includes(${JSON.stringify(`_nav=${token}`)}) && document.readyState !== 'loading' && document.querySelector(${JSON.stringify(readySelector)})`,
-    timeoutMs,
-  );
+export async function gotoAndWait(cdp: Cdp, url: string, readySelector: string, timeoutMs = 90_000): Promise<void> {
+  // Re-navigate when a load wedges: under load Vite can answer a late-discovered
+  // dependency with "outdated optimized dep" / reload the graph mid-import, which
+  // leaves a page whose entry module threw and will never render. A fresh load
+  // (new token) recovers; waiting longer on the dead one never does.
+  const attempts = 3;
+  const perAttempt = Math.ceil(timeoutMs / attempts);
+  let last: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    navigations += 1;
+    const token = `${Date.now().toString(36)}-${navigations}`;
+    const target = `${url}${url.includes('?') ? '&' : '?'}_nav=${token}`;
+    try {
+      await cdp.send('Page.navigate', { url: target });
+      await waitForExpression(
+        cdp,
+        `location.search.includes(${JSON.stringify(`_nav=${token}`)}) && document.readyState !== 'loading' && document.querySelector(${JSON.stringify(readySelector)})`,
+        perAttempt,
+      );
+      return;
+    } catch (error) {
+      last = error;
+    }
+  }
+  throw last;
+}
+
+/**
+ * Pre-request the harness page and its entry module so Vite finishes its cold
+ * work (dependency discovery, first transforms) before any test clock starts.
+ * Measured: the browser's first document request took ~25s to be answered
+ * (Vite's cold HTML transform + dependency scan); on a loaded CI runner that
+ * exceeded the 45s navigation wait.
+ */
+export async function warmServer(origin: string, entry = '/main.ts'): Promise<void> {
+  // `Accept: text/html` matters: Vite only runs the (slow, cold) HTML transform and
+  // dependency scan for a navigation-style request, not for a bare fetch.
+  await fetch(`${origin}/?warm=1`, {
+    headers: { Accept: 'text/html,application/xhtml+xml', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'User-Agent': 'Mozilla/5.0 Chrome/130' },
+  }).then((r) => r.text());
+  await fetch(`${origin}${entry}`).then((r) => r.text());
+}
+
+/**
+ * The first `Page.navigate` of a freshly started Chromium can sit unanswered for
+ * ~25s (measured; it is the browser's first navigation, not Vite or the page).
+ * Pay that once, here, with a generous bound and OUTSIDE any test's clock, so the
+ * navigations the tests time are already on a warm browser.
+ */
+export async function warmBrowser(cdp: Cdp, origin: string, timeoutMs = 120_000): Promise<void> {
+  await Promise.race([
+    cdp.send('Page.navigate', { url: `${origin}/?warm=browser` }),
+    sleep(timeoutMs).then(() => {
+      throw new Error(`first Page.navigate unanswered after ${timeoutMs}ms`);
+    }),
+  ]);
+  await waitForExpression(cdp, `location.search.includes('warm=browser') && document.readyState === 'complete'`, timeoutMs);
 }
