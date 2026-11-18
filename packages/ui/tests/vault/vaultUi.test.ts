@@ -5,6 +5,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { KeyVaultStore, type VaultRememberRecord } from '@pocketshell/core';
 import { MemoryTransport } from '../../../../tests/keyVault/memoryTransport';
 import { passphraseStrength, provideKeyVault, requestVaultUnlock, type KeyVaultPlatform } from '../../src/app/keyVault';
+import { dismissTopLayer, openDismissLayerCount } from '../../src/app/extensions';
 import VaultUnlockGate from '../../src/app/components/vault/VaultUnlockGate.vue';
 import VaultSetupCard from '../../src/app/components/vault/VaultSetupCard.vue';
 import VaultResetFlow from '../../src/app/components/vault/VaultResetFlow.vue';
@@ -50,6 +51,21 @@ vi.setConfig({ testTimeout: 30_000 });
 afterEach(() => provideKeyVault(null));
 
 describe('VaultUnlockGate', () => {
+  it('platform Back (the dismiss layer) cancels the unlock and releases the layer (#3140)', async () => {
+    await vaultWith();
+    const before = openDismissLayerCount();
+    const gate = mount(VaultUnlockGate, { attachTo: document.body });
+    const ask = requestVaultUnlock();
+    await flushPromises();
+    expect(openDismissLayerCount()).toBe(before + 1);
+    expect(dismissTopLayer()).toBe(true);
+    expect(await ask).toBe(false);
+    await flushPromises();
+    expect(gate.find('[data-testid="vault-unlock-gate"]').exists()).toBe(false);
+    expect(openDismissLayerCount()).toBe(before);
+    gate.unmount();
+  });
+
   it('device Lock awaits native lease cleanup before manual Unlock and keeps the remembered record',async()=>{
     let finish!:()=>void;
     const onLock=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve;}));

@@ -44,6 +44,7 @@ export interface ComposerVisibilityDeps {
 export function useComposerVisibility(deps: ComposerVisibilityDeps): {
   openComposer: () => void;
   hideComposer: () => void;
+  backFromComposer: () => void;
   onToggleRail: () => void;
   typeInto: (text: string) => void;
   toggleExpanded: () => void;
@@ -204,6 +205,21 @@ export function useComposerVisibility(deps: ComposerVisibilityDeps): {
    * `Ctrl+Shift+↓` and the header button; a dismissal remembers the mode anyway,
    * so re-opening a maximized composer gets it back maximized.
    */
+  /**
+   * Platform Back (app.dismissLayers): the composer is the topmost surface, so
+   * Back puts it away first. Unlike Escape's hand-off it writes NOTHING to the
+   * shell: the draft stays in the store for the next visit, and no bytes go to
+   * the PTY. An open slash dropdown closes first, as with Escape.
+   */
+  function backFromComposer(): void {
+    if (slashOpen.value) {
+      slashDismissed.value = true;
+      return;
+    }
+    composer.parkAttachments(key.value);
+    composer.dismiss();
+  }
+
   function escapeLadder(): void {
     // The dropdown is the one thing more local than the panel: Escape closes the
     // thing you opened last, and picking a slash command is not a reason to lose
@@ -340,6 +356,7 @@ export function useComposerVisibility(deps: ComposerVisibilityDeps): {
   return {
     openComposer,
     hideComposer,
+    backFromComposer,
     onToggleRail,
     typeInto,
     toggleExpanded,

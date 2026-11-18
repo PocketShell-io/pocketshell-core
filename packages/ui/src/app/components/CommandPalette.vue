@@ -27,6 +27,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { PaletteCommand } from '../commandPalette';
 import { useCompact } from '../usePhoneSheet';
+import { useDismissLayer } from '../extensions';
 
 const props = defineProps<{
   /** The verbs on offer, in display order (the builder's order is the order). */
@@ -36,6 +37,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ close: [] }>();
+// Platform Back (app.dismissLayers) closes the palette like Esc does.
+useDismissLayer(() => emit('close'));
 
 // Compact: a bottom sheet (see the styles). Two behaviours change with it: the
 // input is not focused on open (a keyboard raised at once would cover the very

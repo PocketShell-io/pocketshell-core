@@ -33,5 +33,11 @@ export default defineConfig({
     root: PACKAGE_ROOT,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // Serial files, like the team's own local runs (`--no-file-parallelism`).
+    // Three suites each start a Vite dev server and a headless Chromium and
+    // give a cold page a fixed ~15s to render; run side by side on a busy
+    // runner the Files/Ports/Settings pages blew that budget and failed with
+    // null-element TypeErrors (the #3145 CI failure), so they must not race.
+    fileParallelism: false,
   },
 });
