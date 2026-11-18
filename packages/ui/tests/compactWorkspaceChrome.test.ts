@@ -196,6 +196,24 @@ describe('compact (phone) workspace chrome', () => {
     expect(document.body.querySelector('[role="dialog"][aria-label="Settings"]')).not.toBeNull();
   });
 
+  it('a host tool picked from the session list shows the tool even when it is already the open folder', async () => {
+    const { wrapper, router } = await mountWorkspace(390, '/host/hetzner/folder/~%2Fgit%2Falpha');
+    current = wrapper;
+    const hidden = () => (wrapper.find('aside.session-panel').attributes('style') ?? '').includes('display: none');
+    for (const round of [1, 2]) {
+      await wrapper.find('button[aria-label="Back to sessions"]').trigger('click');
+      await nextTick();
+      expect(hidden(), `round ${round}: the session list is up`).toBe(false);
+      await wrapper.find('[data-testid="session-tree-compact-header"] button[aria-label="More"]').trigger('click');
+      (document.body.querySelector('[data-testid="host-overflow-usage"]') as HTMLElement).click();
+      await flushPromises();
+      expect(router.currentRoute.value.params['folder'], `round ${round}`).toBe('::maintenance::');
+      // Round 2 re-picks the folder that is already open: the route does not
+      // change, so nothing else would take the list off the screen.
+      expect(hidden(), `round ${round}: the tool is in front, not the list`).toBe(true);
+    }
+  });
+
   it('keeps both halves mounted: panel <-> pane swaps without remounting the pane', async () => {
     const { wrapper } = await mountWorkspace(390, '/host/hetzner/folder/~%2Fgit%2Falpha');
     current = wrapper;

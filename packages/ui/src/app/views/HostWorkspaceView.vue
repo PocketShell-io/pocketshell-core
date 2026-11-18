@@ -384,6 +384,11 @@ const TOOL_OF_PANEL: Record<Exclude<HostPanel, 'settings'>, MaintenanceToolKind>
 function openPanel(name: HostPanel): void {
   if (name !== 'settings') {
     const host = String(route.params['name']);
+    // Compact: a tool picked from the session list is a request to SEE it. When
+    // the maintenance workspace is already the open folder the route does not
+    // change, so nothing else would take the list off the screen (the same
+    // reason onSelectFolder closes it explicitly).
+    closeNarrowPanel();
     openMaintenanceTool(host, TOOL_OF_PANEL[name]);
     void router.push({
       name: 'folder',
