@@ -1076,6 +1076,35 @@ describe('JS connection and session policy', () => {
     expect(controller.getSnapshot().selectedSession?.name).toBe('alpha');
   });
 
+  it('keeps the background phase through a session refresh, so the return restores live input (pocketshell#3160)', async () => {
+    // A listing that runs while the app is in the background (the session
+    // panel's poll, a pane's re-join, a refresh racing a quick app switch)
+    // used to overwrite `background` with `listing` (and a failed one with
+    // `live`/`error`). The return then never ran: the native grace close was
+    // never cancelled and the stuck `listing` phase refused every keystroke.
+    for (const failing of [false, true]) {
+      const capability = new FakeCapability();
+      let now = 1000;
+      const { controller } = controllerFor(capability, trustStore(PIN), { now: () => now });
+      controllers.push(controller);
+      await connectAndList(controller);
+      await controller.attachSession(session('alpha'));
+      const originalConnection = controller.getSnapshot().connectionId;
+
+      await controller.enterBackground(10_000);
+      if (failing) capability.nextExecError = new Error('listing failed');
+      await controller.refreshSessions();
+      expect(controller.getSnapshot().phase).toBe('background');
+
+      now += 5000;
+      await controller.returnToForeground();
+      expect(controller.getSnapshot().phase).toBe('live');
+      expect(controller.getSnapshot().connectionId).toBe(originalConnection);
+      expect(capability.connectCalls).toHaveLength(1);
+      expect((await controller.writeTerminalBytes(session('alpha'), new TextEncoder().encode('x'))).ok).toBe(true);
+    }
+  });
+
   it('supports a ten-minute background grace by default and clamps longer requests to the configured cap', async () => {
     const capability = new FakeCapability();
     let now = 1_000;

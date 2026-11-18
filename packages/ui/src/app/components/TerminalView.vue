@@ -237,6 +237,24 @@ const pane = new TerminalPane({
 const joinPending = pane.joinPending;
 /** The host no longer has this session ("no session named"): show the ended state (#3141). */
 const sessionEnded = pane.sessionEnded;
+/** The last requested join failed: say why and offer Reconnect (pocketshell#3160). */
+const openFailed = pane.openFailed;
+const reconnecting = ref(false);
+/**
+ * One tap: bring the host link back if it is down, then join this tab's
+ * session again. A failure leaves the reason and the button on screen.
+ */
+async function reconnectPane(): Promise<void> {
+  if (reconnecting.value) return;
+  reconnecting.value = true;
+  try {
+    const connection = useConnectionStore();
+    if (connection.state !== 'connected') await connection.reconnect();
+    await pane.open();
+  } finally {
+    reconnecting.value = false;
+  }
+}
 const router = useRouter();
 function backToSessions(): void {
   const name = useConnectionStore().activeHost?.name;
@@ -966,6 +984,12 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
     <div v-if="sessionEnded" class="join-veil session-ended" data-testid="session-ended" role="status">
       <span>This session has ended.</span>
       <button type="button" class="btn" data-testid="session-ended-back" @click="backToSessions">Back to sessions</button>
+    </div>
+    <div v-if="openFailed && !joinPending" class="join-veil session-ended" data-testid="pane-open-failed" role="alert">
+      <span>Could not open this session: {{ openFailed }}</span>
+      <button type="button" class="btn" data-testid="pane-reconnect" :disabled="reconnecting" @click="reconnectPane">
+        {{ reconnecting ? 'Reconnecting…' : 'Reconnect' }}
+      </button>
     </div>
     <div v-if="joinPending" class="join-veil" aria-live="polite">
       <AppIcon name="refresh" :size="16" class="spin" />
