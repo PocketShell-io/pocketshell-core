@@ -609,6 +609,8 @@ function cancelNameEdit(): void {
   /* Scrolls rather than clips: with the keyboard up the parts no longer fit, and
      clipped flex children used to paint over each other (seen on device). */
   overflow-y: auto;
+  /* A focused field scrolls to just above the sticky action bar, not under it. */
+  scroll-padding-bottom: 13rem;
 }
 .new-session.compact .browser,
 .new-session.compact .repos {

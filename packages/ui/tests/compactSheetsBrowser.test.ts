@@ -235,6 +235,18 @@ describe.each(PHONES)('compact sheets at $width x $height, coarse pointer', ({ w
     expect(m.focused).toBe(false);
   }, 60_000);
 
+  it('NewSessionDialog: the focused New-folder field stays above the action bar with the keyboard up', async () => {
+    const m = await run<{ field: Box; commit: Box; panelBottom: number }>(at(KB, 'newsession-field-kb'), 'newsession', `() => ({
+      field: box(document.querySelector('.field .text-input')), commit: box(document.querySelector('.commit')),
+      panelBottom: document.querySelector('.overlay-panel').getBoundingClientRect().bottom })`,
+      `(() => { document.querySelector('.route:nth-child(2)').click();
+        return new Promise((ok) => setTimeout(() => { document.documentElement.style.setProperty('--ps-inset-keyboard', '${KB}px');
+          setTimeout(() => { document.querySelector('.field .text-input').focus(); setTimeout(ok, 300); }, 300); }, 300)); })()`);
+    expect(m.field.bottom, 'field not under the sticky bar').toBeLessThanOrEqual(m.commit.top + 1);
+    expect(m.field.top).toBeGreaterThanOrEqual(0);
+    expect(m.commit.bottom).toBeLessThanOrEqual(m.panelBottom);
+  }, 60_000);
+
   it('Settings > Keyboard: one "Keyboard shortcuts" row, then the editor with no horizontal overflow', async () => {
     const m = await run<{ rowH: number; collapsed: boolean; open: boolean; docX: number[]; railFits: boolean }>(
       at(0, 'settings-shortcuts'), 'settings', `() => {
