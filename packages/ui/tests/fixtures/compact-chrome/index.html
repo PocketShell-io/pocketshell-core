@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>compact chrome harness</title>
+    <style>
+      /* AppRoot's global block (app/AppRoot.vue), restated: the harness mounts the
+         workspace without the gates AppRoot also renders. */
+      * { box-sizing: border-box; }
+      html, body, #app { height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -53,6 +53,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type VNode } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { registerWorkspaceFocus, unregisterWorkspaceFocus } from '../workspaceFocus';
+import {
+  registerTabActions,
+  tabActionRowsFor,
+  unregisterTabActions,
+  type TabActionRow,
+} from '../workspaceTabActions';
 import { useConnectionStore } from '../stores/connection';
 import { useSessionsStore } from '../stores/sessions';
 import { useProjectsStore } from '../stores/projects';
@@ -641,6 +647,23 @@ useWorkspaceChords({
   beginRename,
   closeTab: closeActiveTab,
 });
+
+/**
+ * The front tab's actions for the compact host overflow sheet (the host view
+ * owns the ⋮ but not the tab model — workspaceTabActions.ts). The same
+ * handlers the tab menu and the `×` use: Stop arms the named confirm dialog.
+ */
+const tabActionRows = (): readonly TabActionRow[] =>
+  tabActionRowsFor(activeTab.value, {
+    rename: beginRename,
+    stop: (session) => {
+      stopping.value = session;
+    },
+    closeFiles: closeFilesTab,
+    closeTool: onToolClose,
+  });
+onMounted(() => registerTabActions(tabActionRows));
+onBeforeUnmount(() => unregisterTabActions(tabActionRows));
 
 /**
  * Whether the terminal should withhold printable keystrokes instead of sending

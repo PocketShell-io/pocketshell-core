@@ -24,7 +24,7 @@
 // fresh while the ports overlay is open.
 import { computed } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
-import { HOST_PANEL_ITEMS, type HostPanel, type HostPanelItem } from '../hostPanels';
+import { HOST_PANEL_ITEMS, hostPanelTitle, type HostPanel, type HostPanelItem } from '../hostPanels';
 
 const props = withDefaults(
   defineProps<{ autoForward?: boolean; forwardCount?: number }>(),
@@ -42,13 +42,7 @@ const emit = defineEmits<{ select: [panel: HostPanel] }>();
  * word: the engine ("auto-forward on") and, when ports are live, the count.
  */
 function title(item: HostPanelItem): string {
-  if (item.panel !== 'ports') return item.label;
-  const marks: string[] = [];
-  if (props.autoForward) marks.push('auto-forward on');
-  if (props.forwardCount > 0) {
-    marks.push(`${props.forwardCount} ${props.forwardCount === 1 ? 'port' : 'ports'}`);
-  }
-  return marks.length > 0 ? `${item.label} — ${marks.join(', ')}` : item.label;
+  return hostPanelTitle(item, props);
 }
 
 /** Three digits do not fit a 10px pill; the cap keeps the mark a mark. */

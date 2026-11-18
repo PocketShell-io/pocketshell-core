@@ -88,6 +88,9 @@ import type { SessionSummary } from '@pocketshell/core';
 import { useFolderMenu } from '../useFolderMenu';
 import { useFolderStop } from '../useFolderStop';
 import CrashWarningBanner from './CrashWarningBanner.vue';
+import HostOverflowMenu from './HostOverflowMenu.vue';
+import type { Box } from '@pocketshell/core/shared/popupPlacement';
+import { useLayoutClass } from '../layoutClass';
 import SessionListErrorBanner from './SessionListErrorBanner.vue';
 import { useWarningsStore } from '../stores/warnings';
 import { useSessionTreePoll } from '../useSessionTreePoll';
@@ -184,6 +187,20 @@ const settings = useSettingsStore();
  * a session in the wrong directory. Held as one object, they cannot.
  */
 const creating = ref<{ startIn: string | null } | null>(null);
+
+/**
+ * Compact (phone) header: back, refresh, new session and the overflow (⋮) —
+ * four 48px controls instead of the strip of nine icon squares. Everything the
+ * strip held beyond those (Ports, Usage, Monitor, Quick actions, Settings)
+ * lives in the overflow sheet as labelled rows.
+ */
+const layoutClass = useLayoutClass();
+const compact = computed(() => layoutClass.value === 'compact');
+const overflow = ref<{ anchor: Box; el: HTMLElement } | null>(null);
+function openOverflow(e: MouseEvent): void {
+  const el = e.currentTarget as HTMLElement;
+  overflow.value = { anchor: el.getBoundingClientRect(), el };
+}
 
 /**
  * The host overlays used to be an overflow menu — Ports and Usage parked behind
@@ -439,10 +456,54 @@ defineExpose({ openCreate });
 </script>
 
 <template>
-  <div class="tree">
+  <div class="tree" :class="{ 'tree-compact': compact }">
     <!-- The `SESSIONS` word is gone, and its width is what paid for the host
          actions arriving here. See the header strip below. -->
-    <div class="tree-header">
+    <div v-if="compact" class="tree-header compact" data-testid="session-tree-compact-header">
+      <button class="icon-btn" title="Back to hosts" aria-label="Back to hosts" @click="emit('back')">
+        <AppIcon name="arrow-left" :size="16" />
+      </button>
+      <span class="header-title">{{ connection.activeHost?.name ?? 'Sessions' }}</span>
+      <div class="header-actions">
+        <button
+          class="icon-btn"
+          :disabled="sessions.loading"
+          title="Refresh"
+          aria-label="Refresh"
+          @click="onRefresh"
+        >
+          <AppIcon name="refresh" :size="16" :class="{ spin: sessions.loading }" />
+        </button>
+        <button
+          class="icon-btn"
+          title="New session in any folder"
+          aria-label="New session in any folder"
+          @click="creating = { startIn: defaultStartIn }"
+        >
+          <AppIcon name="plus" :size="16" />
+        </button>
+        <button
+          class="icon-btn"
+          title="More"
+          aria-label="More"
+          aria-haspopup="dialog"
+          @click="openOverflow"
+        >
+          <AppIcon name="more-vertical" :size="16" />
+        </button>
+      </div>
+      <HostOverflowMenu
+        v-if="overflow"
+        :anchor="overflow.anchor"
+        :ignore="[overflow.el]"
+        :auto-forward="autoForward"
+        :forward-count="forwardCount"
+        @close="overflow = null"
+        @select="openPanel"
+        @palette="emit('palette')"
+      />
+    </div>
+    <div v-else class="tree-header">
       <button class="icon-btn" title="Hide session panel" @click="emit('collapse')">
         <!-- VS Code's "toggle sidebar" mark: truer to the action than a
              hamburger, which promises a menu. -->
@@ -823,6 +884,26 @@ defineExpose({ openCreate });
   flex: 0 0 auto;
   padding: 0 var(--sp-1) 0 var(--sp-2);
   border-bottom: 1px solid var(--border);
+}
+/* The 296px floor pins the desktop strip's nine squares; compact has none. */
+.tree.tree-compact {
+  min-width: 0;
+}
+/* Compact: the strip's nine-square minimum width and asymmetric padding are
+   desktop arithmetic; on a phone the header is back, the host's name, and the
+   action run. */
+.tree-header.compact {
+  padding: 0 var(--sp-1);
+}
+.header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-400);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
 }
 .header-actions {
   display: flex;

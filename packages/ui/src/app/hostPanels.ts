@@ -54,3 +54,21 @@ export const HOST_PANEL_ITEMS: readonly HostPanelItem[] = [
   { panel: 'usage', label: 'Provider usage', icon: 'bar-chart-2' },
   { panel: 'monitor', label: 'Host monitor', icon: 'activity' },
 ];
+
+/**
+ * A panel button's word, extended while the Ports indicator is up. One
+ * wording for every surface that shows the item — the header/rail buttons'
+ * tooltips and the compact overflow sheet's rows — so they cannot drift.
+ */
+export function hostPanelTitle(
+  item: HostPanelItem,
+  state: { autoForward: boolean; forwardCount: number },
+): string {
+  if (item.panel !== 'ports') return item.label;
+  const marks: string[] = [];
+  if (state.autoForward) marks.push('auto-forward on');
+  if (state.forwardCount > 0) {
+    marks.push(`${state.forwardCount} ${state.forwardCount === 1 ? 'port' : 'ports'}`);
+  }
+  return marks.length > 0 ? `${item.label} — ${marks.join(', ')}` : item.label;
+}

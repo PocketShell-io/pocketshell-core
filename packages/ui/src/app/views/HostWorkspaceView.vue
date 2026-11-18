@@ -46,6 +46,9 @@ import PopupMenu from '../components/PopupMenu.vue';
 import SessionTree from '../components/SessionTree.vue';
 import CommandPalette from '../components/CommandPalette.vue';
 import HostPanelButtons from '../components/HostPanelButtons.vue';
+import CompactAppBar from '../components/CompactAppBar.vue';
+import HostOverflowMenu from '../components/HostOverflowMenu.vue';
+import FolderSwitcherList from '../components/FolderSwitcherList.vue';
 import LinkLostBanner from '../components/LinkLostBanner.vue';
 import { type HostPanel } from '../hostPanels';
 import { useQuickActions } from '../useQuickActions';
@@ -59,6 +62,7 @@ import { editingTarget } from '../editingTarget';
 import SettingsView from './SettingsView.vue';
 import {
   MAINTENANCE_ROOT,
+  isMaintenanceFolder,
   openMaintenanceTool,
   type MaintenanceToolKind,
 } from '../maintenance';
@@ -67,6 +71,8 @@ import type { SessionDirectory } from '../sessionTree';
 import { usePaneWidth } from '../usePaneWidth';
 import { useWorkspaceRootsBinding } from '../stores/workspaceRoots';
 import { useNarrowWorkspace } from '../useNarrowWorkspace';
+import { useLayoutClass } from '../layoutClass';
+import { useActiveTabActions } from '../workspaceTabActions';
 
 const route = useRoute();
 const router = useRouter();
@@ -239,6 +245,15 @@ const { layout, shown, onShowPanel, onCollapsePanel, closeNarrowPanel } = useNar
 useWorkspaceRootsBinding();
 
 /**
+ * Compact (phone) chrome. The 36px icon rail is not drawn at all there: its
+ * jobs moved to the app bar (back, the title as folder switcher, ⋮) so the
+ * terminal gets the width back. Everything below that branches on `compact`
+ * only swaps the PRESENTATION around the same handlers.
+ */
+const layoutClass = useLayoutClass();
+const compact = computed(() => layoutClass.value === 'compact');
+
+/**
  * The panel's folder rows, flat and in draw order, for the `Ctrl+↑`/`Ctrl+↓`
  * chords below, plus the switcher's root sections. `allFolders` is the same
  * walk BEFORE the quick search cuts it — the chord and the switcher walk what
@@ -300,7 +315,7 @@ function onSelectFolder(folder: SessionDirectory, session?: string): void {
  */
 const switcherBtn = ref<HTMLButtonElement | null>(null);
 /** Open state; carries the anchor box snapshotted from the rail button. */
-const switcher = ref<{ anchor: Box } | null>(null);
+const switcher = ref<{ anchor: Box; el?: HTMLElement } | null>(null);
 
 function toggleSwitcher(): void {
   if (switcher.value) {
@@ -321,6 +336,20 @@ function pickFolder(dir: SessionDirectory): void {
   switcher.value = null;
   onSelectFolder(dir);
 }
+
+/* ── Compact app bar ──────────────────────────────────────────────────────
+ * The bar's title names the open folder and is the switcher's trigger: the
+ * SAME list the rail's button opens, as a bottom sheet instead of a menu
+ * hung off a 28px anchor. ← goes back to the session list (the panel over the
+ * still-mounted pane), and ⋮ opens the host tools. */
+const compactOverflow = ref<{ anchor: Box; el: HTMLElement } | null>(null);
+const tabActions = useActiveTabActions();
+
+const barTitle = computed(() => {
+  if (isMaintenanceFolder(activeFolder.value)) return 'Maintenance';
+  const key = activeFolder.value;
+  return folders.value.find((dir) => dir.key === key)?.label ?? key ?? 'Sessions';
+});
 
 /**
  * Live sessions on the host, for the button's tooltip — the one place the
@@ -355,6 +384,11 @@ const TOOL_OF_PANEL: Record<Exclude<HostPanel, 'settings'>, MaintenanceToolKind>
 function openPanel(name: HostPanel): void {
   if (name !== 'settings') {
     const host = String(route.params['name']);
+    // Compact: a tool picked from the session list is a request to SEE it. When
+    // the maintenance workspace is already the open folder the route does not
+    // change, so nothing else would take the list off the screen (the same
+    // reason onSelectFolder closes it explicitly).
+    closeNarrowPanel();
     openMaintenanceTool(host, TOOL_OF_PANEL[name]);
     void router.push({
       name: 'folder',
@@ -527,6 +561,17 @@ function onBack(): void {
       </span>
     </p>
 
+    <!-- Compact: the app bar stands in for the rail (v-if, like the rail —
+         one navigation row, never both). Only over an open folder's pane; the
+         session list (the `panel` layout) carries its own header. -->
+    <CompactAppBar
+      v-if="compact && layout === 'pane'"
+      :title="barTitle"
+      @back="onShowPanel"
+      @switcher="(anchor, el) => (switcher = { anchor, el })"
+      @overflow="(anchor, el) => (compactOverflow = { anchor, el })"
+    />
+
     <div class="body">
       <!-- Collapsed: a slim rail, not nothing. With the topbar gone, a
            zero-width collapse would take the expand toggle (and with it every
@@ -534,7 +579,7 @@ function onBack(): void {
            and back one click away and still returns ~90% of the panel's width
            to the terminal. v-if, not v-show — it must never match a selector
            while the expanded header's twin buttons do. -->
-      <aside v-if="shown.rail" class="collapsed-rail">
+      <aside v-if="shown.rail && !compact" class="collapsed-rail">
         <button class="icon-btn" title="Show session panel" @click="onShowPanel">
           <AppIcon name="panel-left" :size="14" />
         </button>
@@ -587,46 +632,31 @@ function onBack(): void {
       <PopupMenu
         v-if="switcher"
         :anchor="switcher.anchor"
-        :ignore="[switcherBtn]"
+        :ignore="[switcher.el ?? switcherBtn]"
         label="Sessions"
         @close="switcher = null"
       >
-        <ul>
-          <!-- One head per root, one item per folder: the panel's two levels,
-               in the panel's order. A root holding no folders is skipped — its
-               header is a label over rows that are not there, and a switcher
-               item you cannot switch to is noise (the expanded panel, which
-               can explain an empty registered root in words, still draws it). -->
-          <template v-for="root in roots" :key="root.key">
-            <li v-if="root.directories.length" class="menu-head switch-root">
-              {{ root.key }}
-            </li>
-            <li v-for="dir in root.directories" :key="dir.key">
-              <button
-                class="menu-item switch-item"
-                :class="{ current: dir.key === activeFolder }"
-                @click="pickFolder(dir)"
-              >
-                <!-- The panel row's two marks, same meanings: the dot says
-                     something live is in here, the check says this is the
-                     workspace already on screen. -->
-                <span class="dot" :class="{ active: dir.active }" />
-                <span class="switch-label">{{ dir.label }}</span>
-                <span v-if="dir.rows.length > 1" class="switch-count muted">
-                  {{ dir.rows.length }}
-                </span>
-                <AppIcon
-                  v-if="dir.key === activeFolder"
-                  name="check"
-                  :size="14"
-                  class="current-check"
-                />
-              </button>
-            </li>
-          </template>
-          <li v-if="!folders.length" class="menu-head switch-root">no sessions</li>
-        </ul>
+        <FolderSwitcherList
+          :roots="roots"
+          :folders="folders"
+          :active-folder="activeFolder"
+          @pick="pickFolder"
+        />
       </PopupMenu>
+
+      <!-- Compact: the host tools. A PopupMenu like the switcher above — a bottom
+           sheet under a finger (usePopupSheet), an anchored menu under a mouse. -->
+      <HostOverflowMenu
+        v-if="compactOverflow"
+        :anchor="compactOverflow.anchor"
+        :ignore="[compactOverflow.el]"
+        :auto-forward="autoFwd"
+        :forward-count="fwdCount"
+        :tab-actions="tabActions"
+        @close="compactOverflow = null"
+        @select="openPanel"
+        @palette="paletteOpen = true"
+      />
 
       <!-- Persistent session panel: always mounted, never navigated away from.
            v-show, not v-if — collapsing must not cost the tree its disclosure
@@ -752,52 +782,6 @@ function onBack(): void {
   padding: var(--sp-1);
   background: var(--surface);
   border-right: 1px solid var(--border);
-}
-/* The switcher menu's own register, on top of PopupMenu's `.menu-item`. The
-   root head is a PATH (`~/git`), not a label — uppercasing it would spell the
-   directory wrong, so it opts out of the menu-head transform the way the
-   panel's own `path-prefix` keeps `~/` in its lower-case voice. */
-.switch-root {
-  text-transform: none;
-  letter-spacing: 0;
-}
-/* The panel row's marks at menu size: the same 8px dot with the same two
-   states (grey quiet, green something-live), and a label that ellipsises
-   rather than pushes the count and check off the menu. */
-.switch-item .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--fg-muted);
-  flex: none;
-}
-.switch-item .dot.active {
-  background: var(--success);
-}
-.switch-label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Count hugs its label the way the panel's row count does, and the check —
-   the open workspace's mark — takes the far end. */
-.switch-count {
-  flex: none;
-  font-size: var(--fs-200);
-}
-.current-check {
-  margin-left: auto;
-  color: var(--accent);
-  flex: none;
-}
-.switch-item.current {
-  background: var(--state-selected);
-}
-.switch-item.current .switch-label {
-  color: var(--accent);
-  font-weight: var(--fw-medium);
 }
 /* Transparent at rest: the session panel's own 1px right border is the visual
    seam, and the 4px --bg band this used to paint read as a dark gutter

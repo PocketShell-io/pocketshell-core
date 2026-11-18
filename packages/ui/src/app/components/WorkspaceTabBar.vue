@@ -8,7 +8,7 @@
 // Scoped styles do not cross a component boundary, so every rule this markup
 // uses is carried here from FolderWorkspaceView.vue's stylesheet; the parent
 // keeps only the rules for the body it still renders.
-import { ref, type VNode } from 'vue';
+import { computed, ref, type VNode } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
 import PopupMenu from './PopupMenu.vue';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
@@ -16,6 +16,7 @@ import { agentMark } from '@pocketshell/core/shared/agentBadge';
 import { canDropTabAt, reorderTabs, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import { maintenanceToolDefFor } from '../maintenance';
 import { useStripDrag } from '../useStripDrag';
+import { useLayoutClass } from '../layoutClass';
 
 const props = defineProps<{
   /** The bar, in draw order — session tabs first, then the Files tabs. */
@@ -80,6 +81,13 @@ const props = defineProps<{
  * item arms the stop, a drag commits a ranking, and the `+` menu's two items
  * open the launch dialog and mint a Files tab.
  */
+// Compact (phone): the strip is scrollable and touch-sized, with no `×` — a 12px
+// glyph beside the label is a mis-tap that opens the Stop dialog. Rename, Stop
+// and Close are on the host overflow sheet (workspaceTabActions.ts) and, where
+// the pointer can right-click, the tab menu.
+const layoutClass = useLayoutClass();
+const compact = computed(() => layoutClass.value === 'compact');
+
 const emit = defineEmits<{
   select: [tab: WorkspaceTab];
   beginRename: [tab: WorkspaceTab];
@@ -331,7 +339,7 @@ function onRenameInput(event: Event): void {
        the placeholder state ITSELF once a folder has been picked — a pane
        that says "select a folder" while a folder is selected, which is not a
        destination anyone navigates to on purpose. -->
-  <header class="folder-bar">
+  <header class="folder-bar" :class="{ compact }">
     <nav class="tabs" @dragend="onTabDragEnd">
       <template v-for="(tab, i) in tabs" :key="tab.id">
         <!-- The rename field REPLACES the tab in place rather than opening a
@@ -370,7 +378,7 @@ function onRenameInput(event: Event): void {
                 ? (maintenanceToolDefFor(tab.id)?.description ?? 'Maintenance')
                 : 'File browser'
           "
-          draggable="true"
+          :draggable="!compact"
           @click="emit('select', tab)"
           @dblclick="emit('beginRename', tab)"
           @contextmenu.prevent="openTabMenu(tab, $event)"
@@ -421,33 +429,37 @@ function onRenameInput(event: Event): void {
                this app spawned, and htop is trivially open again from the
                same button. The word is Close, never Stop — the kill word
                stays reserved for the user's sessions. -->
-          <span
-            v-if="tab.kind === 'session'"
-            class="tab-close"
-            title="Stop this session"
-            @click.stop="askStopTab(tab)"
-            @dblclick.stop
-          >
-            <AppIcon name="close" :size="12" />
-          </span>
-          <span
-            v-else-if="tab.kind === 'tool'"
-            class="tab-close"
-            title="Close this tool"
-            @click.stop="emit('closeTool', tab)"
-            @dblclick.stop
-          >
-            <AppIcon name="close" :size="12" />
-          </span>
-          <span
-            v-else-if="tab.kind === 'files'"
-            class="tab-close"
-            title="Close this Files tab"
-            @click.stop="emit('closeFiles', tab.id)"
-            @dblclick.stop
-          >
-            <AppIcon name="close" :size="12" />
-          </span>
+          <!-- Compact: no `×` at all (see `compact` in the script); the same
+               three actions are on the host overflow sheet. -->
+          <template v-if="!compact">
+            <span
+              v-if="tab.kind === 'session'"
+              class="tab-close"
+              title="Stop this session"
+              @click.stop="askStopTab(tab)"
+              @dblclick.stop
+            >
+              <AppIcon name="close" :size="12" />
+            </span>
+            <span
+              v-else-if="tab.kind === 'tool'"
+              class="tab-close"
+              title="Close this tool"
+              @click.stop="emit('closeTool', tab)"
+              @dblclick.stop
+            >
+              <AppIcon name="close" :size="12" />
+            </span>
+            <span
+              v-else-if="tab.kind === 'files'"
+              class="tab-close"
+              title="Close this Files tab"
+              @click.stop="emit('closeFiles', tab.id)"
+              @dblclick.stop
+            >
+              <AppIcon name="close" :size="12" />
+            </span>
+          </template>
         </button>
       </template>
     </nav>
@@ -607,6 +619,27 @@ function onRenameInput(event: Event): void {
   padding: 0 var(--sp-3) 0 0;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+/* Compact: the strip is the tabbar-height row (44px under a coarse pointer, the
+   token's own value), and the icon tabs (`+`, capture, VS Code) take the
+   token's hit width. The tabs scroll sideways rather than wrap, as before. */
+.folder-bar.compact {
+  height: var(--tabbar-h);
+  gap: var(--sp-1);
+  padding-right: var(--sp-1);
+}
+.folder-bar.compact .tabs {
+  /* Touch scrolling: pan along the strip; the drag-reorder is off here. */
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+  padding-left: var(--sp-1);
+}
+.folder-bar.compact .tab.add,
+.folder-bar.compact .tab.capture-open,
+.folder-bar.compact .tab.vscode-open {
+  min-width: var(--hit-min);
+  justify-content: center;
+  padding: 0;
 }
 /* Underline tabs, not Android's filled segmented control: a solid cyan
    segment at 13px is heavy for a mouse UI.
