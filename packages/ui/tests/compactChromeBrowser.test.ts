@@ -185,6 +185,10 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
     for (const b of bar) expect(b.h, `app bar ${b.label}`).toBeGreaterThanOrEqual(48);
     expect(bar[0]!.w).toBeGreaterThanOrEqual(48);
     expect(bar[2]!.w).toBeGreaterThanOrEqual(48);
+    for (const b of [...bar, ...tabs]) {
+      if (b.cls.includes('tab') && !b.cls.includes('add')) continue; // tabs scroll; the strip itself must fit
+      expect(b.x + b.w, `${b.label} right`).toBeLessThanOrEqual(width);
+    }
 
     await cdp.evaluate("document.querySelector('button[aria-label=\"More\"]').click()");
     await new Promise((ok) => setTimeout(ok, 200));
@@ -205,6 +209,21 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
     for (const b of header) {
       expect(b.w, b.label).toBeGreaterThanOrEqual(48);
       expect(b.h, b.label).toBeGreaterThanOrEqual(48);
+    }
+    // Nothing in the header may spill past the viewport (a header gear at
+    // x=424 on a 412 phone once made Settings unreachable): every control sits
+    // inside [0, width], and Settings is a labelled row behind the overflow.
+    for (const b of header) {
+      expect(b.x, `${b.label} left`).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w, `${b.label} right`).toBeLessThanOrEqual(width);
+    }
+    await cdp.evaluate("document.querySelector('[data-testid=\"session-tree-compact-header\"] button[aria-label=\"More\"]').click()");
+    await new Promise((ok) => setTimeout(ok, 200));
+    const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .sheet-row');
+    expect(rows.map((r) => r.label)).toContain('Settings');
+    for (const r of rows) {
+      expect(r.x).toBeGreaterThanOrEqual(0);
+      expect(r.x + r.w).toBeLessThanOrEqual(width);
     }
     const [panel] = await boxes(cdp, 'aside.session-panel');
     expect(panel!.w).toBe(width);
