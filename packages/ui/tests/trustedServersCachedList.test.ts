@@ -35,8 +35,9 @@ describe('cached trusted server list (#3137)',()=>{
     const w=mount(TrustedServersSection);await flushPromises();
     expect(w.text()).toContain('Cached box');
     expect(w.find('[data-testid="trusted-servers-stale"]').exists()).toBe(true);
-    const indicator=w.get('[data-testid="servers-refreshing"]');
-    expect(indicator.text()).toContain('Checking your Google account');
+    // #3189: the account check runs behind the rows, with no blocking text.
+    expect(w.text()).not.toContain('Checking your Google account');
+    expect(w.find('[data-testid="servers-refreshing"]').exists()).toBe(false);
     expect(w.get('[data-testid="trusted-server-connect"]').attributes('disabled')).toBeUndefined();
     w.unmount();
   });
@@ -62,12 +63,14 @@ describe('cached trusted server list (#3137)',()=>{
     expect(readCachedServers(EMAIL)).toBeNull();
     w.unmount();
   });
-  it('a refresh that finds no signed-in account drops the cached list',async()=>{
+  it('a refresh that finds no signed-in account keeps the cached list and asks to sign in again (#3189)',async()=>{
     writeCachedServers(EMAIL,'google:orin',[cached]);
     const finish=pendingPrepare();
     const w=mount(TrustedServersSection);await flushPromises();
     finish(null);await flushPromises();
-    expect(w.text()).not.toContain('Cached box');expect(readCachedServers(EMAIL)).toBeNull();w.unmount();
+    expect(w.text()).toContain('Cached box');
+    expect(w.find('[data-testid="server-reauth"]').exists()).toBe(true);
+    expect(readCachedServers(EMAIL)!.servers.map(s=>s.hostAlias)).toEqual(['Cached box']);w.unmount();
   });
   it('never shows a cache that belongs to another remembered email',async()=>{
     writeCachedServers('other@example.test','google:other',[mk('d','Other box','google:other')]);

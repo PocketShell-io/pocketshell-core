@@ -59,6 +59,7 @@ import GatewayDialErrorActions from '../components/GatewayDialErrorActions.vue';
 import HostRowDetail from '../components/HostRowDetail.vue';
 import TrustedServersSection from '../components/TrustedServersSection.vue';
 import { useKeyVault } from '../keyVault';
+import { accountSyncState } from '../accountSyncState';
 import { openTrustedServerWorkspace } from '../trustedServerWorkspace';
 import { useSessionsStore } from '../stores/sessions';
 import SettingsView from './SettingsView.vue';
@@ -218,10 +219,30 @@ const defaultMissing = computed(
 
 const accountSignedIn = computed(() => sync.status?.loggedIn === true);
 const accountEmail = computed(() => sync.status?.email || 'Signed in');
+/**
+ * The background account sync on the chip (#3189), trusted-account mode only
+ * (Android): a subtle pulse while it runs, "Not synced · retry" when it failed
+ * (a tap retries at once), "Signed out" when the sign-in was lost. Other
+ * platforms never see a phase, so their chip is unchanged.
+ */
+const accountSyncPhase = computed(() => (trustedAccountMode ? accountSyncState.phase : 'idle'));
+/**
+ * Not synced / signed out (#3189): the phone header has no room for the words
+ * in the chip, so the chip keeps its dot and a state icon and the full state
+ * reads on its own line under the header, which takes the chip's tap.
+ */
+const accountStateDetached = computed(() => accountSyncPhase.value === 'offline' || accountSyncPhase.value === 'reauth');
+const accountChipText = computed(() =>
+  accountSyncPhase.value === 'offline' ? 'Not synced · retry'
+    : accountSyncPhase.value === 'reauth' ? 'Signed out'
+      : accountSignedIn.value ? accountEmail.value : 'Sign in',
+);
 const accountAriaLabel = computed(() =>
-  accountSignedIn.value
-    ? `Google account: ${accountEmail.value}. Open account and sync`
-    : 'Open account and sync',
+  accountSyncPhase.value === 'offline'
+    ? `Google account: ${accountEmail.value}. Not synced. Retry sync`
+    : accountSignedIn.value
+      ? `Google account: ${accountEmail.value}. Open account and sync`
+      : 'Open account and sync',
 );
 
 /**
@@ -317,6 +338,12 @@ const hostGroups = computed<HostGroup[]>(() => {
 
 function onAccountAction(): void {
   void api.win.openAccount();
+}
+
+/** The chip: a failed background sync retries on tap; otherwise it opens the account. */
+function onAccountChip(): void {
+  if (accountSyncPhase.value === 'offline' && accountSyncState.retry) accountSyncState.retry();
+  else onAccountAction();
 }
 
 /**
@@ -830,16 +857,40 @@ function onClearDefault(): void {
           :class="{ 'signed-in': accountSignedIn }"
           :aria-label="accountAriaLabel"
           :title="accountAriaLabel"
-          @click="onAccountAction"
+          :data-sync-phase="accountSyncPhase"
+          data-testid="account-chip"
+          @click="onAccountChip"
         >
-          <span class="account-status-dot" :class="{ 'signed-in': accountSignedIn }" aria-hidden="true" />
-          <span class="account-copy">
+          <span
+            class="account-status-dot"
+            :class="{ 'signed-in': accountSignedIn, syncing: accountSyncPhase === 'syncing', 'not-synced': accountSyncPhase === 'offline' || accountSyncPhase === 'reauth' }"
+            aria-hidden="true"
+          />
+          <AppIcon
+            v-if="accountStateDetached"
+            :name="accountSyncPhase === 'offline' ? 'refresh' : 'alert-triangle'"
+            :size="14"
+            class="account-state-icon"
+            data-testid="account-chip-icon"
+          />
+          <span v-else class="account-copy">
             <span class="account-provider">Google</span>
-            <span class="account-state">{{ accountSignedIn ? accountEmail : 'Sign in' }}</span>
+            <span class="account-state" data-testid="account-chip-state">{{ accountChipText }}</span>
           </span>
         </button>
       </div>
     </header>
+    <button
+      v-if="accountStateDetached"
+      type="button"
+      class="account-state-line"
+      :data-sync-phase="accountSyncPhase"
+      data-testid="account-chip-state"
+      @click="onAccountChip"
+    >
+      <span class="account-status-dot not-synced" aria-hidden="true" />
+      <span class="account-state-text">{{ accountChipText }}</span>
+    </button>
     <main>
       <!-- The escape hatch, for ANY dial — automatic or clicked. It sits
            above the list, and the list stays usable underneath, so a dial is
@@ -1113,6 +1164,46 @@ h1 {
 }
 .account-status-dot.signed-in {
   background: var(--success);
+}
+/* Background account sync (#3189): a quiet pulse, never a blocking step. */
+.account-status-dot.syncing {
+  animation: account-sync-pulse 1.4s ease-in-out infinite;
+}
+.account-status-dot.not-synced {
+  background: var(--warning, #d29922);
+}
+.account-state-icon {
+  flex: none;
+  color: var(--warning, #d29922);
+}
+/* The detached state line: one line, full words, the chip's own tap. */
+.account-state-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-200);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.account-state-line .account-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+}
+@keyframes account-sync-pulse {
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-status-dot.syncing { animation: none; opacity: 0.6; }
 }
 .account-copy {
   display: flex;

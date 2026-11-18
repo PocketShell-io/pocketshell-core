@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { api } from '../ipc';
 import { useConnectionStore } from './connection';
 import { useSettingsStore } from './settings';
+import { clearCachedServers } from '../trustedServersCache';
 import {
   applyAccountToSelection,
   parseSyncPayload,
@@ -183,6 +184,11 @@ export const useSyncStore = defineStore('sync', () => {
 
   async function logout(): Promise<void> {
     busy.value = true;
+    // Choosing to sign out takes the saved server list with it; a sign-in
+    // that is merely lost (revoked, expired) keeps it for a re-sign-in
+    // (pocketshell#3189). Cleared before the status changes, so the picker
+    // never reads a lost sign-in into it.
+    clearCachedServers();
     try {
       await api.sync.logout();
       passphrase.value = '';

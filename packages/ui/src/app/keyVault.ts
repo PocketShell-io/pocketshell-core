@@ -60,8 +60,14 @@ export interface KeyVaultPlatform {
   onLock?(): Promise<void>;
   /** First vault setup; independent of key upload, passphrase change and reset capabilities. */
   canCreate?: boolean;
-  /** Stable verified issuer+subject, never an email or route-supplied identity. */
+  /**
+   * Stable issuer+subject of the signed-in credential, never an email or route-supplied identity.
+   * Local and fast (pocketshell#3189): opening a saved server never waits on a backend identity check;
+   * every request still carries the credential, and a refused one (401) ends the session.
+   */
   accountId?(): Promise<string | null>;
+  /** The same identity as the backend verifies it; run in the background only, never before an open. */
+  verifyAccount?(): Promise<string | null>;
   /** Native account-bound trust/credential installation; no network-provided pins. */
   installTrustedHost?(host: import('@pocketshell/core').TrustedHostRecord): Promise<void>;
   /** Required with trusted-host onboarding: persisted outside untrusted sync. */
