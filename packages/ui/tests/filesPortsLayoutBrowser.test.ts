@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Cdp, gotoAndWait, sleep, waitForSelector } from './support/cdp';
 
 /**
  * #3125 (S4c) acceptance in REAL Chromium layout (jsdom has none): the real
@@ -44,34 +45,6 @@ async function freePort(): Promise<number> {
   });
 }
 
-class Cdp {
-  private id = 0;
-  private waiting = new Map<number, (m: { result?: unknown; error?: unknown }) => void>();
-  constructor(private ws: WebSocket) {
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(String(event.data));
-      this.waiting.get(msg.id)?.(msg);
-    };
-  }
-  send(method: string, params: Record<string, unknown> = {}): Promise<{ result?: any }> {
-    return new Promise((ok, fail) => {
-      const id = ++this.id;
-      this.waiting.set(id, (m) => (m.error ? fail(new Error(JSON.stringify(m.error))) : ok(m as { result?: any })));
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async evaluate<T>(expression: string): Promise<T> {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
-    return r.result.result.value as T;
-  }
-  async shot(name: string): Promise<void> {
-    if (!SHOTS) return;
-    mkdirSync(SHOTS, { recursive: true });
-    const r = await this.send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(r.result.data as string, 'base64'));
-  }
-}
 
 beforeAll(async () => {
   vite = await createServer({
@@ -132,16 +105,17 @@ async function connect(): Promise<Cdp> {
   throw new Error('Chromium did not expose a page target');
 }
 
-const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
+async function shot(cdp: Cdp, name: string): Promise<void> {
+  if (!SHOTS) return;
+  mkdirSync(SHOTS, { recursive: true });
+  const r = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(r.result.data as string, 'base64'));
+}
 
 async function openPage(view: 'files' | 'ports', width: number, ready: string): Promise<Cdp> {
   const cdp = await connect();
   await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 2, mobile: width < 700 });
-  await cdp.send('Page.navigate', { url: `${origin}/?view=${view}` });
-  for (let i = 0; i < 150; i += 1) {
-    if (await cdp.evaluate<boolean>(`!!document.querySelector('${ready}')`)) break;
-    await sleep(100);
-  }
+  await gotoAndWait(cdp, `${origin}/?view=${view}`, ready);
   await sleep(400);
   return cdp;
 }
@@ -174,7 +148,7 @@ describe.each([360, 412])('Files in real Chromium at %i dp (compact)', (width) =
     expect(before.editorVisible).toBe(false);
     expect(before.splitter).toBe(false);
     expect(before.docOverflow).toBe(false);
-    await cdp.shot(`files-tree-${width}`);
+    await shot(cdp, `files-tree-${width}`);
 
     await cdp.evaluate("(() => { document.querySelector('.entries').scrollTop = 240; })()");
     await sleep(100);
@@ -183,10 +157,7 @@ describe.each([360, 412])('Files in real Chromium at %i dp (compact)', (width) =
 
     // Open a file by tapping a row (rows 6.. are files).
     await cdp.evaluate("(() => { const rows = [...document.querySelectorAll('.entries .entry')]; rows.find((r) => r.textContent.includes('notes-30')).click(); })()");
-    for (let i = 0; i < 50; i += 1) {
-      if (await cdp.evaluate<boolean>("!!document.querySelector('.editor-bar')")) break;
-      await sleep(100);
-    }
+    await waitForSelector(cdp, '.editor-bar');
     await sleep(300);
     const open = await cdp.evaluate<FilesBoxes>(BOXES);
     expect(open.editorVisible).toBe(true);
@@ -194,7 +165,7 @@ describe.each([360, 412])('Files in real Chromium at %i dp (compact)', (width) =
     expect(open.back).toBe(true);
     expect(open.editorText).toContain('notes-30');
     expect(open.docOverflow).toBe(false);
-    await cdp.shot(`files-editor-${width}`);
+    await shot(cdp, `files-editor-${width}`);
 
     await cdp.evaluate("document.querySelector('[data-testid=files-back]').click()");
     await sleep(300);
@@ -209,10 +180,7 @@ describe('Files in real Chromium at 1200 dp (expanded, unchanged)', () => {
   it('keeps the splitter and shows tree and editor side by side with no Back chevron', async () => {
     const cdp = await openPage('files', 1200, '.entries .entry');
     await cdp.evaluate("(() => { const rows = [...document.querySelectorAll('.entries .entry')]; rows.find((r) => r.textContent.includes('notes-30')).click(); })()");
-    for (let i = 0; i < 50; i += 1) {
-      if (await cdp.evaluate<boolean>("!!document.querySelector('.editor-bar')")) break;
-      await sleep(100);
-    }
+    await waitForSelector(cdp, '.editor-bar');
     await sleep(300);
     const m = await cdp.evaluate<FilesBoxes>(BOXES);
     expect(m.splitter).toBe(true);
@@ -285,7 +253,7 @@ describe.each([360, 412])('Ports in real Chromium at %i dp (compact)', (width) =
     expect(m.nameWidths).toHaveLength(1);
     expect(m.localLefts).toHaveLength(1);
     expect(m.actionRights).toHaveLength(1);
-    await cdp.shot(`ports-${width}`);
+    await shot(cdp, `ports-${width}`);
   }, 60_000);
 });
 

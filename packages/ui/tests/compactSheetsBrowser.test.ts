@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Cdp, gotoAndWait, sleep } from './support/cdp';
 
 /**
  * #3123 S4a in REAL Chromium: computed boxes (getBoundingClientRect) of the real
@@ -39,28 +40,6 @@ async function freePort(): Promise<number> {
   });
 }
 
-class Cdp {
-  private id = 0;
-  private waiting = new Map<number, (m: { result?: unknown; error?: unknown }) => void>();
-  constructor(private ws: WebSocket) {
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(String(event.data));
-      this.waiting.get(msg.id)?.(msg);
-    };
-  }
-  send(method: string, params: Record<string, unknown> = {}): Promise<{ result?: any }> {
-    return new Promise((ok, fail) => {
-      const id = ++this.id;
-      this.waiting.set(id, (m) => (m.error ? fail(new Error(JSON.stringify(m.error))) : ok(m as { result?: any })));
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async evaluate<T>(expression: string): Promise<T> {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
-    return r.result.result.value as T;
-  }
-}
 
 beforeAll(async () => {
   vite = await createServer({
@@ -130,11 +109,7 @@ const BOX = `const box = (el) => { if (!el) return null; const r = el.getBoundin
 async function run<T>(opts: { fine?: boolean; width: number; height: number; kb?: number; shot?: string }, which: string, probe: string, before = ''): Promise<T> {
   const cdp = await connect(debugPort);
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: opts.width, height: opts.height, deviceScaleFactor: 1, mobile: !opts.fine });
-  await cdp.send('Page.navigate', { url: `${origin}/?case=${which}` });
-  for (let i = 0; i < 300; i += 1) {
-    if (await cdp.evaluate<boolean>(`!!document.querySelector(${JSON.stringify(READY[which] ?? '.overlay-title')})`)) break;
-    await new Promise((ok) => setTimeout(ok, 100));
-  }
+  await gotoAndWait(cdp, `${origin}/?case=${which}`, READY[which] ?? '.overlay-title');
   await new Promise((ok) => setTimeout(ok, 500));
   if (before) await cdp.evaluate(before);
   if (opts.kb) await cdp.evaluate(`document.documentElement.style.setProperty('--ps-inset-keyboard', '${opts.kb}px')`);
