@@ -34,7 +34,7 @@ afterEach(() => {
 describe('extension registry', () => {
   it('names exactly the planned slots', () => {
     expect([...EXTENSION_SLOTS].sort()).toEqual(
-      ['composer.accessory', 'composer.inputSources', 'settings.sections', 'terminal.dock', 'terminal.inputAdapter'].sort(),
+      ['composer.accessory', 'composer.inputSources', 'composer.launcher', 'settings.sections', 'terminal.dock', 'terminal.inputAdapter'].sort(),
     );
   });
 

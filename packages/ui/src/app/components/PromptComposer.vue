@@ -59,7 +59,7 @@
 // machine and keyboard to useComposerVisibility, the move/resize machinery to
 // useComposerGeometry, the draw-or-annotate overlay to DoodleSheet.vue, and
 // the control row to ComposerControls.vue.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useComposerStore } from '../stores/composer';
 import { useSettingsStore } from '../stores/settings';
 import { useShellsStore } from '../stores/shells';
@@ -106,7 +106,15 @@ const props = defineProps<{
   connected?: boolean;
 }>();
 
-const emit = defineEmits<{ (e: 'focus-terminal'): void }>();
+const emit = defineEmits<{
+  (e: 'focus-terminal'): void;
+  /**
+   * How many px of the pane's bottom the open card covers (0 when closed). The
+   * workspace lifts the terminal VIEW by this much on a phone, so the cursor
+   * rows stay visible above the card without resizing the remote terminal.
+   */
+  (e: 'cover', px: number): void;
+}>();
 
 const composer = useComposerStore();
 const shells = useShellsStore();
@@ -166,7 +174,7 @@ const send = useComposerSend({
   props,
   focusTerminal,
 });
-const { canSend, discardArmed, onDiscardClick, onSend } = send;
+const { canSend, discardArmed, onDiscardClick, onSend, onSubmit } = send;
 
 /**
  * The staging pipeline, paste-to-attach, the terminal-side clipboard reader
@@ -262,13 +270,51 @@ const doodleSheet = ref<{
  * contributions (extensions.ts) see: this draft's session, the caret insert
  * the terminal's withheld keystroke uses, and the drop's staging path.
  */
-const extensionContext = computed<ComposerExtensionContext>(() => ({
-  sessionName: props.sessionName,
-  insertText: (text: string) => typeInto(text),
-  attachFiles: (files: File[]) => void acceptDroppedFiles(files),
-}));
+const extensionContext = computed<ComposerExtensionContext>(() => {
+  // Bound to the session this context was built for: a source that outlives
+  // a session switch writes into its own session's draft, never the next one.
+  const boundKey = key.value;
+  return {
+    sessionName: props.sessionName,
+    sessionKey: draft.sessionKey.value,
+    insertText: (text: string) => typeInto(text),
+    attachFiles: (files: File[]) => void acceptDroppedFiles(files),
+    open: () => {
+      if (mode.value === 'hidden') composer.setMode(composer.lastOpenMode);
+    },
+    readDraft: () => composer.ensure(boundKey).draft,
+    setDraft: (text: string) => {
+      composer.setDraft(boundKey, text, text.length);
+      if (boundKey === key.value) caret.value = text.length;
+    },
+    submit: (options: { enter: boolean }) =>
+      boundKey === key.value ? onSubmit(options) : Promise.resolve(false),
+  };
+});
+
+// The card's cover of the pane's bottom edge, measured after each layout
+// change of the card (open, close, resize, move). Reported, never acted on
+// here: whether to lift the terminal is the workspace's call.
+let lastCover = -1;
+function reportCover(): void {
+  const root = rootEl.value;
+  const card = root?.querySelector<HTMLElement>(':scope > .composer') ?? null;
+  const cover =
+    root && card && mode.value !== 'hidden'
+      ? Math.max(0, Math.round(root.getBoundingClientRect().bottom - card.getBoundingClientRect().top))
+      : 0;
+  if (cover === lastCover) return;
+  lastCover = cover;
+  emit('cover', cover);
+}
+watch([mode, rootStyle], () => void nextTick(reportCover), { immediate: true, flush: 'post' });
+let coverObserver: ResizeObserver | null = null;
 
 onMounted(() => {
+  if (rootEl.value && typeof ResizeObserver !== 'undefined') {
+    coverObserver = new ResizeObserver(() => reportCover());
+    coverObserver.observe(rootEl.value);
+  }
   window.addEventListener('keydown', onGlobalKey, { capture: true });
   // Capture, so the press is seen wherever it lands — including inside the
   // terminal, which is the case the user actually asked for.
@@ -291,6 +337,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  coverObserver?.disconnect();
+  coverObserver = null;
   unregisterBackLayer?.();
   unregisterBackLayer = null;
   window.removeEventListener('keydown', onGlobalKey, { capture: true });
@@ -485,6 +533,15 @@ defineExpose({
          Ctrl+` hint — sat on top of terminal output at rest, which made the
          quietest state the most intrusive one. The hint moved into the tooltip
          and the draft moved into the pip. -->
+    <!-- The platform's launchers (extensions.ts `composer.launcher`), beside
+         the toggle while the composer is closed; nothing contributed, nothing
+         drawn. They place themselves: this root is their containing block. -->
+    <ExtensionSlot
+      v-if="mode === 'hidden'"
+      name="composer.launcher"
+      class="composer-launcher"
+      :context="extensionContext"
+    />
     <button
       ref="railEl"
       :class="['rail', { unsent: toggle.unsent }]"

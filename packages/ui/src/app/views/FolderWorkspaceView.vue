@@ -101,6 +101,7 @@ import { useSessionStop } from '../useSessionStop';
 import { useWorkspaceReveal } from '../useWorkspaceReveal';
 import { useWorkspaceTabs } from '../useWorkspaceTabs';
 import { useWorkspaceChords } from '../useWorkspaceChords';
+import { useLayoutClass } from '../layoutClass';
 
 const route = useRoute();
 const router = useRouter();
@@ -721,6 +722,20 @@ function onFocusTerminal(): void {
   if (identity) terminalRefs.get(identity)?.focus();
 }
 
+/**
+ * On a phone the open composer card covers the bottom of the terminal, which
+ * is where the cursor and an agent's prompt are. The terminal VIEW is lifted
+ * by the card's cover instead (a transform: the pane keeps its size, so the
+ * remote terminal is never resized and nothing redraws). The top rows slide
+ * under the tab body's clip; closing the card drops the view back. Wider
+ * layouts keep the card floating over an unmoved terminal, as before.
+ */
+const layoutClass = useLayoutClass();
+const composerCover = ref(0);
+const terminalLift = computed(() =>
+  layoutClass.value === 'compact' && activeTab.value?.kind === 'session' ? composerCover.value : 0,
+);
+
 /** Same reasoning as `terminalRefs`, for the composer, whose `typeInto` the terminal feeds. */
 const composerRef = ref<{
   typeInto: (text: string) => void;
@@ -785,7 +800,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
     <BarErrorStrip :message="barError" @dismiss="dismissBarError" />
 
     <div class="workspace-body">
-      <div class="tab-body">
+      <div :class="['tab-body', { lifted: terminalLift > 0 }]">
         <!-- One terminal per visited session tab, all kept mounted. Hiding
              rather than re-pointing is what makes a tab switch instant, and
              keeping them mounted while a Files tab shows is what stops a tab
@@ -802,6 +817,8 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
         <div
           class="terminal-area"
           v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
+          :style="terminalLift > 0 ? { transform: `translateY(-${terminalLift}px)` } : undefined"
+          :data-terminal-lift="terminalLift"
         >
           <div
             v-for="pane in terminalPanes"
@@ -901,6 +918,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
           :agent-kind="agentKind"
           :connected="connection.state === 'connected'"
           @focus-terminal="onFocusTerminal"
+          @cover="(px: number) => (composerCover = px)"
         />
       </div>
     </div>
@@ -963,6 +981,10 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
   display: flex;
   flex: 1;
   min-height: 0;
+}
+/* The lifted terminal's top rows slide out of view here, not over the bar. */
+.tab-body.lifted {
+  overflow: hidden;
 }
 .terminal-area {
   flex: 1;

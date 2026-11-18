@@ -35,6 +35,7 @@ export function useComposerSend(deps: ComposerSendDeps): {
   discardArmed: Ref<boolean>;
   onDiscardClick: () => void;
   onSend: () => Promise<void>;
+  onSubmit: (options: { enter: boolean }) => Promise<boolean>;
   onDiscard: () => void;
 } {
   const composer = deps.composer;
@@ -47,6 +48,17 @@ export function useComposerSend(deps: ComposerSendDeps): {
   });
 
   async function onSend(): Promise<void> {
+    await onSubmit({ enter: true });
+  }
+
+  /**
+   * Send (`enter: true`), or Insert (`enter: false`): the same delivery
+   * without the submit key, for a platform input source (the phone's
+   * dictation panel). An Insert never closes the composer, whatever the
+   * close-on-send setting says: the text is at the prompt, not submitted, so
+   * the user is still composing.
+   */
+  async function onSubmit(options: { enter: boolean }): Promise<boolean> {
     const k = key.value;
     const shellId = deps.shells.shellIdFor(sessionKey.value);
     // The user's Settings → Advanced "Enter-key delay", read per send so a
@@ -73,17 +85,19 @@ export function useComposerSend(deps: ComposerSendDeps): {
           write: (data) => api.shell.input(shellId, data, deps.props.sessionName, deps.props.workspace ?? undefined),
           submitDelayMs,
           probeScroll,
+          submit: options.enter,
         });
       },
-      { closeOnDelivery: settings.closeComposerOnSend },
+      { closeOnDelivery: options.enter && settings.closeComposerOnSend },
     );
     // The store has already closed it on a delivered send when the setting is on;
     // all that is left here is where the keyboard goes. Sent and shut means the
     // terminal — which is also what makes the next keystroke re-open the panel.
     // A failed send leaves the card up with its banner, so the caret goes back to
     // the draft the user still has to deal with.
-    if (delivered && settings.closeComposerOnSend) deps.focusTerminal();
+    if (delivered && options.enter && settings.closeComposerOnSend) deps.focusTerminal();
     else focusDraft();
+    return delivered;
   }
 
   /**
@@ -129,5 +143,5 @@ export function useComposerSend(deps: ComposerSendDeps): {
   // The timer is this cluster's own; it dies with the mount.
   onBeforeUnmount(disarmDiscard);
 
-  return { canSend, discardArmed, onDiscardClick, onSend, onDiscard };
+  return { canSend, discardArmed, onDiscardClick, onSend, onSubmit, onDiscard };
 }
