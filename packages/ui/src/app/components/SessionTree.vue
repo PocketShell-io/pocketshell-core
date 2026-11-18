@@ -88,7 +88,8 @@ import type { SessionSummary } from '@pocketshell/core';
 import { useFolderMenu } from '../useFolderMenu';
 import { useFolderStop } from '../useFolderStop';
 import CrashWarningBanner from './CrashWarningBanner.vue';
-import CompactHostSheet from './CompactHostSheet.vue';
+import HostOverflowMenu from './HostOverflowMenu.vue';
+import type { Box } from '@pocketshell/core/shared/popupPlacement';
 import { useLayoutClass } from '../layoutClass';
 import SessionListErrorBanner from './SessionListErrorBanner.vue';
 import { useWarningsStore } from '../stores/warnings';
@@ -195,7 +196,11 @@ const creating = ref<{ startIn: string | null } | null>(null);
  */
 const layoutClass = useLayoutClass();
 const compact = computed(() => layoutClass.value === 'compact');
-const overflowOpen = ref(false);
+const overflow = ref<{ anchor: Box; el: HTMLElement } | null>(null);
+function openOverflow(e: MouseEvent): void {
+  const el = e.currentTarget as HTMLElement;
+  overflow.value = { anchor: el.getBoundingClientRect(), el };
+}
 
 /**
  * The host overlays used to be an overflow menu — Ports and Usage parked behind
@@ -482,16 +487,18 @@ defineExpose({ openCreate });
           title="More"
           aria-label="More"
           aria-haspopup="dialog"
-          @click="overflowOpen = true"
+          @click="openOverflow"
         >
           <AppIcon name="more-vertical" :size="16" />
         </button>
       </div>
-      <CompactHostSheet
-        v-if="overflowOpen"
+      <HostOverflowMenu
+        v-if="overflow"
+        :anchor="overflow.anchor"
+        :ignore="[overflow.el]"
         :auto-forward="autoForward"
         :forward-count="forwardCount"
-        @close="overflowOpen = false"
+        @close="overflow = null"
         @select="openPanel"
         @palette="emit('palette')"
       />

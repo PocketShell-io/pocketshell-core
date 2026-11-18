@@ -28,7 +28,9 @@ function installWidth(width: number): void {
   const matchMedia = (query: string) => {
     const max = Number(/max-width:\s*(\d+)px/.exec(query)?.[1]);
     return {
-      matches: Number.isFinite(max) ? width <= max : false,
+      // `pointer: coarse` is true for the phone widths and false for the desktop
+      // one, so a compact mount gets the bottom sheet and 1200 gets the menu.
+      matches: /pointer:\s*coarse/.test(query) ? width <= 640 : Number.isFinite(max) ? width <= max : false,
       media: query,
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
@@ -148,7 +150,7 @@ describe('compact (phone) workspace chrome', () => {
     await wrapper.find('button[aria-label="More"]').trigger('click');
     const sheet = document.body.querySelector('[data-testid="host-overflow-sheet"]');
     expect(sheet).not.toBeNull();
-    const rows = [...sheet!.querySelectorAll('.sheet-row')].map((r) => r.textContent?.trim());
+    const rows = [...sheet!.querySelectorAll('.menu-item')].map((r) => r.textContent?.trim());
     expect(rows).toEqual([
       'Port forwarding',
       'Provider usage',
@@ -162,12 +164,12 @@ describe('compact (phone) workspace chrome', () => {
     const { wrapper, router } = await mountWorkspace(390, '/host/hetzner/folder/~%2Fgit%2Falpha');
     current = wrapper;
     await wrapper.find('[data-testid="compact-app-bar-title"]').trigger('click');
-    const rows = [...document.body.querySelectorAll('.compact-sheet .switch-item')];
+    const rows = [...document.body.querySelectorAll('.popup-menu.sheet .switch-item')];
     expect(rows.map((r) => r.querySelector('.switch-label')?.textContent)).toEqual(['alpha', 'beta']);
     (rows[1] as HTMLElement).click();
     await flushPromises();
     expect(router.currentRoute.value.params['folder']).toBe('~/git/beta');
-    expect(document.body.querySelector('.compact-sheet')).toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
   });
 
   it('the session panel header is back, refresh, new session and overflow only', async () => {
@@ -190,7 +192,7 @@ describe('compact (phone) workspace chrome', () => {
     await wrapper.find('[data-testid="session-tree-compact-header"] button[aria-label="More"]').trigger('click');
     (document.body.querySelector('[data-testid="host-overflow-settings"]') as HTMLElement).click();
     await flushPromises();
-    expect(document.body.querySelector('.compact-sheet')).toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
     expect(document.body.querySelector('[role="dialog"][aria-label="Settings"]')).not.toBeNull();
   });
 
@@ -235,7 +237,7 @@ describe('compact overflow: the front tab\'s actions', () => {
       // named confirm dialog); nothing else happened and the sheet is gone.
       expect(stopped).toEqual(['main']);
       expect(renamed).toEqual([]);
-      expect(document.body.querySelector('.compact-sheet')).toBeNull();
+      expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
     } finally {
       unregisterTabActions(source);
     }
@@ -246,11 +248,11 @@ describe('compact overflow: the front tab\'s actions', () => {
     current = wrapper;
     expect(openDismissLayerCount()).toBe(0);
     await wrapper.find('button[aria-label="More"]').trigger('click');
-    expect(document.body.querySelector('.compact-sheet')).not.toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).not.toBeNull();
     expect(openDismissLayerCount()).toBe(1);
     expect(dismissTopLayer()).toBe(true);
     await flushPromises();
-    expect(document.body.querySelector('.compact-sheet')).toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
     expect(openDismissLayerCount()).toBe(0);
   });
 
@@ -258,9 +260,9 @@ describe('compact overflow: the front tab\'s actions', () => {
     const { wrapper } = await mountWorkspace(390, '/host/hetzner/folder/~%2Fgit%2Falpha');
     current = wrapper;
     await wrapper.find('button[aria-label="More"]').trigger('click');
-    (document.body.querySelector('.compact-sheet-scrim') as HTMLElement).click();
+    document.body.querySelector('.popup-scrim')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     await flushPromises();
-    expect(document.body.querySelector('.compact-sheet')).toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
   });
 });
 
@@ -302,7 +304,7 @@ describe('expanded layout is unchanged', () => {
     ]);
     await rail.find('button[title="Sessions — 3"]').trigger('click');
     expect(document.body.querySelector('.popup-menu .switch-item')).not.toBeNull();
-    expect(document.body.querySelector('.compact-sheet')).toBeNull();
+    expect(document.body.querySelector('.popup-menu.sheet')).toBeNull();
   });
 });
 

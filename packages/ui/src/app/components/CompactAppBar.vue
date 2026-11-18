@@ -7,9 +7,16 @@
 //
 // Presentation only: it announces, HostWorkspaceView disposes.
 import AppIcon from '@ui/components/AppIcon.vue';
+import type { Box } from '@pocketshell/core/shared/popupPlacement';
 
 defineProps<{ title: string }>();
-const emit = defineEmits<{ back: []; switcher: []; overflow: [] }>();
+const emit = defineEmits<{ back: []; switcher: [anchor: Box, el: HTMLElement]; overflow: [anchor: Box, el: HTMLElement] }>();
+
+/** The trigger's box, for the menu to hang from when it is not a sheet. */
+function boxOf(e: MouseEvent): [Box, HTMLElement] {
+  const el = e.currentTarget as HTMLElement;
+  return [el.getBoundingClientRect(), el];
+}
 </script>
 
 <template>
@@ -22,12 +29,12 @@ const emit = defineEmits<{ back: []; switcher: []; overflow: [] }>();
       data-testid="compact-app-bar-title"
       aria-haspopup="dialog"
       :aria-label="`${title}, switch folder`"
-      @click="emit('switcher')"
+      @click="emit('switcher', ...boxOf($event))"
     >
       <span class="bar-title-text">{{ title }}</span>
       <AppIcon name="chevron-down" :size="14" />
     </button>
-    <button class="icon-btn" title="More" aria-label="More" aria-haspopup="dialog" @click="emit('overflow')">
+    <button class="icon-btn" title="More" aria-label="More" aria-haspopup="dialog" @click="emit('overflow', ...boxOf($event))">
       <AppIcon name="more-vertical" :size="16" />
     </button>
   </header>

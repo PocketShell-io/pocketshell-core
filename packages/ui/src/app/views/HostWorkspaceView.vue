@@ -47,8 +47,7 @@ import SessionTree from '../components/SessionTree.vue';
 import CommandPalette from '../components/CommandPalette.vue';
 import HostPanelButtons from '../components/HostPanelButtons.vue';
 import CompactAppBar from '../components/CompactAppBar.vue';
-import CompactHostSheet from '../components/CompactHostSheet.vue';
-import CompactSheet from '../components/CompactSheet.vue';
+import HostOverflowMenu from '../components/HostOverflowMenu.vue';
 import FolderSwitcherList from '../components/FolderSwitcherList.vue';
 import LinkLostBanner from '../components/LinkLostBanner.vue';
 import { type HostPanel } from '../hostPanels';
@@ -316,7 +315,7 @@ function onSelectFolder(folder: SessionDirectory, session?: string): void {
  */
 const switcherBtn = ref<HTMLButtonElement | null>(null);
 /** Open state; carries the anchor box snapshotted from the rail button. */
-const switcher = ref<{ anchor: Box } | null>(null);
+const switcher = ref<{ anchor: Box; el?: HTMLElement } | null>(null);
 
 function toggleSwitcher(): void {
   if (switcher.value) {
@@ -335,7 +334,6 @@ function toggleSwitcher(): void {
 /** Pick a folder in the switcher: close, then the same answer a row click gets. */
 function pickFolder(dir: SessionDirectory): void {
   switcher.value = null;
-  compactSwitcherOpen.value = false;
   onSelectFolder(dir);
 }
 
@@ -344,8 +342,7 @@ function pickFolder(dir: SessionDirectory): void {
  * SAME list the rail's button opens, as a bottom sheet instead of a menu
  * hung off a 28px anchor. ← goes back to the session list (the panel over the
  * still-mounted pane), and ⋮ opens the host tools. */
-const compactSwitcherOpen = ref(false);
-const compactOverflowOpen = ref(false);
+const compactOverflow = ref<{ anchor: Box; el: HTMLElement } | null>(null);
 const tabActions = useActiveTabActions();
 
 const barTitle = computed(() => {
@@ -566,8 +563,8 @@ function onBack(): void {
       v-if="compact && layout === 'pane'"
       :title="barTitle"
       @back="onShowPanel"
-      @switcher="compactSwitcherOpen = true"
-      @overflow="compactOverflowOpen = true"
+      @switcher="(anchor, el) => (switcher = { anchor, el })"
+      @overflow="(anchor, el) => (compactOverflow = { anchor, el })"
     />
 
     <div class="body">
@@ -630,7 +627,7 @@ function onBack(): void {
       <PopupMenu
         v-if="switcher"
         :anchor="switcher.anchor"
-        :ignore="[switcherBtn]"
+        :ignore="[switcher.el ?? switcherBtn]"
         label="Sessions"
         @close="switcher = null"
       >
@@ -642,26 +639,16 @@ function onBack(): void {
         />
       </PopupMenu>
 
-      <!-- Compact: the same switcher list and the host tools as bottom sheets. -->
-      <CompactSheet
-        v-if="compactSwitcherOpen"
-        label="Sessions"
-        @close="compactSwitcherOpen = false"
-      >
-        <FolderSwitcherList
-          :roots="roots"
-          :folders="folders"
-          :active-folder="activeFolder"
-          row-class="sheet-row"
-          @pick="pickFolder"
-        />
-      </CompactSheet>
-      <CompactHostSheet
-        v-if="compactOverflowOpen"
+      <!-- Compact: the host tools. A PopupMenu like the switcher above — a bottom
+           sheet under a finger (usePopupSheet), an anchored menu under a mouse. -->
+      <HostOverflowMenu
+        v-if="compactOverflow"
+        :anchor="compactOverflow.anchor"
+        :ignore="[compactOverflow.el]"
         :auto-forward="autoFwd"
         :forward-count="fwdCount"
         :tab-actions="tabActions"
-        @close="compactOverflowOpen = false"
+        @close="compactOverflow = null"
         @select="openPanel"
         @palette="paletteOpen = true"
       />

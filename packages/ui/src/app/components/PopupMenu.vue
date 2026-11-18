@@ -23,6 +23,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { popupPlacement, type Box } from '@pocketshell/core/shared/popupPlacement';
 import { usePopupSheet } from '../usePhoneSheet';
+import { useDismissLayer } from '../extensions';
 
 const props = defineProps<{
   /**
@@ -46,6 +47,10 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ close: [] }>();
+
+// An open menu is a dismissable layer (extensions.ts `app.dismissLayers`): the
+// platform's dismiss gesture (Android Back) closes it before it navigates.
+useDismissLayer(() => emit('close'));
 
 // A finger on a compact screen gets a bottom sheet with a scrim, not a small
 // anchored menu: nothing is measured or placed, and rows are 48px. A mouse

@@ -2,8 +2,8 @@
 // FolderSwitcherList: the folder switcher's contents — one head per root, one
 // item per folder, the session panel's two levels in the panel's order. One
 // list shared by the two surfaces that hold it: the PopupMenu hung off the
-// collapsed rail's button (expanded layouts) and the bottom sheet the compact
-// app bar's title opens, so the two cannot disagree about what a row says.
+// collapsed rail's button and the app bar's title on a phone (PopupMenu is a
+// bottom sheet there, usePopupSheet), so the two cannot disagree about what a row says.
 import AppIcon from '@ui/components/AppIcon.vue';
 import type { SessionDirectory } from '../sessionTree';
 
@@ -11,8 +11,6 @@ defineProps<{
   roots: ReadonlyArray<{ key: string; directories: readonly SessionDirectory[] }>;
   folders: readonly SessionDirectory[];
   activeFolder: string | null;
-  /** The compact sheet draws its own 48px row class; the menu keeps PopupMenu's. */
-  rowClass?: string;
 }>();
 const emit = defineEmits<{ pick: [dir: SessionDirectory] }>();
 </script>
@@ -30,7 +28,7 @@ const emit = defineEmits<{ pick: [dir: SessionDirectory] }>();
       </li>
       <li v-for="dir in root.directories" :key="dir.key">
         <button
-          :class="[rowClass ?? 'menu-item', 'switch-item', { current: dir.key === activeFolder }]"
+          :class="['menu-item', 'switch-item', { current: dir.key === activeFolder }]"
           @click="emit('pick', dir)"
         >
           <!-- The panel row's two marks, same meanings: the dot says something
@@ -62,14 +60,6 @@ const emit = defineEmits<{ pick: [dir: SessionDirectory] }>();
 .switch-root {
   text-transform: none;
   letter-spacing: 0;
-}
-/* The compact sheet's head (the sheet's own `.sheet-head` is not on this
-   element, so the same spacing is stated here). */
-.switch-root:not(.menu-item) {
-  padding: var(--sp-2) var(--sp-4);
-  color: var(--fg-muted);
-  font-size: var(--fs-200);
-  list-style: none;
 }
 /* The panel row's marks at menu size: the same 8px dot with the same two
    states (grey quiet, green something-live), and a label that ellipsises

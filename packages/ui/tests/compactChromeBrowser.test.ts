@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
@@ -192,7 +192,7 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
 
     await cdp.evaluate("document.querySelector('button[aria-label=\"More\"]').click()");
     await new Promise((ok) => setTimeout(ok, 200));
-    const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .sheet-row');
+    const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .menu-item');
     expect(rows.map((r) => r.label)).toEqual(['Port forwarding', 'Provider usage', 'Host monitor', 'Quick actions', 'Settings']);
     for (const r of rows) expect(r.h, `row ${r.label}`).toBeGreaterThanOrEqual(48);
 
@@ -219,7 +219,7 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
     }
     await cdp.evaluate("document.querySelector('[data-testid=\"session-tree-compact-header\"] button[aria-label=\"More\"]').click()");
     await new Promise((ok) => setTimeout(ok, 200));
-    const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .sheet-row');
+    const rows = await boxes(cdp, '[data-testid="host-overflow-sheet"] .menu-item');
     expect(rows.map((r) => r.label)).toContain('Settings');
     for (const r of rows) {
       expect(r.x).toBeGreaterThanOrEqual(0);
@@ -227,6 +227,68 @@ describe.each([360, 412])('coarse pointer, compact, at %i dp', (width) => {
     }
     const [panel] = await boxes(cdp, 'aside.session-panel');
     expect(panel!.w).toBe(width);
+  }, 150_000);
+});
+
+/**
+ * D44: a phone change must not move the desktop. Computed geometry and styles of
+ * the expanded fine-pointer workspace, and of the rail's folder-switcher menu,
+ * are compared with a snapshot taken from the CSS on core main bcc84ef (before
+ * S2). A rule that leaks to the desktop (heads 23.2 -> 32.6px tall, menu 125 ->
+ * 147px) fails here. Re-take only for an intended desktop change:
+ *   WRITE_EXPANDED_SNAPSHOT=1 npx vitest run tests/compactChromeBrowser.test.ts -t expanded
+ * Text-sized widths are left out on purpose (they follow the loaded font).
+ */
+const EXPANDED_SNAPSHOT = join(PACKAGE_ROOT, 'tests/fixtures/expanded-desktop.snapshot.json');
+const STYLE_PROPS = ['display', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textTransform', 'columnGap', 'borderTopWidth', 'borderBottomWidth', 'borderTopLeftRadius'];
+// Width is recorded only where the CSS fixes it.
+const FIXED_WIDTH = new Set(['aside.session-panel', '.tree-header .icon-btn', '.collapsed-rail']);
+const EXPANDED_SELECTORS = [
+  'aside.session-panel', '.tree-header', '.tree-header .icon-btn', '.folder-bar', '.folder-bar .tab', '.tab-close',
+  '.splitter', 'main.session-pane', '.workspace',
+];
+const RAIL_SELECTORS = [
+  '.collapsed-rail', '.collapsed-rail .icon-btn',
+  '.popup-menu', '.popup-menu ul', '.popup-menu .menu-head', '.popup-menu .menu-item', '.popup-menu .switch-item .dot',
+  '.popup-menu .switch-label', '.popup-menu .current-check',
+];
+const SNAPSHOT_JS = (selectors: string[], fixedWidth: string[], props: string[]) => `(() => {
+  const out = {};
+  for (const sel of ${JSON.stringify(selectors)}) {
+    const all = [...document.querySelectorAll(sel)];
+    out[sel] = { count: all.length };
+    const el = all[0];
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    out[sel].h = Math.round(r.height * 100) / 100;
+    if (${JSON.stringify(fixedWidth)}.includes(sel)) out[sel].w = Math.round(r.width * 100) / 100;
+    out[sel].style = Object.fromEntries(${JSON.stringify(props)}.map((p) => [p, cs[p]]));
+  }
+  return out;
+})()`;
+
+describe('expanded desktop is unchanged from base (D44)', () => {
+  it('workspace, rail and the rail folder-switcher menu measure and style as on bcc84ef', async () => {
+    const cdp = await launch('fine');
+    await open(cdp, 1200, 800, 'pane');
+    const workspace = await cdp.evaluate<Record<string, unknown>>(SNAPSHOT_JS(EXPANDED_SELECTORS, [...FIXED_WIDTH], STYLE_PROPS));
+    await cdp.evaluate("document.querySelector('button[title=\"Hide session panel\"]').click()");
+    await new Promise((ok) => setTimeout(ok, 300));
+    await cdp.evaluate("document.querySelector('.collapsed-rail button[title^=\"Sessions\"]').click()");
+    await new Promise((ok) => setTimeout(ok, 400));
+    const rail = await cdp.evaluate<Record<string, unknown>>(SNAPSHOT_JS(RAIL_SELECTORS, [...FIXED_WIDTH], STYLE_PROPS));
+    const measured = { workspace, rail };
+    if (process.env.WRITE_EXPANDED_SNAPSHOT === '1') {
+      writeFileSync(EXPANDED_SNAPSHOT, `${JSON.stringify(measured, null, 2)}\n`);
+      return;
+    }
+    expect(existsSync(EXPANDED_SNAPSHOT), 'expanded-desktop.snapshot.json is missing').toBe(true);
+    const base = JSON.parse(readFileSync(EXPANDED_SNAPSHOT, 'utf8'));
+    // Non-vacuous: the menu head and items really were measured.
+    expect((rail as any)['.popup-menu .menu-head'].count).toBeGreaterThan(0);
+    expect((rail as any)['.popup-menu .menu-item'].count).toBeGreaterThan(0);
+    expect(measured).toEqual(base);
   }, 150_000);
 });
 
