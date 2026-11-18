@@ -15,8 +15,9 @@
 // writer and back gesture. A client wraps or mounts this component and adds
 // those around it; nothing here asks which platform it is on.
 import { onBeforeUnmount, onMounted, watchEffect } from 'vue';
-import { fontCssVariables } from '@ui/fonts';
+import { fontCssVariables, terminalFontSizeFor } from '@ui/fonts';
 import { fontProfile } from './fontProfile';
+import { useLayoutClass } from './layoutClass';
 import { resolveTheme } from '@ui/themes';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
 import { deleteWordBackward } from '@pocketshell/core/shared/deleteWord';
@@ -100,14 +101,19 @@ watchEffect(() => {
   }
 });
 
+const layoutClass = useLayoutClass();
+
 watchEffect(() => {
   const vars = fontCssVariables(
     {
       monospaceFontFamily: settings.monospaceFontFamily,
-      terminalFontSize: settings.terminalFontSize,
+      // The size in effect for the layout on screen: a phone's own (#3157).
+      terminalFontSize: terminalFontSizeFor(settings, layoutClass.value === 'compact'),
       editorFontSize: settings.editorFontSize,
     },
     props.monoFallback ?? fontProfile().fallbackStack,
+    // The symbol fallback joins the stack on compact only (#3157, D44).
+    layoutClass.value === 'compact',
   );
   for (const [name, value] of Object.entries(vars)) {
     document.documentElement.style.setProperty(name, value);

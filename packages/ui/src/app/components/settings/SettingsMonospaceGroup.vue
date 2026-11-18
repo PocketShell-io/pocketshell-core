@@ -8,14 +8,26 @@ import { useSettingsStore } from '../../stores/settings';
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
+  COMPACT_FONT_SIZE_STEP,
+  FONT_SIZE_STEP,
   BUNDLED_MONO_FAMILY,
+  parseCompactFontSize,
   parseFontSize,
-  resolveMonoStack,
+  monoStackFor,
   sanitiseFontFamily,
 } from '@ui/fonts';
 import { fontProfile } from '../../fontProfile';
+import { useLayoutClass } from '../../layoutClass';
 
 const settings = useSettingsStore();
+/**
+ * The terminal size control edits the size in effect for the layout on
+ * screen: a phone has its own (#3157), so the number shown is the one the
+ * terminal behind this panel is using.
+ */
+const layoutClass = useLayoutClass();
+const terminalSizeKey = computed(() =>
+  layoutClass.value === 'compact' ? 'compactTerminalFontSize' as const : 'terminalFontSize' as const);
 /** What this client offers (desktop: suggestions + free text; a phone: only the bundled face). */
 const profile = fontProfile();
 
@@ -32,7 +44,8 @@ const profile = fontProfile();
  * is what made the size controls confusable in the first place — see the
  * comment above the Monospace text section in the template.
  */
-const monoSample = computed(() => resolveMonoStack(settings.monospaceFontFamily, profile.fallbackStack));
+const monoSample = computed(() =>
+  monoStackFor(settings.monospaceFontFamily, profile.fallbackStack, layoutClass.value === 'compact'));
 
 /**
  * Committed on `change` (blur, Enter, or picking a datalist suggestion) rather
@@ -51,11 +64,12 @@ function onFamilyChange(event: Event): void {
 }
 
 /** Both size fields. The clamp lives in `fonts.ts` so it cannot drift. */
-function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event): void {
+function onSizeChange(key: 'terminalFontSize' | 'compactTerminalFontSize' | 'editorFontSize', event: Event): void {
   const el = event.target as HTMLInputElement;
   // `min`/`max` on a number input are advisory — they gate the stepper, not a
   // typed value — so the clamp is applied here regardless of what the DOM says.
-  const size = parseFontSize(el.value) ?? settings[key];
+  // Half pixels only for the phone's terminal size (#3157); the desktop keeps whole pixels.
+  const size = (key === 'compactTerminalFontSize' ? parseCompactFontSize(el.value) : parseFontSize(el.value)) ?? settings[key];
   settings.set(key, size);
   el.value = String(size);
 }
@@ -131,6 +145,9 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
       <div class="row-main">
         <div class="row-text">
           <label class="row-label" for="terminal-size">Terminal text size</label>
+          <p v-if="terminalSizeKey === 'compactTerminalFontSize'" class="row-hint" data-testid="terminal-size-compact-hint">
+            For this narrow (phone) layout; a wider window keeps its own size.
+          </p>
           <p class="row-hint">
             Pixels, for the terminal only — this is the one the shell and tmux are in.
             Changing it changes the cell size, so the terminal reports a new row and
@@ -144,16 +161,16 @@ function onSizeChange(key: 'terminalFontSize' | 'editorFontSize', event: Event):
           type="number"
           :min="FONT_SIZE_MIN"
           :max="FONT_SIZE_MAX"
-          step="1"
-          :value="settings.terminalFontSize"
-          @change="onSizeChange('terminalFontSize', $event)"
+          :step="terminalSizeKey === 'compactTerminalFontSize' ? COMPACT_FONT_SIZE_STEP : FONT_SIZE_STEP"
+          :value="settings[terminalSizeKey]"
+          @change="onSizeChange(terminalSizeKey, $event)"
         />
       </div>
       <!-- On the terminal's own ground, in the resolved stack, at exactly
            the size above: the sample answers both "is this font installed"
            and "which of the two controls am I holding". -->
       <figure class="preview">
-        <figcaption class="preview-tag">Terminal at {{ settings.terminalFontSize }}px</figcaption>
+        <figcaption class="preview-tag">Terminal at {{ settings[terminalSizeKey] }}px</figcaption>
         <p class="sample terminal" :style="{ fontFamily: monoSample }">
           ABCdef 0123 il1 O0 {}[]() -&gt;= !== &amp;&amp; ~/.ssh/config
         </p>

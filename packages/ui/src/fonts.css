@@ -1,4 +1,4 @@
-/* The bundled monospace face (issue #3138).
+/* The bundled monospace face (issue #3138) and its symbol fallback (#3157).
  *
  * Declared under the plain name "JetBrains Mono" so that the family a user
  * picks in Settings and the first family of every shipped stack are the same
@@ -25,6 +25,24 @@
   font-weight: 700;
   font-display: block;
   src: url('./assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+
+/* The symbol fallback (#3157): ⏵ ✻ ⎿ ⧉ and the other symbols JetBrains Mono
+ * lacks, re-fitted to its 0.6em cell (scripts/build-symbol-font.py). One
+ * weight: bold symbols are synthesised, which is what a terminal does for a
+ * bold glyph its face has no bold of. `unicode-range` is the symbol blocks the
+ * font was cut from, so it never answers a letter, and is only fetched when a
+ * page actually draws a symbol. Declared for every client, used only where a
+ * stack names it: the phone's (BUNDLED_MONO_STACK); the desktop default below
+ * is unchanged (D44). */
+@font-face {
+  font-family: 'PocketShell Symbols';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./assets/fonts/PocketShellSymbols-Regular.woff2') format('woff2');
+  unicode-range: U+2190-23FF, U+2460-24FF, U+25A0-27BF, U+27C0-27FF, U+2900-29FF, U+2B00-2BFF,
+    U+1F780-1F7FF, U+1FB00-1FBFF;
 }
 
 :root {
