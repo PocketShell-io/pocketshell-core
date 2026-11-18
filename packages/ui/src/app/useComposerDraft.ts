@@ -15,6 +15,7 @@ export interface ComposerDraftProps {
   readonly sessionName: string;
   readonly backend?: 'tmux' | 'aplexer';
   readonly workspace?: string | null;
+  readonly aplexerId?: string | null;
   readonly agentKind?: ComposerAgentKind | null;
   readonly connected?: boolean;
 }
@@ -61,11 +62,32 @@ export function useComposerDraft(deps: ComposerDraftDeps): {
     sessionIdentityKey(props.sessionName, {
       backend: props.backend,
       workspace: props.workspace ?? undefined,
+      aplexerId: props.aplexerId ?? undefined,
     }),
   );
   const key = computed(() => composer.targetKey(props.connectionId, props.sessionName, sessionKey.value));
 
-  watch(key, (k) => composer.ensure(k), { immediate: true });
+  // One-time migration (#3146, D22 hard cut): drafts saved before the id key
+  // lived under `aplexer:<workspace>:<tag>`. The first time the id-keyed record
+  // is touched, an existing legacy record moves onto it; nothing reads the
+  // legacy key afterwards.
+  watch(
+    key,
+    (k) => {
+      if (props.backend === 'aplexer' && props.aplexerId && props.workspace && !composer.states[k]) {
+        composer.rekey(
+          composer.targetKey(
+            props.connectionId,
+            props.sessionName,
+            sessionIdentityKey(props.sessionName, { backend: 'aplexer', workspace: props.workspace }),
+          ),
+          k,
+        );
+      }
+      composer.ensure(k);
+    },
+    { immediate: true },
+  );
 
   const FALLBACK: ComposerSessionState = {
     draft: '',

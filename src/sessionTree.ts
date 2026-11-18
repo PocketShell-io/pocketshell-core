@@ -338,11 +338,12 @@ function buildDirectories(rows: SessionTreeRow[], home: string | null): SessionD
  */
 export function directoryForSession(
   roots: readonly SessionRootFolder[],
-  session: Pick<SessionSummary, 'name' | 'backend' | 'workspace'>,
+  session: Pick<SessionSummary, 'name' | 'backend' | 'workspace' | 'aplexerId'>,
 ): SessionDirectory | null {
   const key = sessionIdentityKey(session.name, {
     backend: session.backend,
     workspace: session.workspace,
+    aplexerId: session.aplexerId,
   });
   for (const root of roots) {
     for (const dir of root.directories) {
@@ -352,6 +353,7 @@ export function directoryForSession(
             sessionIdentityKey(row.session.name, {
               backend: row.session.backend,
               workspace: row.session.workspace,
+              aplexerId: row.session.aplexerId,
             }) === key,
         )
       ) {

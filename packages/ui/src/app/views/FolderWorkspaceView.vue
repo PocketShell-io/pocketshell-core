@@ -105,7 +105,7 @@ const files = useFilesStore();
 const composer = useComposerStore();
 const settings = useSettingsStore();
 const shells = useShellsStore();
-const { folders } = useFolderTree();
+const { folders, allFolders } = useFolderTree();
 
 /**
  * The folder key from the route — `~/git/dtc-website`.
@@ -195,6 +195,15 @@ const {
   folderKey,
   folderPath,
   hostAlias,
+  allFolders,
+  followToFolder: (target, session) => {
+    // `void`: an aborted or superseded navigation is not an error here.
+    void router.replace({
+      name: 'folder',
+      params: { name: hostAlias.value, folder: target },
+      query: { tab: session },
+    });
+  },
   sessions,
   files,
   memory,
@@ -865,6 +874,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
           :session-name="activeSession"
           :backend="activeSessionMeta?.backend"
           :workspace="activeSessionMeta?.workspace"
+          :aplexer-id="activeSessionMeta?.aplexerId"
           :agent-kind="agentKind"
           :connected="connection.state === 'connected'"
           @focus-terminal="onFocusTerminal"

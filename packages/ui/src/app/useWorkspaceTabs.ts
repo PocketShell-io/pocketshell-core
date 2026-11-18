@@ -48,6 +48,14 @@ export interface WorkspaceTabsDeps {
   files: ReturnType<typeof useFilesStore>;
   /** The remembered tab state and its persistence machinery (useWorkspaceMemory). */
   memory: ReturnType<typeof useWorkspaceMemory>;
+  /**
+   * Every folder on the host (the panel's own grouping, filter-independent).
+   * Lets the workspace see that the session in front moved to another folder
+   * because its shell changed directory (#3146).
+   */
+  allFolders: ComputedRef<SessionDirectory[]>;
+  /** Re-route the workspace to [folderKey] with [session]'s tab selected. */
+  followToFolder: (folderKey: string, session: string) => void;
   /** Put the keyboard where the user just looked; the view owns the pane refs. */
   focusActiveTab: () => Promise<void>;
 }
@@ -253,8 +261,19 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
    * minted the panes' identities, so a rename's rewrite (pane and row in one
    * tick) reads as the pane never having left.
    */
+  /**
+   * The session in front moved to another folder under a mounted pane (its
+   * shell `cd`'d: an aplexer session's workspace follows the cwd, #3146). The
+   * pane is kept alive across the re-route so the terminal is neither
+   * unmounted nor re-attached; cleared when the destination bar holds it.
+   */
+  const following = ref<{ identity: string; folderKey: string } | null>(null);
+  /** The identity of the session last seen in front on THIS folder's bar. */
+  let confirmed: { identity: string; folderKey: string } | null = null;
+
   const liveIdentities = computed(() => {
     const live = new Set<string>();
+    if (following.value) live.add(following.value.identity);
     for (const tab of tabs.value) {
       if (tab.kind === 'session') live.add(identityFor(tab.session));
       else if (tab.kind === 'tool') live.add(tab.id);
@@ -360,7 +379,11 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
    */
   function identityFor(name: string, like?: string): string {
     const m = sessionMeta.value.get(like ?? name);
-    return sessionIdentityKey(name, { backend: m?.backend, workspace: m?.workspace ?? undefined });
+    return sessionIdentityKey(name, {
+      backend: m?.backend,
+      workspace: m?.workspace ?? undefined,
+      aplexerId: m?.aplexerId ?? undefined,
+    });
   }
 
   /**
@@ -494,6 +517,44 @@ export function useWorkspaceTabs(deps: WorkspaceTabsDeps): {
       // it would be a wipe ON DISK. So the guard the manual order already carried
       // now stands over the stack too.
       if (deps.sessions.sessions.length === 0) return;
+      // Followed-session bookkeeping runs BEFORE the prune: it decides whether
+      // the pane in front is about to be orphaned by a folder move.
+      const barIdentities = new Set<string>();
+      for (const tab of list) if (tab.kind === 'session') barIdentities.add(identityFor(tab.session));
+      if (following.value && barIdentities.has(following.value.identity)) following.value = null;
+      // The user navigated somewhere that is neither the origin nor the
+      // destination: the pending follow is void.
+      if (
+        following.value &&
+        deps.folderKey.value !== following.value.folderKey &&
+        deps.folderKey.value !== confirmed?.folderKey
+      ) {
+        following.value = null;
+      }
+      if (!following.value) {
+        if (
+          confirmed &&
+          confirmed.folderKey === deps.folderKey.value &&
+          !barIdentities.has(confirmed.identity)
+        ) {
+          const identity = confirmed.identity;
+          const target = deps.allFolders.value.find(
+            (dir) =>
+              dir.key !== deps.folderKey.value &&
+              dir.rows.some((row) => sessionIdentityKey(row.session.name, row.session) === identity),
+          );
+          const row = target?.rows.find((r) => sessionIdentityKey(r.session.name, r.session) === identity);
+          if (target && row) {
+            following.value = { identity, folderKey: target.key };
+            deps.followToFolder(target.key, row.session.name);
+          } else {
+            confirmed = null;
+          }
+        } else if (activeSession.value) {
+          const id = identityFor(activeSession.value);
+          if (barIdentities.has(id)) confirmed = { identity: id, folderKey: deps.folderKey.value };
+        }
+      }
       pruneAgainst(list);
       // The panes prune on the same authority and for the same class of reason.
       // A pane whose identity is no longer on the bar retires here — the record
