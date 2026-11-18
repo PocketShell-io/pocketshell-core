@@ -680,6 +680,7 @@ onMounted(async () => {
   // a suggestion from another machine, not an instruction.
   term.loadAddon(new WebLinksAddon((_event, uri) => openExternal(uri)));
   term.open(containerEl.value!);
+  // The cursor row's position follows every repaint and cursor move (#3128).
   termDisposables.push(term.onRender(scheduleCursorReport), term.onCursorMove(scheduleCursorReport));
   // Hands the terminal to the controller: the initial fit, the parse-stall
   // monitor, and the byte/resize routes — bound ONCE against the terminal's
