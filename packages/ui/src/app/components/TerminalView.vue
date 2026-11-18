@@ -47,7 +47,7 @@
 // MIDDLE click does nothing at all (see onTerminalAuxClick): xterm's own
 // middle-click paste would feed the clipboard to the shell silently.
 // Ctrl+Shift+Y / Ctrl+Shift+B copy the pane itself as text — terminalCapture.ts.
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -63,8 +63,9 @@ import { forceLocalMouseSelection } from '../terminalMouseSelection';
 import { captureChord, captureTerminalText, type CaptureScope } from '../terminalCapture';
 import { copyToClipboard, pasteFromClipboard } from '../terminalClipboard';
 import { useSettingsStore } from '../stores/settings';
-import { DEFAULT_MONO_STACK, remeasureAfterFontLoad, resolveMonoStack } from '@ui/fonts';
+import { DEFAULT_MONO_STACK, monoStackFor, remeasureAfterFontLoad, terminalFontSizeFor } from '@ui/fonts';
 import { fontProfile } from '../fontProfile';
+import { useLayoutClass } from '../layoutClass';
 import { resolveTheme, terminalLinkTint } from '@ui/themes';
 import { isTypingKey } from '@pocketshell/core/shared/composerText';
 import { isShortcut } from '@pocketshell/core/shared/shortcuts';
@@ -84,6 +85,35 @@ const shells = useShellsStore();
 // Typography is a user setting; the two values in TERMINAL_OPTIONS are only
 // its defaults. See packages/ui/src/fonts.ts.
 const settings = useSettingsStore();
+
+/**
+ * The compact (phone) layout gets its own font size and full-width cells
+ * (#3157): Termius' density on the same phone is ~58 columns, and every
+ * pixel of gutter is a column lost. `--term-padding` shrinks to 2px at the
+ * sides (the style block below) and xterm's scrollbar reservation — which
+ * FitAddon subtracts from the width even though the scrollbar only overlays
+ * the pane while a swipe scrolls it — shrinks from 14px to the same 2px.
+ * Width is the only signal: a phone held sideways is not compact, and gets
+ * the desktop's 16px and gutters back, exactly as a narrow desktop window
+ * gets the phone's.
+ */
+const layoutClass = useLayoutClass();
+const compact = computed(() => layoutClass.value === 'compact');
+const fontSize = computed(() => terminalFontSizeFor(settings, compact.value));
+/** The scrollbar width xterm reserves in compact; also its rendered width. */
+const COMPACT_SCROLLBAR_PX = 2;
+const overviewRuler = (isCompact: boolean): ITerminalOptions['overviewRuler'] =>
+  isCompact ? { width: COMPACT_SCROLLBAR_PX } : {};
+/**
+ * Setting `overviewRuler.width` (the only knob for xterm's scrollbar width)
+ * also mounts its decoration overview ruler, which paints a 1px border in
+ * this colour. Nothing here puts decorations on the ruler, so the border is
+ * all it would ever draw: keep it invisible.
+ */
+const terminalTheme = (choice: string): ITerminalOptions['theme'] => ({
+  ...resolveTheme(choice).terminal,
+  overviewRulerBorder: 'transparent',
+});
 
 const props = defineProps<{
   connectionId: ConnectionId;
@@ -588,9 +618,10 @@ onMounted(async () => {
   };
   term = new Terminal({
     ...TERMINAL_OPTIONS,
-    fontFamily: resolveMonoStack(settings.monospaceFontFamily, fontProfile().fallbackStack),
-    fontSize: settings.terminalFontSize,
-    theme: resolveTheme(settings.theme).terminal,
+    fontFamily: monoStackFor(settings.monospaceFontFamily, fontProfile().fallbackStack, compact.value),
+    fontSize: fontSize.value,
+    overviewRuler: overviewRuler(compact.value),
+    theme: terminalTheme(settings.theme),
     // `registerDecoration` — the at-rest path tint, terminalPathHighlights.ts —
     // is proposed-API and THROWS without this flag. `term.unicode` (the
     // Unicode 11 width provider, terminalUnicode.ts) sits behind the same
@@ -652,7 +683,7 @@ onMounted(async () => {
   // Once the bundled face has loaded, re-measure and refit so the column count
   // never rests on fallback-face metrics (#3138).
   void remeasureAfterFontLoad(
-    term, term.options.fontFamily ?? '', settings.terminalFontSize,
+    term, term.options.fontFamily ?? '', fontSize.value,
     () => { if (!unmounted) pane.scheduleFit(); },
     () => unmounted,
   );
@@ -806,12 +837,13 @@ onBeforeUnmount(() => {
  * the bound `term.onResize` route — there is nothing extra to send.
  */
 watch(
-  () => [settings.monospaceFontFamily, settings.terminalFontSize, settings.zoomPercent] as const,
-  ([family, size]) => {
+  () => [settings.monospaceFontFamily, fontSize.value, settings.zoomPercent, compact.value] as const,
+  ([family, size, , isCompact]) => {
     if (!term) return;
-    const stack = resolveMonoStack(family, fontProfile().fallbackStack);
+    const stack = monoStackFor(family, fontProfile().fallbackStack, isCompact);
     term.options.fontFamily = stack;
     term.options.fontSize = size;
+    term.options.overviewRuler = overviewRuler(isCompact);
     pane.scheduleFit();
     // A newly chosen bundled/installed face may not be loaded yet.
     void remeasureAfterFontLoad(term, stack, size, () => { if (!unmounted) pane.scheduleFit(); }, () => unmounted);
@@ -830,9 +862,9 @@ watch(
  */
 watch(
   () => resolveTheme(settings.theme),
-  (theme) => {
+  () => {
     if (!term) return;
-    term.options.theme = theme.terminal;
+    term.options.theme = terminalTheme(settings.theme);
   },
 );
 watch(
@@ -889,7 +921,7 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
   <div
     ref="containerEl"
     class="terminal"
-    :class="{ 'drop-target': dropActive }"
+    :class="{ 'drop-target': dropActive, compact }"
     @dragover="onTerminalDragOver"
     @dragleave="onTerminalDragLeave"
     @drop="onTerminalDrop"
@@ -992,6 +1024,13 @@ defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, captu
   height: 100%;
   /* Windows Terminal defaults.json: padding "8, 8, 8, 8" */
   padding: var(--term-padding);
+}
+/* Compact (#3157): 2px at the left, nothing at the right — the 2px xterm
+   reserves for its scrollbar (COMPACT_SCROLLBAR_PX) is the right gutter. Top
+   and bottom keep the shared inset. FitAddon subtracts this element's own
+   padding, so the arithmetic above still holds. */
+.terminal.compact :deep(.xterm) {
+  padding: var(--term-padding) 0 var(--term-padding) var(--term-padding-compact-x);
 }
 /* xterm 6.0.0 injects its runtime theme and dimension sheets as <style>
    children of .xterm-screen — inside the terminal, not document.head — and

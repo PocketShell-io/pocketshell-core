@@ -2,12 +2,12 @@ import { defineStore } from 'pinia';
 import { computed, reactive, toRefs, watch } from 'vue';
 import {
   EDITOR_FONT_SIZE_DEFAULT,
+  parseCompactFontSize,
   parseFontSize,
   sanitiseFontFamily,
+  TERMINAL_FONT_SIZE_COMPACT_DEFAULT,
   TERMINAL_FONT_SIZE_DEFAULT,
-  terminalFontSizeDefault,
 } from '@ui/fonts';
-import { NARROW_WORKSPACE_QUERY } from '../workspaceLayout';
 import { type FolderOrder, normaliseFolderOrder } from '../folderOrder';
 import {
   FOLDER_SORT_DEFAULT,
@@ -125,8 +125,15 @@ export interface AppSettings {
    * which is what stops an uninstalled choice landing on a proportional face.
    */
   monospaceFontFamily: string | null;
-  /** Terminal cell size, in px. Changing it re-fits the PTY's rows/columns. */
+  /** Terminal cell size, in px, in the medium/expanded layouts. Changing it re-fits the PTY's rows/columns. */
   terminalFontSize: number;
+  /**
+   * Terminal cell size, in px, in the compact (phone) layout. Its own key, not
+   * a second default of `terminalFontSize`: a stored size cannot tell a choice
+   * from a default an earlier build persisted (#3157) — see fonts.ts
+   * `terminalFontSizeFor`.
+   */
+  compactTerminalFontSize: number;
   /** File-editor text size, in px. Separate from the terminal's — see fonts.ts. */
   editorFontSize: number;
   /**
@@ -524,6 +531,9 @@ const SETTING_SPECS: SettingSpecs = {
   // until the user asks for a change.
   monospaceFontFamily: { default: null, parse: sanitiseFontFamily },
   terminalFontSize: { default: TERMINAL_FONT_SIZE_DEFAULT, parse: parseFontSize },
+  // The phone's own size, Termius' density (#3157). New key, so a phone whose
+  // stored blob carries the desktop's persisted 16 still gets it.
+  compactTerminalFontSize: { default: TERMINAL_FONT_SIZE_COMPACT_DEFAULT, parse: parseCompactFontSize },
   editorFontSize: { default: EDITOR_FONT_SIZE_DEFAULT, parse: parseFontSize },
   // `dark`, NOT `system`, for the same reason every default here is what it
   // is: dark is what shipped, and an upgrade must not repaint the app of a
@@ -623,22 +633,10 @@ function applyParsed<K extends keyof AppSettings>(
   out[key] = parsed;
 }
 
-/** The compact (phone) layout; absent `matchMedia` (a bare test DOM) means the wide default. */
-function compactViewport(): boolean {
-  return typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia(NARROW_WORKSPACE_QUERY).matches;
-}
-
 /** A fresh, fully-defaulted settings object. */
 export function settingsDefaults(): AppSettings {
   const out: Partial<AppSettings> = {};
   for (const key of settingKeys()) applyDefault(out, key);
-  // The terminal's size is the one default that depends on the layout: the
-  // phone-sized (narrow) layout ships 13px so a 412dp screen holds >= 50
-  // columns (#3138); the desktop's 16 is unchanged. Resolved here, per call,
-  // because the answer is a property of the viewport the store boots in.
-  out.terminalFontSize = terminalFontSizeDefault(compactViewport());
   // Every key of AppSettings was just written, which the loop cannot prove to
   // the compiler; this is the assertion of that fact and the only one here.
   return out as AppSettings;

@@ -63,6 +63,8 @@
   --term-fg: #cccccc;
   --term-font-size: 16px;
   --term-padding: 8px;
+  /* Side inset in the compact (phone) layout, where a gutter costs columns (#3157). */
+  --term-padding-compact-x: 2px;
 
   /* ---- Code (file editor syntax colours) ------------------------------
    * Derived from Campbell, because the Files tab's editor sits on
