@@ -171,8 +171,8 @@ describe('ComposerExtensionContext draft and submit seams (#3128)', () => {
   });
 });
 
-describe('the open card reports its cover of the pane (#3128 terminal lift)', () => {
-  it('emits the px the card covers above the pane bottom when open, and 0 when closed', async () => {
+describe('the open card reports its top edge (#3128 terminal lift)', () => {
+  it('emits the card top in viewport px when open, and null when closed', async () => {
     const rect = (top: number, bottom: number) =>
       ({ top, bottom, left: 0, right: 400, width: 400, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
     const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -182,14 +182,14 @@ describe('the open card reports its cover of the pane (#3128 terminal lift)', ()
     });
     try {
       const { w, composer } = await mountComposer();
-      const last = () => (w.emitted('cover') ?? []).at(-1)?.[0];
-      expect(last()).toBe(0);
+      const last = () => (w.emitted('card-top') ?? []).at(-1)?.[0];
+      expect(last()).toBeNull();
       composer.setMode('docked');
       await flushPromises();
-      expect(last()).toBe(280);
+      expect(last()).toBe(520);
       composer.setMode('hidden');
       await flushPromises();
-      expect(last()).toBe(0);
+      expect(last()).toBeNull();
       w.unmount();
     } finally {
       spy.mockRestore();

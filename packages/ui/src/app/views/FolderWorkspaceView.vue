@@ -731,10 +731,13 @@ function onFocusTerminal(): void {
  * layouts keep the card floating over an unmoved terminal, as before.
  */
 const layoutClass = useLayoutClass();
-const composerCover = ref(0);
-const terminalLift = computed(() =>
-  layoutClass.value === 'compact' && activeTab.value?.kind === 'session' ? composerCover.value : 0,
-);
+const tabBodyEl = ref<HTMLElement | null>(null);
+const composerCardTop = ref<number | null>(null);
+const terminalLift = computed(() => {
+  const top = composerCardTop.value;
+  if (layoutClass.value !== 'compact' || activeTab.value?.kind !== 'session' || top === null || !tabBodyEl.value) return 0;
+  return Math.max(0, Math.round(tabBodyEl.value.getBoundingClientRect().bottom - top));
+});
 
 /** Same reasoning as `terminalRefs`, for the composer, whose `typeInto` the terminal feeds. */
 const composerRef = ref<{
@@ -800,7 +803,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
     <BarErrorStrip :message="barError" @dismiss="dismissBarError" />
 
     <div class="workspace-body">
-      <div :class="['tab-body', { lifted: terminalLift > 0 }]">
+      <div ref="tabBodyEl" :class="['tab-body', { lifted: terminalLift > 0 }]">
         <!-- One terminal per visited session tab, all kept mounted. Hiding
              rather than re-pointing is what makes a tab switch instant, and
              keeping them mounted while a Files tab shows is what stops a tab
@@ -918,7 +921,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
           :agent-kind="agentKind"
           :connected="connection.state === 'connected'"
           @focus-terminal="onFocusTerminal"
-          @cover="(px: number) => (composerCover = px)"
+          @card-top="(top: number | null) => (composerCardTop = top)"
         />
       </div>
     </div>

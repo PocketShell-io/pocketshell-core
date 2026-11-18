@@ -109,11 +109,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'focus-terminal'): void;
   /**
-   * How many px of the pane's bottom the open card covers (0 when closed). The
-   * workspace lifts the terminal VIEW by this much on a phone, so the cursor
-   * rows stay visible above the card without resizing the remote terminal.
+   * The open card's top edge in viewport px (null when closed). The workspace
+   * lifts the terminal VIEW above it on a phone, so the cursor rows stay
+   * visible without resizing the remote terminal.
    */
-  (e: 'cover', px: number): void;
+  (e: 'card-top', top: number | null): void;
 }>();
 
 const composer = useComposerStore();
@@ -292,20 +292,16 @@ const extensionContext = computed<ComposerExtensionContext>(() => {
   };
 });
 
-// The card's cover of the pane's bottom edge, measured after each layout
-// change of the card (open, close, resize, move). Reported, never acted on
-// here: whether to lift the terminal is the workspace's call.
-let lastCover = -1;
+// The card's top edge, measured after each layout change of the card (open,
+// close, resize, move). Reported, never acted on here: whether to lift the
+// terminal is the workspace's call.
+let lastCardTop: number | null | undefined;
 function reportCover(): void {
-  const root = rootEl.value;
-  const card = root?.querySelector<HTMLElement>(':scope > .composer') ?? null;
-  const cover =
-    root && card && mode.value !== 'hidden'
-      ? Math.max(0, Math.round(root.getBoundingClientRect().bottom - card.getBoundingClientRect().top))
-      : 0;
-  if (cover === lastCover) return;
-  lastCover = cover;
-  emit('cover', cover);
+  const card = rootEl.value?.querySelector<HTMLElement>(':scope > .composer') ?? null;
+  const top = card && mode.value !== 'hidden' ? Math.round(card.getBoundingClientRect().top) : null;
+  if (top === lastCardTop) return;
+  lastCardTop = top;
+  emit('card-top', top);
 }
 watch([mode, rootStyle], () => void nextTick(reportCover), { immediate: true, flush: 'post' });
 let coverObserver: ResizeObserver | null = null;
