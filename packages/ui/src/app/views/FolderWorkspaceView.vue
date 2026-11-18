@@ -733,13 +733,32 @@ function onFocusTerminal(): void {
  */
 const layoutClass = useLayoutClass();
 const tabBodyEl = ref<HTMLElement | null>(null);
+const terminalAreaEl = ref<HTMLElement | null>(null);
 const composerCardTop = ref<number | null>(null);
+/** The active terminal's cursor-row bottom as if the view were NOT lifted (viewport px). */
+const cursorBottom = ref<number | null>(null);
+function onCursorBottom(identity: string, px: number | null): void {
+  if (identity !== terminalIdentity.value) return;
+  if (px === null || !tabBodyEl.value || !terminalAreaEl.value) {
+    cursorBottom.value = null;
+    return;
+  }
+  // The area's layout top is the tab body's; any difference is the lift
+  // applied right now, which the report includes and the rule must not.
+  const applied = tabBodyEl.value.getBoundingClientRect().top - terminalAreaEl.value.getBoundingClientRect().top;
+  cursorBottom.value = px + applied;
+}
+watch(terminalIdentity, (identity) => {
+  cursorBottom.value = null;
+  if (identity) void nextTick(() => terminalRefs.get(identity)?.reportCursorBottom?.());
+});
 const terminalLift = computed(() =>
   terminalLiftPx({
     layout: layoutClass.value,
     sessionTab: activeTab.value?.kind === 'session',
     cardTop: composerCardTop.value,
     paneBottom: tabBodyEl.value ? tabBodyEl.value.getBoundingClientRect().bottom : null,
+    cursorBottom: cursorBottom.value,
   }),
 );
 
@@ -822,6 +841,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
              workspaces' `main` tabs must not show each other's terminal. -->
         <!-- The COMMAND tool pane (the maintenance workspace's htop) shows under the same rule; it binds bare + command instead of a session (maintenance.ts). A VIEW tool's pane mounts its component in the second v-for. -->
         <div
+          ref="terminalAreaEl"
           class="terminal-area"
           v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
           :style="terminalLift > 0 ? { transform: `translateY(-${terminalLift}px)` } : undefined"
@@ -852,6 +872,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               @typed="onTyped"
               @paste-into-composer="onPasteIntoComposer"
               @drop-into-composer="onDropIntoComposer"
+              @cursor-bottom="(px: number | null) => onCursorBottom(pane.identity, px)"
             />
           </div>
           <!-- A VIEW tool's pane: the workspace mounts the tool's component

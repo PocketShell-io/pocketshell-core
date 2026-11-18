@@ -249,3 +249,25 @@ describe('a phone composer never raises the soft keyboard on its own (#3128: no 
     w.unmount();
   });
 });
+
+describe('claimActions: one action row while a source owns it (#3128)', () => {
+  it('hides the composer control row while claimed, restores it on release and on a session switch', async () => {
+    const { w } = await mountComposer();
+    launcherContext!.open();
+    await flushPromises();
+    const controls = () => w.findAll('button').filter((b) => b.text() === 'Send').length;
+    expect(controls()).toBe(1);
+    sourceContext!.claimActions(true);
+    await flushPromises();
+    expect(controls()).toBe(0);
+    sourceContext!.claimActions(false);
+    await flushPromises();
+    expect(controls()).toBe(1);
+    sourceContext!.claimActions(true);
+    await flushPromises();
+    await w.setProps({ sessionName: 'other' });
+    await flushPromises();
+    expect(controls()).toBe(1);
+    w.unmount();
+  });
+});

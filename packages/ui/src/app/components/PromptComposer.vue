@@ -279,6 +279,11 @@ const doodleSheet = ref<{
  * contributions (extensions.ts) see: this draft's session, the caret insert
  * the terminal's withheld keystroke uses, and the drop's staging path.
  */
+/** A platform input source owns the action row (see `claimActions`). */
+const actionsClaimed = ref(false);
+watch(key, () => {
+  actionsClaimed.value = false;
+});
 const extensionContext = computed<ComposerExtensionContext>(() => {
   // Bound to the session this context was built for: a source that outlives
   // a session switch writes into its own session's draft, never the next one.
@@ -298,6 +303,9 @@ const extensionContext = computed<ComposerExtensionContext>(() => {
     },
     submit: (options: { enter: boolean }) =>
       boundKey === key.value ? onSubmit({ enter: options.enter, focus: false }) : Promise.resolve(false),
+    claimActions: (claimed: boolean) => {
+      if (boundKey === key.value || !claimed) actionsClaimed.value = claimed;
+    },
   };
 });
 
@@ -512,6 +520,7 @@ defineExpose({
       <ExtensionSlot name="composer.inputSources" class="composer-input-sources" :context="extensionContext" />
 
       <ComposerControls
+        v-if="!actionsClaimed"
         :uploading-count="state.uploadingCount"
         :agent-kind="agentKind"
         :can-send="canSend"
@@ -878,6 +887,13 @@ defineExpose({
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3) 0;
+}
+/* A contribution that renders nothing on this layout (a phone-only source on a
+   wide window) leaves an empty slot: it takes no room, so the card is exactly
+   what it is with nothing contributed. */
+.composer-accessory:empty,
+.composer-input-sources:empty {
+  display: none;
 }
 .draft-wrap {
   flex: 1 1 auto;

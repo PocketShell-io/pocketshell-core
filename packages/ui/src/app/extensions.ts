@@ -112,6 +112,12 @@ export interface ComposerExtensionContext {
    * It never moves the keyboard focus (no soft keyboard pops up on a phone).
    */
   submit(options: { enter: boolean }): Promise<boolean>;
+  /**
+   * While true, the source's own action row (a dictation panel's
+   * Stop / Discard / Insert / Send) replaces the composer's control row, so the
+   * user sees exactly one set of actions. Release it with false.
+   */
+  claimActions(claimed: boolean): void;
 }
 
 export interface ExtensionSlots {

@@ -33,6 +33,8 @@ export interface TerminalPane {
   sendInput: (data: string) => void;
   /** The pane's text as text — see TerminalView's `capture`. */
   capture: (scope: CaptureScope) => void;
+  /** Re-report the cursor row's position — see TerminalView's `cursor-bottom`. */
+  reportCursorBottom?: () => void;
 }
 
 export interface WorkspaceTabsDeps {
