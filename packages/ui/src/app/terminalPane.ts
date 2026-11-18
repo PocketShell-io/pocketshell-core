@@ -171,6 +171,12 @@ export class TerminalPane {
    * the raw CLI line.
    */
   readonly sessionEnded: Ref<boolean> = ref(false);
+  /**
+   * Why the last join this pane was asked for failed, or null. The view shows
+   * it with a Reconnect action: red text alone stranded the user on a tab
+   * whose host link was gone (pocketshell#3160).
+   */
+  readonly openFailed: Ref<string | null> = ref(null);
   /** The last output text, for recognising the host CLI's "no session named" line. */
   private recentOutput = '';
   private earlyOutputClosed = false;
@@ -464,6 +470,7 @@ export class TerminalPane {
     // From here until the far end's first byte, the pane says what it is doing
     // instead of being a black rectangle. See the join-veil note above.
     this.sessionEnded.value = false;
+    this.openFailed.value = null;
     this.recentOutput = '';
     this.earlyOutputClosed = false;
     this.attachRequestedAt = Date.now();
@@ -507,6 +514,7 @@ export class TerminalPane {
       // somebody actually asked for.
       if (!quietFailure) {
         this.paneWrite(`\r\n\u001b[31mCould not open a shell: ${describe(e)}\u001b[0m\r\n`);
+        this.openFailed.value = describe(e);
       }
       return;
     }

@@ -470,7 +470,12 @@ export class ConnectionController {
     if (!cli || !connection) {
       return { ok: false, reason: 'not-connected', message: 'Connect to a host before listing sessions.' };
     }
-    this.setSnapshot({ phase: this.snapshot.phase === 'live' ? 'live' : 'listing', error: null });
+    // A listing never moves a backgrounded controller out of `background`:
+    // only returnToForeground may, because it alone cancels the scheduled
+    // grace close. Overwriting it stranded the terminal (pocketshell#3160).
+    if (this.snapshot.phase !== 'background') {
+      this.setSnapshot({ phase: this.snapshot.phase === 'live' ? 'live' : 'listing', error: null });
+    }
     try {
       const listing = await cli.listSessions();
       this.setSnapshot({ sessions: listing.sessions, sessionListErrors: listing.errors });
@@ -491,8 +496,8 @@ export class ConnectionController {
         // saw the dead link first doubled the ladder's journal (#3039).
         if (!this.isCurrentGeneration(connection)) return { ok: false, reason: 'failed', message };
       }
-      const phase = this.snapshot.phase === 'reconnecting'
-        ? 'reconnecting'
+      const phase = this.snapshot.phase === 'reconnecting' || this.snapshot.phase === 'background'
+        ? this.snapshot.phase
         : this.hasLiveTerminal() ? 'live' : 'error';
       this.setSnapshot({ error: message, phase });
       return { ok: false, reason: 'failed', message };
