@@ -102,6 +102,7 @@ import { useWorkspaceReveal } from '../useWorkspaceReveal';
 import { useWorkspaceTabs } from '../useWorkspaceTabs';
 import { useWorkspaceChords } from '../useWorkspaceChords';
 import { useLayoutClass } from '../layoutClass';
+import { terminalLiftPx } from '../terminalLift';
 
 const route = useRoute();
 const router = useRouter();
@@ -733,11 +734,14 @@ function onFocusTerminal(): void {
 const layoutClass = useLayoutClass();
 const tabBodyEl = ref<HTMLElement | null>(null);
 const composerCardTop = ref<number | null>(null);
-const terminalLift = computed(() => {
-  const top = composerCardTop.value;
-  if (layoutClass.value !== 'compact' || activeTab.value?.kind !== 'session' || top === null || !tabBodyEl.value) return 0;
-  return Math.max(0, Math.round(tabBodyEl.value.getBoundingClientRect().bottom - top));
-});
+const terminalLift = computed(() =>
+  terminalLiftPx({
+    layout: layoutClass.value,
+    sessionTab: activeTab.value?.kind === 'session',
+    cardTop: composerCardTop.value,
+    paneBottom: tabBodyEl.value ? tabBodyEl.value.getBoundingClientRect().bottom : null,
+  }),
+);
 
 /** Same reasoning as `terminalRefs`, for the composer, whose `typeInto` the terminal feeds. */
 const composerRef = ref<{
