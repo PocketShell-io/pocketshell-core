@@ -21,6 +21,9 @@
  *   composer.inputSources  components that insert text or files into the
  *                          prompt composer (a picker, dictation, a share inbox)
  *   composer.accessory     a chip row above the composer's draft
+ *   composer.launcher      what opens the composer while it is closed, beside
+ *                          its toggle (a phone's one-tap mic); rendered only
+ *                          while the composer is closed
  *   settings.sections      extra sections at the end of Settings
  *   app.dismissLayers      runtime, not contributed: open overlays register a
  *                          close handler, and the platform's dismiss gesture
@@ -80,14 +83,41 @@ export interface TerminalDockContext {
   sendInput(data: string): void;
 }
 
-/** The context `composer.inputSources` and `composer.accessory` components receive. */
+/**
+ * The context `composer.inputSources`, `composer.accessory` and
+ * `composer.launcher` components receive. A context is built per session: the
+ * draft functions below stay bound to the session the context was built for,
+ * so a late write from a source that outlived a session switch lands in its
+ * own session's draft, never in the next one.
+ */
 export interface ComposerExtensionContext {
   /** The session the composer drafts for. */
   sessionName: string;
+  /** The session's identity key (the same key `terminal.dock` sees). */
+  sessionKey: string;
   /** Insert text into the draft at the caret, opening the composer if closed. */
   insertText(text: string): void;
   /** Stage files as attachments, the same path as a drop. */
   attachFiles(files: File[]): void;
+  /** Open the composer without moving the keyboard focus. */
+  open(): void;
+  /** This session's draft as it is now. */
+  readDraft(): string;
+  /** Replace this session's draft (a source streaming text in), caret at the end. */
+  setDraft(text: string): void;
+  /**
+   * Deliver the draft into the session's pane: `enter: true` is Send, `enter:
+   * false` writes it without the submit key (Insert). Resolves whether it was
+   * delivered; a failure leaves the draft and the "Not sent" banner, as Send does.
+   * It never moves the keyboard focus (no soft keyboard pops up on a phone).
+   */
+  submit(options: { enter: boolean }): Promise<boolean>;
+  /**
+   * While true, the source's own action row (a dictation panel's
+   * Stop / Discard / Insert / Send) replaces the composer's control row, so the
+   * user sees exactly one set of actions. Release it with false.
+   */
+  claimActions(claimed: boolean): void;
 }
 
 export interface ExtensionSlots {
@@ -95,13 +125,14 @@ export interface ExtensionSlots {
   'terminal.inputAdapter': TerminalInputAdapter;
   'composer.inputSources': ComponentContribution;
   'composer.accessory': ComponentContribution;
+  'composer.launcher': ComponentContribution;
   'settings.sections': SettingsSectionContribution;
 }
 
 export type ExtensionSlotName = keyof ExtensionSlots;
 
 /** The component-rendering slots `<ExtensionSlot>` can show. */
-export type ComponentSlotName = 'terminal.dock' | 'composer.inputSources' | 'composer.accessory';
+export type ComponentSlotName = 'terminal.dock' | 'composer.inputSources' | 'composer.accessory' | 'composer.launcher';
 
 export type AppExtensions = { [K in ExtensionSlotName]?: readonly ExtensionSlots[K][] };
 
@@ -110,6 +141,7 @@ export const EXTENSION_SLOTS: readonly ExtensionSlotName[] = [
   'terminal.inputAdapter',
   'composer.inputSources',
   'composer.accessory',
+  'composer.launcher',
   'settings.sections',
 ];
 

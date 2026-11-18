@@ -455,6 +455,11 @@ export interface DeliverOptions {
   write: (data: string) => Promise<boolean>;
   /** Overrides `composerTiming.submitDelayMs`. */
   submitDelayMs?: number;
+  /**
+   * False writes the payload and stops there: no delay, no submit key (the
+   * phone composer's Insert). Defaults to true, which is Send.
+   */
+  submit?: boolean;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   /**
@@ -503,6 +508,7 @@ export async function deliverPayload(payload: string, opts: DeliverOptions): Pro
     if (!(await opts.write(part))) return false;
     if (i < parts.length - 1 && PASTE_GAP_MS > 0) await sleep(PASTE_GAP_MS);
   }
+  if (opts.submit === false) return true;
   if (delay > 0) await sleep(delay);
   return opts.write(SUBMIT_KEY);
 }

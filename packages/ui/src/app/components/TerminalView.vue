@@ -180,6 +180,12 @@ const emit = defineEmits<{
   (e: 'typed', text: string): void;
   (e: 'paste-into-composer'): void;
   (e: 'drop-into-composer', files: File[]): void;
+  /**
+   * Where the cursor row ends, in viewport px (null while the cursor is
+   * scrolled out of view). Reported on render and cursor moves so a phone
+   * workspace can keep the input line visible above its composer (#3128).
+   */
+  (e: 'cursor-bottom', px: number | null): void;
 }>();
 
 // The two identities this pane answers to — which session it shows (never
@@ -674,6 +680,8 @@ onMounted(async () => {
   // a suggestion from another machine, not an instruction.
   term.loadAddon(new WebLinksAddon((_event, uri) => openExternal(uri)));
   term.open(containerEl.value!);
+  // The cursor row's position follows every repaint and cursor move (#3128).
+  termDisposables.push(term.onRender(scheduleCursorReport), term.onCursorMove(scheduleCursorReport));
   // Hands the terminal to the controller: the initial fit, the parse-stall
   // monitor, and the byte/resize routes — bound ONCE against the terminal's
   // whole lifetime, across session re-points (terminalPane.ts documents why
@@ -782,7 +790,30 @@ function onWindowResize(): void {
   pane.scheduleFit();
 }
 
+// ---- the cursor row's position (#3128) ----------------------------------
+let cursorFrame: number | null = null;
+let lastCursorBottom: number | null | undefined;
+function scheduleCursorReport(): void {
+  if (cursorFrame !== null || typeof requestAnimationFrame === 'undefined') return;
+  cursorFrame = requestAnimationFrame(() => {
+    cursorFrame = null;
+    reportCursorBottom();
+  });
+}
+function reportCursorBottom(): void {
+  const screen = term?.element?.querySelector<HTMLElement>('.xterm-screen');
+  if (!term || !screen || term.rows <= 0) return;
+  const buffer = term.buffer.active;
+  const row = buffer.cursorY + buffer.baseY - buffer.viewportY;
+  const rect = screen.getBoundingClientRect();
+  const bottom = row < 0 || row >= term.rows ? null : Math.round(rect.top + ((row + 1) * rect.height) / term.rows);
+  if (bottom === lastCursorBottom) return;
+  lastCursorBottom = bottom;
+  emit('cursor-bottom', bottom);
+}
+
 onBeforeUnmount(() => {
+  if (cursorFrame !== null && typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(cursorFrame);
   unmounted = true;
   clearPrefix();
   inputOwnership.disposePrefixResets();
@@ -914,7 +945,7 @@ function capture(scope: CaptureScope): void {
   if (term) void copyToClipboard(captureTerminalText(term, scope));
 }
 
-defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, capture });
+defineExpose({ focus: (): void => term?.focus(), resyncDisplay, sendInput, capture, reportCursorBottom });
 </script>
 
 <template>

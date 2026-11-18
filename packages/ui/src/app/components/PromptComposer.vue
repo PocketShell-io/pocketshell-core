@@ -59,7 +59,7 @@
 // machine and keyboard to useComposerVisibility, the move/resize machinery to
 // useComposerGeometry, the draw-or-annotate overlay to DoodleSheet.vue, and
 // the control row to ComposerControls.vue.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useComposerStore } from '../stores/composer';
 import { useSettingsStore } from '../stores/settings';
 import { useShellsStore } from '../stores/shells';
@@ -78,6 +78,7 @@ import { useComposerSend } from '../useComposerSend';
 import { useComposerClipboard } from '../useComposerClipboard';
 import { useComposerVisibility } from '../useComposerVisibility';
 import { registerDismissLayer } from '../extensions';
+import { useLayoutClass } from '../layoutClass';
 import { useComposerGeometry } from '../useComposerGeometry';
 
 const props = defineProps<{
@@ -106,7 +107,15 @@ const props = defineProps<{
   connected?: boolean;
 }>();
 
-const emit = defineEmits<{ (e: 'focus-terminal'): void }>();
+const emit = defineEmits<{
+  (e: 'focus-terminal'): void;
+  /**
+   * The open card's top edge in viewport px (null when closed). The workspace
+   * lifts the terminal VIEW above it on a phone, so the cursor rows stay
+   * visible without resizing the remote terminal.
+   */
+  (e: 'card-top', top: number | null): void;
+}>();
 
 const composer = useComposerStore();
 const shells = useShellsStore();
@@ -152,8 +161,16 @@ function includeParked(remotePath: string): void {
   focusDraft();
 }
 
-/** Hand the keyboard to the terminal — the card's one outward announce. */
-const focusTerminal = (): void => emit('focus-terminal');
+/**
+ * Hand the keyboard to the terminal — the card's one outward announce. Not on
+ * a phone (#3128): focusing the terminal there raises the soft keyboard, and
+ * the keyboard resizes the remote terminal, so closing or sending would make
+ * the whole pane redraw. The keyboard stays as the user left it.
+ */
+const layoutClass = useLayoutClass();
+const focusTerminal = (): void => {
+  if (layoutClass.value !== 'compact') emit('focus-terminal');
+};
 
 /**
  * Send and the armed Discard moved whole to ../useComposerSend.ts.
@@ -166,7 +183,7 @@ const send = useComposerSend({
   props,
   focusTerminal,
 });
-const { canSend, discardArmed, onDiscardClick, onSend } = send;
+const { canSend, discardArmed, onDiscardClick, onSend, onSubmit } = send;
 
 /**
  * The staging pipeline, paste-to-attach, the terminal-side clipboard reader
@@ -262,13 +279,55 @@ const doodleSheet = ref<{
  * contributions (extensions.ts) see: this draft's session, the caret insert
  * the terminal's withheld keystroke uses, and the drop's staging path.
  */
-const extensionContext = computed<ComposerExtensionContext>(() => ({
-  sessionName: props.sessionName,
-  insertText: (text: string) => typeInto(text),
-  attachFiles: (files: File[]) => void acceptDroppedFiles(files),
-}));
+/** A platform input source owns the action row (see `claimActions`). */
+const actionsClaimed = ref(false);
+watch(key, () => {
+  actionsClaimed.value = false;
+});
+const extensionContext = computed<ComposerExtensionContext>(() => {
+  // Bound to the session this context was built for: a source that outlives
+  // a session switch writes into its own session's draft, never the next one.
+  const boundKey = key.value;
+  return {
+    sessionName: props.sessionName,
+    sessionKey: draft.sessionKey.value,
+    insertText: (text: string) => typeInto(text),
+    attachFiles: (files: File[]) => void acceptDroppedFiles(files),
+    open: () => {
+      if (mode.value === 'hidden') composer.setMode(composer.lastOpenMode);
+    },
+    readDraft: () => composer.ensure(boundKey).draft,
+    setDraft: (text: string) => {
+      composer.setDraft(boundKey, text, text.length);
+      if (boundKey === key.value) caret.value = text.length;
+    },
+    submit: (options: { enter: boolean }) =>
+      boundKey === key.value ? onSubmit({ enter: options.enter, focus: false }) : Promise.resolve(false),
+    claimActions: (claimed: boolean) => {
+      if (boundKey === key.value || !claimed) actionsClaimed.value = claimed;
+    },
+  };
+});
+
+// The card's top edge, measured after each layout change of the card (open,
+// close, resize, move). Reported, never acted on here: whether to lift the
+// terminal is the workspace's call.
+let lastCardTop: number | null | undefined;
+function reportCover(): void {
+  const card = rootEl.value?.querySelector<HTMLElement>(':scope > .composer') ?? null;
+  const top = card && mode.value !== 'hidden' ? Math.round(card.getBoundingClientRect().top) : null;
+  if (top === lastCardTop) return;
+  lastCardTop = top;
+  emit('card-top', top);
+}
+watch([mode, rootStyle], () => void nextTick(reportCover), { immediate: true, flush: 'post' });
+let coverObserver: ResizeObserver | null = null;
 
 onMounted(() => {
+  if (rootEl.value && typeof ResizeObserver !== 'undefined') {
+    coverObserver = new ResizeObserver(() => reportCover());
+    coverObserver.observe(rootEl.value);
+  }
   window.addEventListener('keydown', onGlobalKey, { capture: true });
   // Capture, so the press is seen wherever it lands — including inside the
   // terminal, which is the case the user actually asked for.
@@ -291,6 +350,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  coverObserver?.disconnect();
+  coverObserver = null;
   unregisterBackLayer?.();
   unregisterBackLayer = null;
   window.removeEventListener('keydown', onGlobalKey, { capture: true });
@@ -459,6 +520,7 @@ defineExpose({
       <ExtensionSlot name="composer.inputSources" class="composer-input-sources" :context="extensionContext" />
 
       <ComposerControls
+        v-if="!actionsClaimed"
         :uploading-count="state.uploadingCount"
         :agent-kind="agentKind"
         :can-send="canSend"
@@ -485,6 +547,15 @@ defineExpose({
          Ctrl+` hint — sat on top of terminal output at rest, which made the
          quietest state the most intrusive one. The hint moved into the tooltip
          and the draft moved into the pip. -->
+    <!-- The platform's launchers (extensions.ts `composer.launcher`), beside
+         the toggle while the composer is closed; nothing contributed, nothing
+         drawn. They place themselves: this root is their containing block. -->
+    <ExtensionSlot
+      v-if="mode === 'hidden'"
+      name="composer.launcher"
+      class="composer-launcher"
+      :context="extensionContext"
+    />
     <button
       ref="railEl"
       :class="['rail', { unsent: toggle.unsent }]"
@@ -816,6 +887,13 @@ defineExpose({
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3) 0;
+}
+/* A contribution that renders nothing on this layout (a phone-only source on a
+   wide window) leaves an empty slot: it takes no room, so the card is exactly
+   what it is with nothing contributed. */
+.composer-accessory:empty,
+.composer-input-sources:empty {
+  display: none;
 }
 .draft-wrap {
   flex: 1 1 auto;

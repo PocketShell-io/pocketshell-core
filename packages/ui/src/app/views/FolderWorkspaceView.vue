@@ -101,6 +101,8 @@ import { useSessionStop } from '../useSessionStop';
 import { useWorkspaceReveal } from '../useWorkspaceReveal';
 import { useWorkspaceTabs } from '../useWorkspaceTabs';
 import { useWorkspaceChords } from '../useWorkspaceChords';
+import { useLayoutClass } from '../layoutClass';
+import { terminalLiftPx } from '../terminalLift';
 
 const route = useRoute();
 const router = useRouter();
@@ -721,6 +723,45 @@ function onFocusTerminal(): void {
   if (identity) terminalRefs.get(identity)?.focus();
 }
 
+/**
+ * On a phone the open composer card covers the bottom of the terminal, which
+ * is where the cursor and an agent's prompt are. The terminal VIEW is lifted
+ * by the card's cover instead (a transform: the pane keeps its size, so the
+ * remote terminal is never resized and nothing redraws). The top rows slide
+ * under the tab body's clip; closing the card drops the view back. Wider
+ * layouts keep the card floating over an unmoved terminal, as before.
+ */
+const layoutClass = useLayoutClass();
+const tabBodyEl = ref<HTMLElement | null>(null);
+const terminalAreaEl = ref<HTMLElement | null>(null);
+const composerCardTop = ref<number | null>(null);
+/** The active terminal's cursor-row bottom as if the view were NOT lifted (viewport px). */
+const cursorBottom = ref<number | null>(null);
+function onCursorBottom(identity: string, px: number | null): void {
+  if (identity !== terminalIdentity.value) return;
+  if (px === null || !tabBodyEl.value || !terminalAreaEl.value) {
+    cursorBottom.value = null;
+    return;
+  }
+  // The area's layout top is the tab body's; any difference is the lift
+  // applied right now, which the report includes and the rule must not.
+  const applied = tabBodyEl.value.getBoundingClientRect().top - terminalAreaEl.value.getBoundingClientRect().top;
+  cursorBottom.value = px + applied;
+}
+watch(terminalIdentity, (identity) => {
+  cursorBottom.value = null;
+  if (identity) void nextTick(() => terminalRefs.get(identity)?.reportCursorBottom?.());
+});
+const terminalLift = computed(() =>
+  terminalLiftPx({
+    layout: layoutClass.value,
+    sessionTab: activeTab.value?.kind === 'session',
+    cardTop: composerCardTop.value,
+    paneBottom: tabBodyEl.value ? tabBodyEl.value.getBoundingClientRect().bottom : null,
+    cursorBottom: cursorBottom.value,
+  }),
+);
+
 /** Same reasoning as `terminalRefs`, for the composer, whose `typeInto` the terminal feeds. */
 const composerRef = ref<{
   typeInto: (text: string) => void;
@@ -785,7 +826,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
     <BarErrorStrip :message="barError" @dismiss="dismissBarError" />
 
     <div class="workspace-body">
-      <div class="tab-body">
+      <div ref="tabBodyEl" :class="['tab-body', { lifted: terminalLift > 0 }]">
         <!-- One terminal per visited session tab, all kept mounted. Hiding
              rather than re-pointing is what makes a tab switch instant, and
              keeping them mounted while a Files tab shows is what stops a tab
@@ -800,8 +841,11 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
              workspaces' `main` tabs must not show each other's terminal. -->
         <!-- The COMMAND tool pane (the maintenance workspace's htop) shows under the same rule; it binds bare + command instead of a session (maintenance.ts). A VIEW tool's pane mounts its component in the second v-for. -->
         <div
+          ref="terminalAreaEl"
           class="terminal-area"
           v-show="activeTab?.kind === 'session' || activeTab?.kind === 'tool'"
+          :style="terminalLift > 0 ? { transform: `translateY(-${terminalLift}px)` } : undefined"
+          :data-terminal-lift="terminalLift"
         >
           <div
             v-for="pane in terminalPanes"
@@ -828,6 +872,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
               @typed="onTyped"
               @paste-into-composer="onPasteIntoComposer"
               @drop-into-composer="onDropIntoComposer"
+              @cursor-bottom="(px: number | null) => onCursorBottom(pane.identity, px)"
             />
           </div>
           <!-- A VIEW tool's pane: the workspace mounts the tool's component
@@ -901,6 +946,7 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
           :agent-kind="agentKind"
           :connected="connection.state === 'connected'"
           @focus-terminal="onFocusTerminal"
+          @card-top="(top: number | null) => (composerCardTop = top)"
         />
       </div>
     </div>
@@ -963,6 +1009,10 @@ const filesRef = ref<{ focus?: () => void } | null>(null);
   display: flex;
   flex: 1;
   min-height: 0;
+}
+/* The lifted terminal's top rows slide out of view here, not over the bar. */
+.tab-body.lifted {
+  overflow: hidden;
 }
 .terminal-area {
   flex: 1;
