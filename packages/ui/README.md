@@ -56,6 +56,11 @@ platform; a client's own features plug in at startup:
   Settings renders after the shared ones). An empty slot renders no DOM.
 - `app.dismissLayers`: open overlays register a close handler; the
   platform's dismiss gesture calls `dismissTopLayer()`.
+- `handleBack(router)` (`src/app/backNavigation.ts`): the history-aware Back
+  for platforms with a Back gesture. Closes the topmost layer, then walks
+  maintenance tool -> host workspace -> host list; returns `false` only at the
+  host list root, where the platform decides what leaving means (Android
+  minimises).
 - The inset contract, `--ps-inset-top/bottom/left/right/keyboard`
   (`src/app/insets.ts`, `writeAppInsets`). Desktop and web leave them at 0.
 
