@@ -7,10 +7,12 @@ vi.mock('../src/app/keyVault',()=>({useKeyVault:()=>state.vault}));
 vi.mock('../src/app/stores/sync',()=>({useSyncStore:()=>state.sync}));
 vi.mock('@pocketshell/core',()=>({trustedHostSlot:async()=> 'th-fixture'}));
 import TrustedServersSection from '../src/app/components/TrustedServersSection.vue';
+import { clearCachedServers } from '../src/app/trustedServersCache';
 const host={accountId:'google:orin',vaultId:'fixture-vault',epoch:1,revision:1,version:1,
   serverUrl:'wss://gateway.pocketshell.io',deviceId:'fixture-linux',hostAlias:'Orin server',username:'orin',
   keyId:'fixture-key',sshHostKey:'fixture-pin',devicePublicKey:'fixture-identity',status:'active',updatedAt:'2026-11-05T00:00:00.000Z'};
 beforeEach(()=>{
+  localStorage.clear();
   state.account='google:orin';
   state.sync=reactive({status:{loggedIn:true,email:'orin@example.test'},busy:false,login:vi.fn(async()=>{})});
   state.vault={view:reactive({state:'unlocked'}),store:reactive({vaultId:host.vaultId,epoch:1,
@@ -71,12 +73,13 @@ describe('native account to authenticated server journey',()=>{
     expect(next.text()).toContain('SSH without an account');
     expect(state.vault.platform.prepareAccount).toHaveBeenCalledTimes(1);next.unmount();
   });
-  it('a vault service failure does not open setup or unlock',async()=>{
+  it('a vault service failure does not open setup or unlock and is reported quietly (#3189)',async()=>{
     state.vault.view.state='locked';
     state.vault.platform.prepareAccount=vi.fn(async()=>{throw new Error('Vault service unavailable');});
     state.vault.requestSetup=vi.fn();
     const w=mount(TrustedServersSection);await flushPromises();
-    expect(w.get('[role="alert"]').text()).toContain('Vault service unavailable');
+    expect(w.find('[role="alert"]').exists()).toBe(false);
+    expect(w.get('[data-testid="servers-sync-issue"]').text()).toContain('Not synced');
     expect(state.vault.requestSetup).not.toHaveBeenCalled();
     expect(state.vault.requestUnlock).not.toHaveBeenCalled();w.unmount();
   });
@@ -103,7 +106,8 @@ describe('native account to authenticated server journey',()=>{
   });
   it('logout locking does not reopen the vault prompt',async()=>{
     const w=mount(TrustedServersSection);await flushPromises();
-    state.sync.busy=true;state.vault.view.state='locked';await flushPromises();
+    // The sync store's logout clears the saved server list first (#3189).
+    state.sync.busy=true;clearCachedServers();state.vault.view.state='locked';await flushPromises();
     state.sync.status.loggedIn=false;state.sync.busy=false;await flushPromises();
     expect(state.vault.requestUnlock).not.toHaveBeenCalled();expect(w.text()).toContain('Sign in with Google');w.unmount();
   });
