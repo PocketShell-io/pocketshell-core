@@ -246,8 +246,9 @@ function enterAccount(prompt = true): Promise<void> {
 
 async function unlock(): Promise<void> {
   if (authPending.value || sync.busy) return;
+  const wasLocalOnly = localOnly.value;
   localOnly.value = false;
-  if (!sync.status?.loggedIn || reauth.value) {
+  if (wasLocalOnly || !sync.status?.loggedIn || reauth.value) {
     await sync.login();
     if (!alive || !sync.status?.loggedIn) return;
   }

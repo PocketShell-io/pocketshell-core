@@ -178,6 +178,29 @@ describe('nothing opens by itself (#3189)',()=>{
     expect(state.sync.login).toHaveBeenCalledTimes(1);
     w.unmount();
   });
+  it('opens the Google chooser when the user returns from local-only SSH (#3194)', async () => {
+    const prepareAccount = vi.fn(async () => ({ accountId: state.account, state: 'locked' }));
+    state.vault.platform.prepareAccount = prepareAccount;
+    let finishSignIn!: () => void;
+    state.sync.login.mockImplementation(() => new Promise<void>(resolve => { finishSignIn = resolve; }));
+
+    const w = mount(TrustedServersSection);
+    await flushPromises();
+    expect(prepareAccount).toHaveBeenCalledTimes(1);
+    await w.get('[data-testid="server-use-local"]').trigger('click');
+    expect(state.sync.status.loggedIn).toBe(true);
+    expect(state.sync.login).not.toHaveBeenCalled();
+
+    await w.get('[data-testid="server-google-login"]').trigger('click');
+    expect(state.sync.login).toHaveBeenCalledTimes(1);
+    expect(prepareAccount).toHaveBeenCalledTimes(1);
+
+    finishSignIn();
+    await flushPromises();
+    expect(prepareAccount).toHaveBeenCalledTimes(2);
+    w.unmount();
+  });
+
   it('backs off 30 s, 1 min, 5 min, then 15 min',()=>{
     expect([0,1,2,3,4,9].map(syncRetryDelay)).toEqual([30_000,60_000,300_000,900_000,900_000,900_000]);
   });
