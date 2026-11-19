@@ -20,6 +20,7 @@ const stale = ref(false);
 let cachedAccount: string | null = null;
 /** The row whose open is in progress (#3189): marked at once, whatever the background sync is doing. */
 const pendingConnect = ref<string | null>(null);
+const connectProblem = ref<{ deviceId: string; message: string; action: 'Unlock' | 'Sign in' | 'Retry' } | null>(null);
 let connectSeq = 0;
 const authPending = ref(false);
 const localOnly = computed({get:()=>vault?.view.localOnly === true,set:(value:boolean)=>{if(vault) vault.view.localOnly=value;}});
@@ -44,7 +45,7 @@ let attemptedAccount: string | null = null;
 let lastKey: string | null | undefined;
 
 const showRows = computed(() => !localOnly.value && servers.value.length > 0
-  && (stale.value || reauth.value || (verifiedAccount.value !== null && unlocked.value)));
+  && (stale.value || reauth.value || verifiedAccount.value !== null));
 
 function clearServers(): void {
   servers.value = [];
@@ -229,8 +230,9 @@ function enterAccount(prompt = true): Promise<void> {
     reauth.value = false;
     refreshIdentity(prepared.accountId);
     needsSetup.value = prepared.state === 'absent';
-    // A background retry stops at a locked vault; its Unlock button stays on screen.
-    const ready = prepared.state === 'unlocked' || prompt && await (needsSetup.value
+    // A row tapped during preparation owns the prompt for its connection.
+    // Let connect() check the prepared account before asking for that unlock.
+    const ready = prepared.state === 'unlocked' || prompt && pendingConnect.value === null && await (needsSetup.value
       ? vault.requestSetup() : vault.requestUnlock('account'));
     if (ready && current() && await vault.platform.accountId?.() === prepared.accountId) await load();
   })().catch(e => {
@@ -245,7 +247,7 @@ function enterAccount(prompt = true): Promise<void> {
 async function unlock(): Promise<void> {
   if (authPending.value || sync.busy) return;
   localOnly.value = false;
-  if (!sync.status?.loggedIn || !verifiedAccount.value || reauth.value) {
+  if (!sync.status?.loggedIn || reauth.value) {
     await sync.login();
     if (!alive || !sync.status?.loggedIn) return;
   }
@@ -258,6 +260,7 @@ function useLocal(): void {
   generation++;
   connectSeq++;
   pendingConnect.value = null;
+  connectProblem.value = null;
   entryTask = null;
   authPending.value = false;
   verifiedAccount.value = null;
@@ -274,13 +277,21 @@ function useLocal(): void {
   emit('local');
 }
 
-/** The open failed: plain words, and a lost sign-in turns into the re-sign-in prompt. */
+/** Keep the reason and the recovery action at the server that was tapped. */
+function setConnectProblem(server: TrustedHostRecord | CachedServer, action: 'Unlock' | 'Sign in' | 'Retry', message: string): void {
+  connectProblem.value = { deviceId: server.deviceId, action, message };
+}
+
 function reportConnectProblem(e: unknown, server: TrustedHostRecord | CachedServer): void {
   const problem = describeSyncProblem(e);
-  if (problem.kind === 'signedOut') { keepForReauth(); return; }
-  error.value = problem.kind === 'offline'
+  if (problem.kind === 'signedOut') {
+    keepForReauth();
+    setConnectProblem(server, 'Sign in', problem.message);
+    return;
+  }
+  setConnectProblem(server, 'Retry', problem.kind === 'offline'
     ? `Couldn't open ${server.hostAlias}: PocketShell sync can't be reached right now. Try again in a moment.`
-    : problem.message;
+    : problem.message);
 }
 
 function cancelConnect(): void {
@@ -295,27 +306,39 @@ async function connect(server: TrustedHostRecord | CachedServer): Promise<void> 
   // vault and the descriptor re-read happen behind it, never before it.
   const attempt = ++connectSeq;
   pendingConnect.value = server.deviceId;
+  connectProblem.value = null;
   error.value = '';
   const abandoned = () => !alive || attempt !== connectSeq;
   try {
     if (reauth.value || !sync.status?.loggedIn) {
       // A lost sign-in: the tap is the user's go-ahead to sign in again.
       await unlock();
-    } else if (!entryTask && (!verifiedAccount.value || !unlocked.value)) {
-      // The background sync failed or the vault is locked: try once more now.
-      await retrySync();
+    } else if (!entryTask && !verifiedAccount.value) {
+      await retrySync(false);
     }
     // A cached row tapped before the background check finished joins that
     // one operation (and any restart of it), then continues only if it really verified.
     while (entryTask && !abandoned()) await entryTask;
     if (abandoned()) return;
-    if (!verifiedAccount.value || !unlocked.value) {
-      if (syncIssue.value) reportConnectProblem({code:'SYNC_NETWORK_FAILED',message:syncIssue.value.detail}, server);
-      else if (!reauth.value) error.value = 'Sign in and unlock your vault again.';
+    if (reauth.value || !sync.status?.loggedIn) {
+      setConnectProblem(server, 'Sign in', "You're signed out.");
       return;
     }
+    if (verifiedAccount.value !== server.accountId) {
+      if (syncIssue.value) reportConnectProblem({code:'SYNC_NETWORK_FAILED',message:syncIssue.value.detail}, server);
+      else setConnectProblem(server, 'Retry', `Couldn't verify the account for ${server.hostAlias}.`);
+      return;
+    }
+    if (!unlocked.value && !await (needsSetup.value ? vault.requestSetup() : vault.requestUnlock('connect', server.hostAlias))) {
+      if (!abandoned()) {
+        if (reauth.value || !sync.status?.loggedIn) setConnectProblem(server, 'Sign in', "You're signed out.");
+        else setConnectProblem(server, 'Unlock', 'Keys locked.');
+      }
+      return;
+    }
+    if (abandoned()) return;
     const seq = generation;
-    const valid = () => alive && !localOnly.value && verifiedAccount.value === server.accountId && generation === seq && unlocked.value && vault.store.vaultId === server.vaultId && vault.store.epoch === server.epoch;
+    const valid = () => !abandoned() && !localOnly.value && verifiedAccount.value === server.accountId && generation === seq && unlocked.value && vault.store.vaultId === server.vaultId && vault.store.epoch === server.epoch;
     // No identity round trip up front: the vault reads below only use the
     // row's own account as a lookup key and persist nothing; the pre-install
     // fence verifies the live account before anything is saved or installed.
@@ -419,10 +442,18 @@ onBeforeUnmount(() => {
           <span class="server-name">{{server.hostAlias}}</span>
           <span v-if="pendingConnect === server.deviceId" class="muted server-connecting" data-testid="trusted-server-connecting">connecting…</span>
         </button>
+        <div v-if="connectProblem?.deviceId === server.deviceId" class="server-problem">
+          <p class="error" role="alert" data-testid="trusted-server-error">{{connectProblem.message}}</p>
+          <button
+            class="btn-ghost"
+            :disabled="busy || pendingConnect !== null"
+            data-testid="trusted-server-action"
+            @click="connect(server)"
+          >{{connectProblem.action}}</button>
+        </div>
       </li>
     </ul>
-    <!-- An open that failed says why right under the rows that were tapped (#3189, #3194). -->
-    <p v-if="error && showRows" class="error" role="alert" data-testid="trusted-server-error">{{error}}</p>
+    <p v-if="error && showRows" class="error" role="alert">{{error}}</p>
     <p v-if="showRows && pendingConnect !== null" class="muted server-pending">
       <button class="btn-ghost" data-testid="trusted-server-cancel" @click="cancelConnect">Cancel</button>
     </p>
@@ -461,6 +492,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .server-list {list-style:none;padding:0;display:grid;gap:var(--space-2,8px)}
 .server-row {width:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-2,8px);text-align:left;padding:var(--space-3,12px);color:var(--fg);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);cursor:pointer;min-height:48px}
+.server-row:active:not(:disabled) {background:var(--surface-2)}
 .server-connecting {font-size:var(--fs-sm,12px)}
-.sync-issue,.reauth-note,.server-pending {display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2,8px);font-size:var(--fs-sm,12px)}
+.sync-issue,.reauth-note,.server-pending,.server-problem {display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2,8px);font-size:var(--fs-sm,12px)}
+.server-problem p {margin:0}
 </style>

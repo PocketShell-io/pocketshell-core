@@ -183,6 +183,92 @@ describe('nothing opens by itself (#3189)',()=>{
   });
 });
 
+describe('a saved server whose SSH keys are locked (#3194)', () => {
+  it('keeps the first host tap while the account and vault are being checked', async () => {
+    let finishPreparation!: (prepared: { accountId: string; state: 'locked' }) => void;
+    state.vault.platform.prepareAccount = vi.fn(() => new Promise(resolve => { finishPreparation = resolve; }));
+    let finishUnlock!: (unlocked: boolean) => void;
+    state.vault.requestUnlock.mockImplementation(() => new Promise(resolve => { finishUnlock = resolve; }));
+    const w = mount(TrustedServersSection);
+    await flushPromises();
+    await w.findAll('[data-testid=trusted-server-connect]')[1]!.trigger('click');
+    await flushPromises();
+    expect(w.get('[aria-busy=true]').text()).toContain('Hetzner');
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();
+    expect(state.vault.platform.installTrustedHost).not.toHaveBeenCalled();
+
+    finishPreparation({ accountId: state.account, state: 'locked' });
+    await flushPromises();
+    expect(state.vault.requestUnlock).toHaveBeenCalledTimes(1);
+    expect(state.vault.requestUnlock).toHaveBeenCalledWith('connect', 'Hetzner');
+    expect(w.emitted('connect')).toBeUndefined();
+
+    state.vault.view.state = 'unlocked';
+    finishUnlock(true);
+    await flushPromises();
+    expect(w.emitted('connect')).toHaveLength(1);
+    expect(w.emitted('connect')![0]![0]).toMatchObject({ name: 'Hetzner' });
+    w.unmount();
+  });
+
+  it('holds the selected row while unlocking, then opens that server without another tap', async () => {
+    state.vault.platform.prepareAccount = vi.fn(async () => ({ accountId: state.account, state: 'locked' }));
+    let finishUnlock!: (unlocked: boolean) => void;
+    state.vault.requestUnlock
+      .mockResolvedValueOnce(false) // The launch prompt was dismissed.
+      .mockImplementationOnce(() => new Promise<boolean>(resolve => { finishUnlock = resolve; }));
+    const w = mount(TrustedServersSection);
+    await flushPromises();
+    await w.findAll('[data-testid=trusted-server-connect]')[1]!.trigger('click');
+    await flushPromises();
+
+    expect(state.vault.requestUnlock).toHaveBeenLastCalledWith('connect', 'Hetzner');
+    expect(state.vault.platform.prepareAccount).toHaveBeenCalledTimes(1);
+    expect(state.sync.login).not.toHaveBeenCalled();
+    expect(w.get('[aria-busy=true]').text()).toContain('Hetzner');
+    expect(w.emitted('connect')).toBeUndefined();
+
+    state.vault.view.state = 'unlocked';
+    finishUnlock(true);
+    await flushPromises();
+    expect(w.emitted('connect')).toHaveLength(1);
+    expect(w.emitted('connect')![0]![0]).toMatchObject({ name: 'Hetzner' });
+    w.unmount();
+  });
+
+  it('shows Keys locked beside the selected server if unlock is dismissed', async () => {
+    state.vault.platform.prepareAccount = vi.fn(async () => ({ accountId: state.account, state: 'locked' }));
+    state.vault.requestUnlock.mockResolvedValue(false);
+    const w = mount(TrustedServersSection);
+    await flushPromises();
+    const row = w.findAll('li')[1]!;
+    await row.get('[data-testid=trusted-server-connect]').trigger('click');
+    await flushPromises();
+
+    expect(row.get('[role=alert]').text()).toContain('Keys locked');
+    expect(row.get('[data-testid=trusted-server-action]').text()).toBe('Unlock');
+    expect(w.text()).not.toContain("You're signed out");
+    expect(state.sync.login).not.toHaveBeenCalled();
+    expect(w.emitted('connect')).toBeUndefined();
+    w.unmount();
+  });
+
+  it('says Signed out and offers Sign in after a revoked credential', async () => {
+    state.sync.status = { loggedIn: false, email: null };
+    const w = mount(TrustedServersSection);
+    await flushPromises();
+    const row = w.findAll('li')[1]!;
+    await row.get('[data-testid=trusted-server-connect]').trigger('click');
+    await flushPromises();
+
+    expect(row.get('[role=alert]').text()).toContain("You're signed out");
+    expect(row.get('[data-testid=trusted-server-action]').text()).toBe('Sign in');
+    expect(w.text()).not.toContain('Keys locked');
+    expect(state.vault.requestUnlock).not.toHaveBeenCalled();
+    w.unmount();
+  });
+});
+
 describe('stable order (#3189)',()=>{
   it('a refresh that returns the rows in another order does not move them; new rows join the end',async()=>{
     state.vault.view.state='unlocked';
