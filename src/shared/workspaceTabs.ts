@@ -18,9 +18,10 @@
  * machinery the rename field used to work through. The rename field now edits
  * the NAME, and what it commits is what the host stores.
  *
- * The only label still invented here is collision numbering: a second tab
- * wanting an already-shown label reads `… 2` (see {@link numberCollisions}),
- * which is display-only disambiguation and never touches the name.
+ * The only labels still invented here are display-only: collision numbering
+ * (a second tab wanting an already-shown label reads `… 2`, see
+ * {@link numberCollisions}) and the shortened form tab labels render through
+ * ({@link shortenTabLabel}). Neither touches the name.
  */
 
 /** A session tab, before labelling. */
@@ -60,6 +61,59 @@ export type WorkspaceTab =
 
 /** Files tabs all read `Files`; a second one becomes `Files 2`. */
 export const FILES_LABEL = 'Files';
+
+// ---------------------------------------------------------------------------
+// The label a tab WEARS, as against the name it carries
+// ---------------------------------------------------------------------------
+
+/**
+ * The most of a name a tab renders before the bar becomes the thing that
+ * overflows.
+ *
+ * 24 characters draws a long tab at roughly the width the strip's other
+ * furniture (`+`, the corner buttons) leaves room for; every REAL name this
+ * bar is asked to show at a comfortable size — `main`, `staging`,
+ * `dtc-mig-finish` — sits under it and is untouched by the rule that reads it.
+ */
+export const TAB_LABEL_MAX = 24;
+
+/**
+ * What a tab RENDERS of [label], when the name itself runs longer than a tab
+ * should.
+ *
+ * The names that run long are the machine-minted ones — `<human>-<uuid>`, the
+ * helper's `task-hub2-e03984f3-aff1-5ac5-a864-e43465790437` shape — and their
+ * two halves each carry half the reading: the head is the human-chosen part
+ * the eye matches (`task-hub2`), the tail is the entropy that tells two
+ * same-prefix sessions apart. An END ellipsis keeps only the head and turns a
+ * bar of three `task-hub2-*` sessions into three identical labels — exactly
+ * the failure the middle ellipsis exists to avoid, the same reasoning as the
+ * file breadcrumbs' centre-truncation in `fileListView.ts`: when a name's
+ * identity lives at BOTH ends, truncating one end is amputating it. So the
+ * keep is split two-to-one, head to tail, after the ellipsis's one character.
+ *
+ * Display-only, like every label invented in this module: the name underneath
+ * is untouched — the id, the rename field, the tooltip and the context menu
+ * all read `tab.label` / the session name verbatim — and a rename commits
+ * what the user typed, not what the bar showed. The shortened form costs
+ * nothing in recoverability because the full name is one hover away
+ * (`sessionTabTitle`) and one double-click away (rename).
+ *
+ * The budget is [max] characters INCLUDING the ellipsis, compared over code
+ * points rather than UTF-16 units, so a name carrying non-BMP characters is
+ * cut between characters and never through one.
+ */
+export function shortenTabLabel(label: string, max: number = TAB_LABEL_MAX): string {
+  const chars = [...label];
+  // Verbatim when there is nothing to shorten, and verbatim when the budget
+  // cannot hold a real head AND a real tail around the ellipsis — a cut so
+  // tight it renders `abc…x` says nothing either end would not say better.
+  if (chars.length <= max || max < 6) return label;
+  const keep = max - 1; // the ellipsis itself spends one
+  const tail = Math.floor(keep / 3);
+  const head = keep - tail;
+  return `${chars.slice(0, head).join('')}…${chars.slice(-tail).join('')}`;
+}
 
 /**
  * Append ` 2`, ` 3`… to every label after the first that wants it.

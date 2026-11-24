@@ -13,7 +13,7 @@ import AppIcon from '@ui/components/AppIcon.vue';
 import PopupMenu from './PopupMenu.vue';
 import { pointAnchor, type Box } from '@pocketshell/core/shared/popupPlacement';
 import { agentMark } from '@pocketshell/core/shared/agentBadge';
-import { canDropTabAt, reorderTabs, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
+import { canDropTabAt, reorderTabs, shortenTabLabel, type WorkspaceTab } from '@pocketshell/core/shared/workspaceTabs';
 import { maintenanceToolDefFor } from '../maintenance';
 import { useStripDrag } from '../useStripDrag';
 import { useLayoutClass } from '../layoutClass';
@@ -403,7 +403,13 @@ function onRenameInput(event: Event): void {
             :title="tabMark(tab.session)!.label"
             class="tab-agent"
           />
-          {{ tab.label }}
+          <!-- The DISPLAY form of the label, middle-truncated past
+               `TAB_LABEL_MAX` (src/shared/workspaceTabs.ts): the machine-minted
+               `task-hub2-<uuid>` names kept eating the whole strip. Only this
+               text node shortens — the tab's id, the rename field, the tooltip
+               above and the context menu all carry the name verbatim, so
+               nothing but pixels is lost. -->
+          {{ shortenTabLabel(tab.label) }}
           <!-- Every tab wears an `×`, but the two kinds do not mean the same
                thing by it, and neither one kills directly.
 
