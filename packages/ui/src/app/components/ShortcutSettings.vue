@@ -160,7 +160,9 @@ function cancelCapture(): void {
  * Bare modifiers are ignored rather than refused: a user holding Ctrl on the
  * way to Ctrl+Shift+K produces a keydown for Ctrl and one for Shift first, and
  * flashing "that is a modifier on its own" at them twice per rebinding would be
- * a bug wearing a validation message.
+ * a bug wearing a validation message. So are Chromium's ghost keydowns — the
+ * datalist/select-popup events that carry no `key` at all (shortcuts.ts
+ * `chordFromEvent` has the incident): not a keypress, so not a chord to bind.
  */
 function onCaptureKey(id: string, event: KeyboardEvent): void {
   event.preventDefault();
@@ -169,6 +171,7 @@ function onCaptureKey(id: string, event: KeyboardEvent): void {
     cancelCapture();
     return;
   }
+  if (typeof event.key !== 'string') return;
   if (['Control', 'Shift', 'Alt', 'Meta', 'OS', 'AltGraph'].includes(event.key)) return;
   const chord: Chord = chordFromEvent(event);
   const refusal = settings.rebindShortcut(id, chord);

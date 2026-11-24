@@ -249,13 +249,26 @@ export function canonicalKey(key: string): string {
   return key;
 }
 
-/** A chord from a real key event. Ctrl and Cmd are the same modifier here. */
+/**
+ * A chord from a real key event. Ctrl and Cmd are the same modifier here.
+ *
+ * "Real" is doing work: Chromium also dispatches keydowns with NO `key` at all
+ * when a `<datalist>` popup commits or closes (measured in production —
+ * `~/.pocketshell/desktop.log` 2026-11-24, a `TypeError` out of
+ * `Array.from` in {@link canonicalKey} from the window-capture Ctrl+W listener
+ * while the Settings font combobox was open; see also
+ * mdn/browser-compat-data #9217). A missing key is not a chord, so it is
+ * folded to `''` — a token no other path can produce (`parseChord` rejects it,
+ * {@link canonicalKey} of a real string never returns it), which makes the
+ * resulting chord match nothing instead of throwing through every matcher in
+ * the app.
+ */
 export function chordFromEvent(e: ChordKeyInput): Chord {
   return Object.freeze({
     ctrl: e.ctrlKey === true || e.metaKey === true,
     alt: e.altKey === true,
     shift: e.shiftKey === true,
-    key: canonicalKey(e.key),
+    key: typeof e.key === 'string' ? canonicalKey(e.key) : '',
   });
 }
 

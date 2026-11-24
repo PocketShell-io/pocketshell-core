@@ -97,6 +97,33 @@ describe('AppRoot', () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
+  it('ignores the datalist ghost keydown instead of throwing', async () => {
+    await mountRoot();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.value = 'git commit';
+    input.setSelectionRange(10, 10);
+    // The event exactly as Chromium dispatches it when a datalist popup
+    // commits or closes: type 'keydown', and no `key` property at all. It
+    // reaches this window-capture listener from any target in the page, and
+    // it must be inert — no deletion, no default. A listener exception would
+    // not fail dispatchEvent: like Chromium, jsdom reports it as a window
+    // `error` event — which is precisely the path that put the production
+    // TypeError on the diag banner (see shortcuts.ts `chordFromEvent`,
+    // desktop.log 2026-11-24) — so that is the path asserted here.
+    const errors: ErrorEvent[] = [];
+    const onError = (event: ErrorEvent): void => {
+      errors.push(event);
+    };
+    window.addEventListener('error', onError);
+    const e = new Event('keydown', { bubbles: true, cancelable: true });
+    input.dispatchEvent(e);
+    window.removeEventListener('error', onError);
+    expect(errors).toEqual([]);
+    expect(input.value).toBe('git commit');
+    expect(e.defaultPrevented).toBe(false);
+  });
+
   it('leaves Ctrl+W alone when the client does not claim it', async () => {
     await mountRoot({ claimDeleteWord: false });
     const input = document.createElement('input');
