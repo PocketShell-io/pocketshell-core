@@ -7,7 +7,11 @@ import { createPinia, setActivePinia } from 'pinia';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const stub = vi.hoisted(() => ({ term: null as any, render: [] as Array<() => void> }));
+const stub = vi.hoisted(() => ({
+  term: null as any,
+  render: [] as Array<(e: { start: number; end: number }) => void>,
+  cursorMove: [] as Array<() => void>,
+}));
 vi.mock('../src/app/terminalPane', async () => {
   const { ref } = await import('vue');
   class TerminalPane {
@@ -19,7 +23,7 @@ vi.mock('../src/app/terminalPane', async () => {
 });
 vi.mock('@xterm/xterm', () => ({ Terminal: class {
   options: any = {}; cols = 80; rows = 24; element = document.createElement('div');
-  buffer = { active: { getLine: () => undefined, cursorY: 3, baseY: 0, viewportY: 0 } };
+  buffer = { active: { getLine: () => undefined, cursorY: 3, baseY: 0, viewportY: 0, getNullCell: () => ({ getChars: () => '', getWidth: () => 1, isUnderline: () => 0 }) } };
   constructor() {
     const screen = document.createElement('div');
     screen.className = 'xterm-screen';
@@ -28,8 +32,8 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class {
     stub.term = this;
   }
   loadAddon() {} open() {} onData() { return { dispose() {} }; } onKey() { return { dispose() {} }; }
-  onRender(fn: () => void) { stub.render.push(fn); return { dispose() {} }; }
-  onCursorMove(fn: () => void) { stub.render.push(fn); return { dispose() {} }; }
+  onRender(fn: (e: { start: number; end: number }) => void) { stub.render.push(fn); return { dispose() {} }; }
+  onCursorMove(fn: () => void) { stub.cursorMove.push(fn); return { dispose() {} }; }
   onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; } onBinary() { return { dispose() {} }; }
   attachCustomKeyEventHandler() {} registerLinkProvider() { return { dispose() {} }; } registerDecoration() {}
   parser = { registerOscHandler() { return { dispose() {} }; } }; unicode = { register() {}, activeVersion: '6' };
@@ -41,7 +45,7 @@ import { provideApi } from '../src/app/ipc';
 import TerminalView from '../src/app/components/TerminalView.vue';
 
 let wrapper: ReturnType<typeof mount> | undefined;
-afterEach(() => { wrapper?.unmount(); wrapper = undefined; stub.render = []; });
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; stub.render = []; stub.cursorMove = []; });
 
 async function mountView() {
   setActivePinia(createPinia());
@@ -52,8 +56,13 @@ async function mountView() {
   return wrapper;
 }
 
+// Each event with its real shape: onRender carries the touched viewport rows
+// (`{start, end}` — the at-rest path tint now consumes them too, so a bare
+// `fn()` here would throw in the handler xterm never calls argument-less),
+// onCursorMove carries nothing.
 const fire = async () => {
-  for (const fn of stub.render) fn();
+  for (const fn of stub.render) fn({ start: 0, end: 23 });
+  for (const fn of stub.cursorMove) fn();
   await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
   await flushPromises();
 };

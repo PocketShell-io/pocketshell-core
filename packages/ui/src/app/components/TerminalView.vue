@@ -729,22 +729,28 @@ onMounted(async () => {
   // the same reason: the session the pane shows is read through a getter at
   // CLICK time, so a switch that reuses this terminal needs no re-registration
   // and cannot stack a second provider.
+  // At-rest highlight for those same links, and the reason the hover layer
+  // alone was not enough: the remote CLI colours and underlines its file
+  // references itself, but only the FIRST row of a path its own wrapper
+  // broke across rows — so the view at rest kept showing a path highlighted
+  // halfway no matter what the hover reconstructs. This re-derives the
+  // whole link on every row the renderer touches and blocks it in the
+  // theme's own selection tint (terminalPathHighlights.ts). Constructing the
+  // highlighter is not the feature — attach() is, for it subscribes the
+  // render-stream rescan that registers every decoration. Left unattached
+  // (as this was for its whole life) the tint never paints, and every
+  // at-rest screenshot keeps reading "still not highlighting".
+  const pathHighlighter = new PathHighlighter(
+    term,
+    () => ({ sessionName: targetSession.value }),
+    () => terminalLinkTint(resolveTheme(settings.theme).terminal),
+  );
+  pathHighlighter.attach();
   termDisposables.push(
     term.registerLinkProvider(
       createPathLinkProvider(term, () => ({ sessionName: targetSession.value })),
     ),
-    // At-rest highlight for those same links, and the reason the hover layer
-    // alone was not enough: the remote CLI colours and underlines its file
-    // references itself, but only the FIRST row of a path its own wrapper
-    // broke across rows — so the view at rest kept showing a path highlighted
-    // halfway no matter what the hover reconstructs. This re-derives the
-    // whole link on every row the renderer touches and blocks it in the
-    // theme's own selection tint (terminalPathHighlights.ts).
-    new PathHighlighter(
-      term,
-      () => ({ sessionName: targetSession.value }),
-      () => terminalLinkTint(resolveTheme(settings.theme).terminal),
-    ),
+    pathHighlighter,
     // OSC 52 -> clipboard. The receiving half of the tmux gesture: an
     // ALT+drag (plain and Shift+drag select in THIS pane now —
     // terminalMouseSelection.ts) selects in tmux copy-mode, and releasing
