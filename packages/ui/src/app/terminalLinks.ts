@@ -213,11 +213,17 @@
  *
  * Both detectors hand xterm ONE LINK PER ROW a match touches, never one link
  * spanning rows ({@link linksPerRow} for why). The practical difference is the
- * underline: on hover, every row of a wrapped path underlines exactly its own
- * fragment of it — the row's plain leftover columns after the cut, and the
- * continuation row's leading indent, stay bare — except where the remote CLI
- * itself underlined the fill past the cut ({@link linksPerRow}): there the
- * fragment claims the underlined stretch, because the user is already reading
+ * underline: xterm's own hover underline covers only the row under the mouse —
+ * a URL the remote CLI's wrapper broke across three rows read as three
+ * half-links, underlined one at a time — so every fragment's `hover` hands the
+ * link's OTHER rows' plain stretches to the painter (terminalLinkHover.ts),
+ * and hovering the link anywhere underlines it everywhere, each bar in its
+ * row's own foreground. The stretches are the cells the remote CLI does not
+ * already underline at rest ({@link plainStretches}); the hovered fragment
+ * keeps xterm's own underline for its row, and the decoration vocabulary —
+ * pointer cursor and underline on hover — is untouched. Where the CLI itself
+ * underlined the fill past the cut ({@link linksPerRow}), the fragment claims
+ * the underlined stretch for hit-testing, because the user is already reading
  * it as part of the link and a click on it must not fall dead.
  *
  * ## Clicking while the remote app owns the mouse
@@ -261,6 +267,7 @@ import {
   stripFileScheme,
 } from './terminalPaths';
 import { findUrls, continuesSchemelessAddress } from './terminalUrls';
+import type { LinkHoverPaint, LinkHoverSegment } from './terminalLinkHover';
 import { useFilesStore } from './stores/files';
 import { useSessionsStore } from './stores/sessions';
 
@@ -981,6 +988,21 @@ export function scanBufferLine(term: Terminal, bufferLineNumber: number): Scanne
  * Each fragment still opens the WHOLE match: `build` receives the fragment's
  * text and range and closes over the match itself.
  *
+ * ## What the hover underlines
+ *
+ * The per-row cut also means xterm's native hover underline covers only the
+ * row under the mouse — so a URL wrapped across three rows read as three
+ * half-links. The repair is the second pass below: every fragment carries a
+ * `hover` that shows its SIBLING fragments' plain stretches to the injected
+ * painter (terminalLinkHover.ts), which draws the bar under each of them —
+ * the hovered fragment keeps xterm's own underline, and the whole link reads
+ * underlined from any row of it. "Plain" is the part the remote CLI does not
+ * already underline at rest ({@link plainStretches}): cells carrying the
+ * attribute read as underlined with no hover at all, and a second bar there
+ * would thicken, not underline. A match with nothing left to paint — a
+ * single-row link, or every fragment already underlined by the CLI — gets no
+ * hover wiring at all and stays exactly the native link it always was.
+ *
  * ## Where a fragment may end past its own text
  *
  * Not every stretch of bare cells after a cut may stay bare. The thirteenth
@@ -1003,9 +1025,16 @@ function linksPerRow(
   scanned: ScannedLine,
   start: number,
   end: number,
+  paint: LinkHoverPaint | null,
   build: (text: string, range: ILink['range']) => ILink,
 ): ILink[] {
-  const links: ILink[] = [];
+  // Pass one — the fragments, each with the plain stretches of its own row.
+  interface Fragment {
+    text: string;
+    range: ILink['range'];
+    plain: LinkHoverSegment[];
+  }
+  const fragments: Fragment[] = [];
   let from = start;
   // `end` is exclusive, as the detectors report it. A row change at `i` (or
   // reaching `end`) closes the group of cells [from, i) as one fragment. The
@@ -1037,16 +1066,86 @@ function linksPerRow(
     // whose fill stayed in the array has no tail entry.
     const tail = scanned.underlineTails.get(last.y);
     if (tail !== undefined && tail > endX) endX = tail;
-    links.push(
-      build(scanned.text.slice(from, i), {
+    fragments.push({
+      text: scanned.text.slice(from, i),
+      range: {
         // xterm's range is 1-based and inclusive at both ends.
         start: { x: first.x + 1, y: first.y + 1 },
         end: { x: endX + 1, y: last.y + 1 },
-      }),
-    );
+      },
+      plain: plainStretches(scanned, from, i),
+    });
     from = i;
   }
+
+  // Pass two — build the links and wire the hover. Every fragment's `hover`
+  // shows the OTHER fragments' plain stretches; the token bookkeeping lives
+  // per closure, so a `leave` can only ever cancel the show it belongs to
+  // (terminalLinkHover.ts for why that matters across a fragment boundary).
+  const links: ILink[] = [];
+  for (const fragment of fragments) {
+    const link = build(fragment.text, fragment.range);
+    const siblings = fragments.length > 1
+      ? fragments.filter((f) => f !== fragment).flatMap((f) => f.plain)
+      : [];
+    if (paint === null || siblings.length === 0) {
+      links.push(link);
+      continue;
+    }
+    let token: number | null = null;
+    links.push({
+      ...link,
+      hover: () => {
+        token = paint.show(siblings);
+      },
+      leave: () => {
+        paint.hide(token);
+        token = null;
+      },
+    });
+  }
   return links;
+}
+
+/**
+ * The stretches of cells [from, to) that carry NO underline attribute — the
+ * part of a fragment a hover still has something to say about.
+ *
+ * Cells wearing the attribute are the remote CLI's own presentation of its
+ * link, visible at rest with no hover at all; painting a bar under them on
+ * hover would only thicken what is already underlined. Runs of plain cells
+ * are merged into one segment each — the common fragment is one stretch, and
+ * a fragment interrupted by an underlined separator stays two bars rather
+ * than one bar over the separator too.
+ */
+function plainStretches(scanned: ScannedLine, from: number, to: number): LinkHoverSegment[] {
+  const stretches: LinkHoverSegment[] = [];
+  let run = -1;
+  const flush = (last: number): void => {
+    const first = scanned.cells[run];
+    const endCell = scanned.cells[last];
+    if (first !== undefined && endCell !== undefined) {
+      stretches.push({
+        x: first.x,
+        // A double-width character spans two cells for one string index, so
+        // the width is read off the cells, not counted.
+        width: endCell.x - first.x + 1,
+        // xterm's link ranges speak 1-based lines, and so does the painter.
+        line: first.y + 1,
+      });
+    }
+  };
+  for (let j = from; j <= to; j++) {
+    const cell = scanned.cells[j];
+    const plain = j < to && cell !== undefined && !cell.u;
+    if (plain) {
+      if (run < 0) run = j;
+    } else if (run >= 0) {
+      flush(j - 1);
+      run = -1;
+    }
+  }
+  return stretches;
 }
 
 /**
@@ -1055,12 +1154,17 @@ export function pathLinks(
   term: Terminal,
   bufferLineNumber: number,
   context: () => TerminalPathContext,
+  paint?: LinkHoverPaint | null,
 ): ILink[] {
-  return pathLinksFromScan(scanBufferLine(term, bufferLineNumber), context);
+  return pathLinksFromScan(scanBufferLine(term, bufferLineNumber), context, paint);
 }
 
 /** The path detector's links, over an already-flattened line. */
-function pathLinksFromScan(scanned: ScannedLine, context: () => TerminalPathContext): ILink[] {
+function pathLinksFromScan(
+  scanned: ScannedLine,
+  context: () => TerminalPathContext,
+  paint?: LinkHoverPaint | null,
+): ILink[] {
   const links: ILink[] = [];
 
   for (const match of findPaths(scanned.text)) {
@@ -1069,7 +1173,7 @@ function pathLinksFromScan(scanned: ScannedLine, context: () => TerminalPathCont
     // back: that is the fragment underlined, which still carries the `:12:5`
     // suffix and, on a continuation row, none of the path's head.
     links.push(
-      ...linksPerRow(scanned, match.start, match.end, (text, range) => ({
+      ...linksPerRow(scanned, match.start, match.end, paint ?? null, (text, range) => ({
         range,
         text,
         decorations: { pointerCursor: true, underline: true },
@@ -1105,12 +1209,21 @@ export type UrlOpener = (url: string) => void;
  * [open] is injected rather than imported so a click's behaviour stays a
  * TerminalView decision (and a test can observe it without a window).
  */
-export function urlLinks(term: Terminal, bufferLineNumber: number, open: UrlOpener): ILink[] {
-  return urlLinksFromScan(scanBufferLine(term, bufferLineNumber), open);
+export function urlLinks(
+  term: Terminal,
+  bufferLineNumber: number,
+  open: UrlOpener,
+  paint?: LinkHoverPaint | null,
+): ILink[] {
+  return urlLinksFromScan(scanBufferLine(term, bufferLineNumber), open, paint);
 }
 
 /** The URL detector's links, over an already-flattened line. */
-function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
+function urlLinksFromScan(
+  scanned: ScannedLine,
+  open: UrlOpener,
+  paint?: LinkHoverPaint | null,
+): ILink[] {
   const links: ILink[] = [];
 
   for (const match of findUrls(scanned.text)) {
@@ -1124,7 +1237,7 @@ function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
     if (from.y === to.y && !match.schemeless) continue;
 
     links.push(
-      ...linksPerRow(scanned, match.start, match.end, (text, range) => ({
+      ...linksPerRow(scanned, match.start, match.end, paint ?? null, (text, range) => ({
         range,
         text,
         decorations: { pointerCursor: true, underline: true },
@@ -1149,10 +1262,11 @@ function urlLinksFromScan(scanned: ScannedLine, open: UrlOpener): ILink[] {
 export function createPathLinkProvider(
   term: Terminal,
   context: () => TerminalPathContext,
+  paint?: LinkHoverPaint | null,
 ): ILinkProvider {
   return {
     provideLinks(bufferLineNumber, callback): void {
-      const links = pathLinks(term, bufferLineNumber, context);
+      const links = pathLinks(term, bufferLineNumber, context, paint);
       // `undefined`, not an empty array: xterm treats an array as "this
       // provider answered" when it decides which provider owns a cell.
       callback(links.length > 0 ? links : undefined);
@@ -1179,10 +1293,14 @@ export function createPathLinkProvider(
  * `https?://` and can never see it, so this provider is its only claimant
  * ({@link urlLinks} for the split).
  */
-export function createUrlLinkProvider(term: Terminal, open: UrlOpener): ILinkProvider {
+export function createUrlLinkProvider(
+  term: Terminal,
+  open: UrlOpener,
+  paint?: LinkHoverPaint | null,
+): ILinkProvider {
   return {
     provideLinks(bufferLineNumber, callback): void {
-      const links = urlLinks(term, bufferLineNumber, open);
+      const links = urlLinks(term, bufferLineNumber, open, paint);
       callback(links.length > 0 ? links : undefined);
     },
   };

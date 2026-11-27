@@ -57,6 +57,7 @@ import { useRouter } from 'vue-router';
 import { useShellsStore } from '../stores/shells';
 import { useConnectionStore } from '../stores/connection';
 import { createPathLinkProvider, createUrlLinkProvider } from '../terminalLinks';
+import { LinkHoverPainter } from '../terminalLinkHover';
 import { decodeOsc52SetClipboard } from '@pocketshell/core';
 import { forceLocalMouseSelection } from '../terminalMouseSelection';
 import { captureChord, captureTerminalText, type CaptureScope } from '../terminalCapture';
@@ -682,7 +683,15 @@ onMounted(async () => {
   // is the mirror case — the addon's regex cannot see it, so this provider is
   // its only claimant. (createUrlLinkProvider documents the overlap arithmetic;
   // terminalLinks.ts the joins that make the address whole.)
-  termDisposables = [term.registerLinkProvider(createUrlLinkProvider(term, openExternal))];
+  // One painter for both providers, and the reason it exists: xterm's own
+  // hover underline covers only the row under the mouse, so a URL the remote
+  // CLI's wrapper broke across rows read as so many half-links, underlined
+  // one at a time. Hovering any row of a link now underlines the link's
+  // OTHER rows too (terminalLinkHover.ts; the fragments' hover wiring in
+  // terminalLinks.ts linksPerRow). Disposed with the rest of termDisposables:
+  // hide() unsubscribes the render repaint, dispose() removes the layer.
+  const linkHover = new LinkHoverPainter(term);
+  termDisposables = [term.registerLinkProvider(createUrlLinkProvider(term, openExternal, linkHover))];
   // An explicit activation handler, not the addon default.
   //
   // WebLinksAddon defaults to `window.open(uri)`, which in Electron reaches
@@ -728,8 +737,9 @@ onMounted(async () => {
   // and cannot stack a second provider.
   termDisposables.push(
     term.registerLinkProvider(
-      createPathLinkProvider(term, () => ({ sessionName: targetSession.value })),
+      createPathLinkProvider(term, () => ({ sessionName: targetSession.value }), linkHover),
     ),
+    linkHover,
     // OSC 52 -> clipboard. The receiving half of the tmux gesture: an
     // ALT+drag (plain and Shift+drag select in THIS pane now —
     // terminalMouseSelection.ts) selects in tmux copy-mode, and releasing
