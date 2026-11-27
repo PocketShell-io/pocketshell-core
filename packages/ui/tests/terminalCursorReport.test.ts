@@ -57,7 +57,7 @@ async function mountView() {
 }
 
 // Each event with its real shape: onRender carries the touched viewport rows
-// (`{start, end}` — the at-rest path tint now consumes them too, so a bare
+// (`{start, end}` — the pane's render subscribers consume them, so a bare
 // `fn()` here would throw in the handler xterm never calls argument-less),
 // onCursorMove carries nothing.
 const fire = async () => {
@@ -70,7 +70,7 @@ const fire = async () => {
 describe('TerminalView cursor-row report (#3128)', () => {
   it('reports the cursor row bottom in viewport px on render and cursor moves', async () => {
     const w = await mountView();
-    expect(stub.render.length).toBeGreaterThanOrEqual(2);
+    expect(stub.render.length).toBeGreaterThanOrEqual(1);
     await fire();
     // row 3 of 24 rows on a 480px screen at top 100: (3 + 1) * 20 + 100.
     expect(w.emitted('cursor-bottom')?.at(-1)).toEqual([180]);
