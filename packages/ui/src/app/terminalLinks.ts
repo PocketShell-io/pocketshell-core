@@ -267,6 +267,7 @@ import {
   stripFileScheme,
 } from './terminalPaths';
 import { findUrls, continuesSchemelessAddress } from './terminalUrls';
+import type { PathMatch } from './terminalPaths';
 import type { LinkHoverPaint, LinkHoverSegment } from './terminalLinkHover';
 import { useFilesStore } from './stores/files';
 import { useSessionsStore } from './stores/sessions';
@@ -1178,7 +1179,7 @@ function pathLinksFromScan(
         text,
         decorations: { pointerCursor: true, underline: true },
         activate: () => {
-          revealInFiles(context(), match.path);
+          revealInFiles(context(), match);
         },
       })),
     );
@@ -1313,11 +1314,20 @@ export function createUrlLinkProvider(
  * being captured when the provider was built: a workspace opened by deep link
  * renders before the sessions store has been refreshed, so a path captured at
  * mount would be resolved against a cwd of `undefined`.
+ *
+ * [match] goes whole, not just its path: the `:12` / `:12:5` position suffix
+ * the detector peeled off the path is the line the click is supposed to open,
+ * and dropping it here would turn `src/main.ts:12` into "open src/main.ts and
+ * leave the user at the top".
  */
-function revealInFiles(context: TerminalPathContext, path: string): void {
+function revealInFiles(context: TerminalPathContext, match: PathMatch): void {
   const sessions = useSessionsStore();
   const cwd = context.sessionName
     ? (sessions.sessions.find((s) => s.name === context.sessionName)?.path ?? null)
     : null;
-  useFilesStore().requestReveal(path, cwd);
+  useFilesStore().requestReveal(
+    match.path,
+    cwd,
+    match.line !== undefined ? { line: match.line, column: match.column } : undefined,
+  );
 }

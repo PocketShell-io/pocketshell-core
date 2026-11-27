@@ -51,7 +51,7 @@
  * using an editor.
  */
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Compartment, EditorSelection, EditorState } from '@codemirror/state';
 import {
   EditorView,
   crosshairCursor,
@@ -248,7 +248,32 @@ function navigateForward(): boolean {
   return editor ? navGoForward(editor) : false;
 }
 
-defineExpose({ navigateBack, navigateForward });
+/**
+ * Put the cursor on [line] and bring it to the middle of the view — how a
+ * terminal link lands here. The numbers are 1-based, exactly as terminal
+ * output prints them (`src/main.ts:12:5`) and as terminalPaths.ts reports
+ * them; [column] is optional and defaults to the start of the line.
+ *
+ * Out-of-range clamps to the document rather than throwing: the position was
+ * printed against whatever version of the file the remote program had, and
+ * the file may have moved on since — a link that opens the file is still
+ * worth having. The jump is a plain dispatch with no user-event annotation,
+ * so codeEditorNavigation.ts does not record it as a Go Back location: the
+ * jump came from another pane, and there is no cursor position in THIS one
+ * to return to.
+ */
+function gotoPosition(line: number, column?: number): void {
+  const editor = view.value;
+  if (editor === null) return;
+  const target = editor.state.doc.line(Math.min(Math.max(1, line), editor.state.doc.lines));
+  const pos = Math.min(target.from + Math.max(0, (column ?? 1) - 1), target.to);
+  editor.dispatch({
+    selection: EditorSelection.cursor(pos),
+    effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+  });
+}
+
+defineExpose({ navigateBack, navigateForward, gotoPosition });
 
 onBeforeUnmount(() => {
   // An EditorView holds DOM listeners and a ResizeObserver; leaving them behind

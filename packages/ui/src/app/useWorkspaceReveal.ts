@@ -144,10 +144,12 @@ export function useWorkspaceReveal(deps: WorkspaceRevealDeps): void {
     // mounts into it is the one that takes it. Re-parking cannot corrupt the
     // path — `resolveRemotePath` is idempotent on its own output, returning an
     // absolute path untouched and leaving a home-relative one alone when there is
-    // no base to join it to.
+    // no base to join it to. The `:12` position rides along: taking the reveal
+    // to a dedicated tab is not a reason to land at the top of the file.
+    const position = deps.files.takeRevealPosition();
     deps.files.takeReveal();
     deps.addFilesTab(abs.slice(0, abs.lastIndexOf('/')) || '/');
-    deps.files.requestReveal(target);
+    deps.files.requestReveal(target, undefined, position ?? undefined);
     return true;
   }
 }

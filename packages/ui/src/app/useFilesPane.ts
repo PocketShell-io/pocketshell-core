@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { formatBytes } from '@pocketshell/core';
 import { resolveTheme } from '@ui/themes';
 import { isEditable } from './fileKind';
@@ -18,6 +18,13 @@ export interface FilesPaneDeps {
   startPath: () => string | undefined;
   /** Identity of the session this tab belongs to, for the remembered position. */
   sessionKey: () => string | undefined;
+  /**
+   * The open file's editor, when one is mounted — the target a `:12` reveal
+   * position is aimed at. A getter because the editor mounts late (the async
+   * component chunk, the loading sentence while the store reads the file), so
+   * the ref the view holds is null exactly when this is first needed.
+   */
+  editor?: () => { gotoPosition: (line: number, column?: number) => void } | null;
 }
 
 /**
@@ -127,11 +134,30 @@ export function useFilesPane(deps: FilesPaneDeps): {
    * request. The watch covers a request that arrives while Files is already on
    * screen. `takeReveal()` clears the request, so whichever fires first wins and
    * a path is never opened twice.
+   *
+   * A `:12` position riding on the reveal goes to the editor once the file is
+   * open: `revealPath` has resolved and read it by the time it returns, but the
+   * document still travels to CodeMirror through a Vue render pass, and the
+   * editor component itself may still be loading (an async chunk on this tab's
+   * first mount) — so the hand-off waits, bounded, for the editor to appear.
+   * Giving up after two seconds leaves the file open at the top, which is what
+   * the click did before positions existed; it never leaves it unopened.
    */
   async function applyReveal(): Promise<void> {
     const target = files.takeReveal();
     if (target == null || !connId.value) return;
+    const position = files.takeRevealPosition();
     await files.revealPath(connId.value, target);
+    if (position == null) return;
+    await nextTick();
+    for (let waited = 0; waited <= 2000; waited += 50) {
+      const editor = deps.editor?.() ?? null;
+      if (editor !== null) {
+        editor.gotoPosition(position.line, position.column);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   watch(

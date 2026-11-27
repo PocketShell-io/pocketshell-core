@@ -117,6 +117,15 @@ interface RememberedPosition {
   chosen: boolean;
 }
 
+/**
+ * The `:12` / `:12:5` position suffix a terminal path link wore — 1-based,
+ * exactly as terminalPaths.ts reports it and as the source line is numbered.
+ */
+export interface RevealPosition {
+  line: number;
+  column?: number;
+}
+
 export const useFilesStore = defineStore('files', () => {
   const cwd = ref<string>('');
   const entries = ref<DirEntry[]>([]);
@@ -1366,6 +1375,16 @@ export const useFilesStore = defineStore('files', () => {
   // -------------------------------------------------------------------------
 
   /**
+   * The position a `path:12` or `path:12:5` suffix carried, held beside
+   * {@link reveal} and taken with it: a click on `src/main.ts:12` should open
+   * the file AT line 12, not merely open the file. Both refs answer to the
+   * same one request — set together by {@link requestReveal}, taken together
+   * by the pane, cleared together by {@link clear} — so they can never
+   * disagree about whether a position is pending.
+   */
+  const revealPosition = ref<RevealPosition | null>(null);
+
+  /**
    * Ask the Files tab to show a path that appeared in terminal output.
    *
    * [raw] is the path exactly as the remote program printed it and [sessionCwd]
@@ -1374,19 +1393,35 @@ export const useFilesStore = defineStore('files', () => {
    * wherever the user happens to have browsed this tab to. Resolution happens
    * here, at click time, while the session is still the one we are looking at.
    *
+   * [position] is the `:12` / `:12:5` suffix the path wore, when it wore one —
+   * see terminalPaths.ts, which peels the suffix off the path it reports and
+   * hands the numbers here.
+   *
    * Nothing is stat'ed and nothing is fetched: the terminal linkifies
    * optimistically (see terminalPaths.ts — a stat per token of output would be
    * an SFTP round trip per token), so "it does not exist" is answered by
    * {@link revealPath} when the click is actually acted on.
    */
-  function requestReveal(raw: string, sessionCwd?: string | null): void {
+  function requestReveal(
+    raw: string,
+    sessionCwd?: string | null,
+    position?: RevealPosition,
+  ): void {
     reveal.value = resolveRemotePath(raw, sessionCwd);
+    revealPosition.value = position ?? null;
   }
 
   /** Take the pending reveal, if any, and clear it. */
   function takeReveal(): string | null {
     const held = reveal.value;
     reveal.value = null;
+    return held;
+  }
+
+  /** Take the pending reveal position, if any, and clear it. */
+  function takeRevealPosition(): RevealPosition | null {
+    const held = revealPosition.value;
+    revealPosition.value = null;
     return held;
   }
 
@@ -1450,8 +1485,10 @@ export const useFilesStore = defineStore('files', () => {
     trail.value = [];
     trailIndex.value = -1;
     // A reveal that has not been taken yet names a path on the connection that
-    // just went away; applying it later would ask the NEXT host for it.
+    // just went away; applying it later would ask the NEXT host for it. Its
+    // position goes with it — the two are one request.
     reveal.value = null;
+    revealPosition.value = null;
     closeFile();
     if (connectionId == null) {
       positions.clear();
@@ -1512,6 +1549,8 @@ export const useFilesStore = defineStore('files', () => {
     closeFile,
     requestReveal,
     takeReveal,
+    revealPosition,
+    takeRevealPosition,
     revealPath,
     clear,
   };

@@ -102,6 +102,7 @@ const {
   settings,
   startPath: () => props.startPath,
   sessionKey: () => props.sessionKey,
+  editor: () => editorRef.value,
 });
 
 const {
@@ -140,13 +141,18 @@ const treeRef = ref<{ editPath: () => void; focusSearch: () => void; goRoot: () 
 );
 
 /**
- * The open file's CodeMirror instance, for the cursor-history chords below —
- * the editor exposes `navigateBack` / `navigateForward` (see CodeEditor.vue)
- * and keeps the location stack itself; this view only aims the chords at it.
- * Typed by the two methods called rather than the component's instance type,
- * like `treeRef` above.
+ * The open file's CodeMirror instance, for the cursor-history chords below and
+ * for the reveal position a terminal `path:12` link aims at it — the editor
+ * exposes `navigateBack` / `navigateForward` / `gotoPosition` (see
+ * CodeEditor.vue) and keeps the location stack itself; this view only aims the
+ * chords at it and hands the getter to the pane. Typed by the methods called
+ * rather than the component's instance type, like `treeRef` above.
  */
-const editorRef = ref<{ navigateBack: () => boolean; navigateForward: () => boolean } | null>(null);
+const editorRef = ref<{
+  navigateBack: () => boolean;
+  navigateForward: () => boolean;
+  gotoPosition: (line: number, column?: number) => void;
+} | null>(null);
 
 function onKeydown(e: KeyboardEvent): void {
   const bindings = settings.shortcutBindings;
